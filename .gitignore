@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Env / secrets
+.env
+.env.*
+*.pem
+
+# OS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+
+# Generated protobuf stubs (regenerated via backend/scripts/gen_proto.sh)
+backend/shared/proto_gen/*_pb2.py
+backend/shared/proto_gen/*_pb2.pyi
+backend/shared/proto_gen/*_pb2_grpc.py
