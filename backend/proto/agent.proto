@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package agent;
 
+import "google/protobuf/struct.proto";
+
 // Synchronous agent-decision entrypoint, mirrored by the alert.received ->
 // alert.decided Kafka path. See docs/ARCHITECTURE.md §3/§4/§5.
 service Agent {
@@ -13,17 +15,29 @@ message RunAgentRequest {
   // memory_namespace) that this run is scoped to. See ARCHITECTURE.md §3.
   string app_id = 1;
   // Which agent in the app's manifest handles this run. Empty resolves to
-  // the app's entry agent (the one alert.received triggers) — unchanged
-  // behavior. Set explicitly only when an entry agent delegates to a
-  // callable-only agent in the same app, e.g. triage-agent ->
-  // root-cause-summarizer. See ARCHITECTURE.md §3/§5.
+  // the app's entry agent (the one alert.received triggers). Set explicitly
+  // only by orchestrator when it runs a callable agent whose manifest
+  // `invoke_on` matches the entry agent's final decision, e.g.
+  // root-cause-summarizer on ESCALATE. See ARCHITECTURE.md §3/§5.
   string agent_id = 2;
   string alert_id = 3;
+  // Stable identity of "the same alert" for memory/recurrence purposes,
+  // built by ingestion from the payload fields listed in the app's manifest
+  // `alert_key_fields`, joined with ":" — e.g. "service:region" for
+  // cost-anomaly-triage, "rule_id:host" for security-alert-triage. Scoped by
+  // app_id, so keys may repeat across apps. See ARCHITECTURE.md §3/§6.
   string alert_key = 4;
   string source = 5;
   string severity = 6;
   string message = 7;
   int64 timestamp_unix_ms = 8;
+  // The full app-specific event, exactly as validated by ingestion against
+  // the app's event_schema_ref (e.g. baseline_cost/observed_cost for
+  // cost-anomaly-triage, indicators[] for security-alert-triage). The
+  // fields above are the platform-generic envelope; anything app-specific
+  // is read from here. Note Struct stores numbers as doubles. See
+  // ARCHITECTURE.md §5.
+  google.protobuf.Struct payload = 9;
 }
 
 enum Decision {

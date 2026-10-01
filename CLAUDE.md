@@ -8,13 +8,18 @@ An agentic microservices platform: event-triggered agents that decide,
 explain themselves, and improve from human feedback. The platform core
 (routing, tool-calling, memory, human review, observability) is generic;
 domain-specific behavior is configuration (an "App Manifest"), not code.
-The reference use case is IT-ops alert triage, with room for 2-3 apps to
-share the same core.
+The reference use case is IT-ops alert triage; three apps share the same
+core in this build: `it-ops-triage`, `cost-anomaly-triage`,
+`security-alert-triage`.
 
 **Read `docs/ARCHITECTURE.md` before making structural changes** — it's the
 system-of-record for the service map, transport choices, proto contracts,
 and the multi-app model, with section numbers referenced directly from code
-comments in `backend/proto/*.proto`. **Read `docs/plan.md`** for the
+comments in `backend/proto/*.proto`. **Read `docs/adr/`** before changing or reversing a major decision — each
+ADR records why it was made and what was rejected; a changed decision gets
+a new ADR, not an edit. Security risks and required mitigations are in
+`docs/ARCHITECTURE.md` §13; the phase-two path to an enterprise
+deployment is `docs/ENTERPRISE_READINESS.md`. **Read `docs/plan.md`** for the
 day-by-day build sequence and what each day's definition-of-done is — it's
 the plan this repo is being built against, and should stay the source of
 truth for "what order do we build things in."
@@ -62,7 +67,7 @@ uv run uvicorn app.main:app --reload --port 8000   # run locally
 ```
 
 `tool-gateway` has no `pyproject.toml` yet, so none of the above works there
-until Day 2 scaffolding lands.
+until its Day 1 scaffolding lands (`docs/plan.md` Day 1).
 
 `backend/shared` (the `ap-shared` package: proto stubs + `observability`
 module) has its own tests:
@@ -114,9 +119,33 @@ every service directory.
 - **`ap-shared`** (`backend/shared`) is the one cross-service dependency:
   generated proto stubs (`proto_gen/`) and the `observability` module
   (`setup_observability()` — stdout JSON logging + a no-op-exported
-  `TracerProvider` for now; Week 4 of `docs/plan.md` points it at a real
+  `TracerProvider` for now; Week 5 (Day 21) of `docs/plan.md` points it at a real
   OTel Collector without changing that API).
 - **Explainability is a field, not a log line**: agent decisions carry
   `reasons[]`, populated from the actual tool-call trace — this is what
   `review-console` shows an analyst, and it's a hard contract, not
   incidental.
+- **Triage only — no detection, no remediation** (`docs/ARCHITECTURE.md`
+  §2, §11): alerts come from external systems (monitoring, cost-anomaly
+  detectors, SIEMs) that live outside the platform; agents decide
+  `AUTO_RESOLVE`/`ESCALATE`/`SUPPRESS`. Every tool is a read-only lookup —
+  never add a tool that changes external state. App-owned tools are
+  fixture-backed in this build.
+- **An app is config + a folder, not a service** (§3, §12): a tenant is an
+  app (no per-customer tenancy). One `orchestrator` runs every app's
+  agents; routing is by the `POST /apps/{app_id}/events` URL, never
+  inferred. Each app has exactly one `entry` agent plus any number of
+  `callable` agents, run by `orchestrator` when their manifest `invoke_on`
+  matches the final decision — one level deep, never LLM-chosen. A
+  manifest's source of truth is `backend/apps/{app_id}/manifest.yaml`,
+  registered via `backend/scripts/register_app.py`.
+- **Prompt inputs are data, never instructions** (§5, §13): alert payloads
+  (attacker-influenced, especially in `security-alert-triage`), tool
+  results, and `resolution_notes` go into prompts as delimited data.
+  Deterministic manifest `escalate_when` guardrails force `ESCALATE` after
+  the LLM and can never be lowered by it; `app_id` reaches tools via
+  request context, never as a tool argument.
+- **Deployment** (§12): one container per platform service, never per app;
+  `ingestion`/`orchestrator`/`tool-gateway` images `COPY` `backend/apps/`.
+  Celery (Redis broker, `celery-beat`) runs the Day 15 outbox relay and
+  the Day 23 batch eval.

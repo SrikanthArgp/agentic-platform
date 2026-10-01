@@ -10,11 +10,17 @@ reference. Section numbers point back to the source of truth.
 
 Diagram 4 uses a second app, `cost-anomaly-triage`, to make multi-app
 isolation visible. It's documented as a second worked example in
-`docs/ARCHITECTURE.md` §3, alongside `it-ops-triage` — but **no code for it
-exists in the repo**, and it isn't scheduled in `docs/plan.md` (which only
-tracks unnamed "apps #2-3" at Day 12/15). Treat both the §3 description and
-this diagram as illustrative of the multi-app model, not documentation of
-something already built.
+`docs/ARCHITECTURE.md` §3, alongside `it-ops-triage`. It's app #2 in
+`docs/plan.md` (first cut Day 13, finished Day 17), but **no code for it
+exists in the repo yet** — treat this diagram as the intended design, not
+documentation of something already built. App #3, `security-alert-triage`,
+follows the exact same sequence as diagram 1/2 with its own manifest and
+isn't drawn separately.
+
+All diagrams draw `ingestion → orchestrator` as a single Kafka hop. From
+Day 15 that hop physically goes through the Postgres `outbox` and a Celery
+relay (`ARCHITECTURE.md` §10) — same message, same consumer, up to ~1s
+added latency.
 
 ---
 
@@ -47,7 +53,7 @@ sequenceDiagram
     Orchestrator->>ToolGateway: tool-call (MCP, allowlisted tools only)
     ToolGateway-->>Orchestrator: tool-result
 
-    Note over Orchestrator: supervisor/confidence logic →<br/>decision = AUTO_RESOLVE or SUPPRESS
+    Note over Orchestrator: supervisor + escalate_when guardrails<br/>(none matched) → decision = AUTO_RESOLVE or SUPPRESS
 
     Orchestrator->>ReviewConsole: alert.decided (Kafka · RunAgentResponse)
     Note over ReviewConsole: decision ≠ ESCALATE →<br/>not persisted to `cases`, no analyst action
@@ -95,20 +101,22 @@ sequenceDiagram
     Orchestrator->>ToolGateway: tool-call (MCP, allowlisted tools only)
     ToolGateway-->>Orchestrator: tool-result
 
-    Note over Orchestrator: supervisor/confidence logic →<br/>decision leans ESCALATE
+    Note over Orchestrator: LLM → supervisor → escalate_when guardrails<br/>(any can raise to ESCALATE) → final decision = ESCALATE
 
+    Note over Orchestrator: callables with invoke_on ∋ ESCALATE →<br/>root-cause-summarizer (run in parallel if several)
     Orchestrator->>Orchestrator: RunAgent (gRPC, self-call · agent_id=root-cause-summarizer)
-    Orchestrator->>ToolGateway: tool-call, summarizer's own allowlist (MCP)
+    Orchestrator->>ToolGateway: tool-call, summarizer's allowlist:<br/>lookup_runbook, recent-changes-lookup (MCP)
     ToolGateway-->>Orchestrator: tool-result
-    Orchestrator->>Orchestrator: reasons[] (root-cause narrative) returned to triage-agent
-    Note over Orchestrator: triage-agent folds summarizer's reasons[]<br/>into its own, prefixed "root-cause-summarizer: ..."
+    Orchestrator->>Orchestrator: reasons[] (probable-cause narrative) returned
+    Note over Orchestrator: orchestrator folds summarizer's reasons[]<br/>into triage-agent's, prefixed "root-cause-summarizer: ..."
 
     Orchestrator->>ReviewConsole: alert.decided (Kafka · RunAgentResponse, decision=ESCALATE)
     Note over ReviewConsole: persists `cases` row (Postgres, app_id-scoped)
 
     Analyst->>ReviewConsole: GET case list/detail (REST)
     ReviewConsole-->>Analyst: case incl. reasons[] (explainability trace)
-    Analyst->>ReviewConsole: submit verdict (REST)
+    Analyst->>ReviewConsole: submit verdict + optional resolution_notes (REST)
+    Note over ReviewConsole: resolution_notes stored on the case only —<br/>later surfaced via similar-past-case-lookup
 
     ReviewConsole->>MemoryStore: verdict.recorded (Kafka · {app_id, case_id, alert_key, verdict, verdict_by, recorded_at})
     MemoryStore->>MemoryStore: update Redis ctx + Postgres memory_history<br/>for that alert_key (closes feedback loop)
@@ -131,9 +139,10 @@ sequenceDiagram
 
 ## 3. Manifest edit — no redeploy, takes effect within one TTL window
 
-Demonstrates the "config, not code" promise: an operator disables a tool via
-`registry`, and the next alert for that app picks up the change without an
-`orchestrator` restart (§3: "this is what `plan.md` Day 5's 'no code change
+Demonstrates the "config, not code" promise: an operator removes a tool
+from an agent's allowlist in the app's checked-in `manifest.yaml` and runs
+`register_app.py`, and the next alert for that app picks up the change
+without an `orchestrator` restart (§3: "this is what `plan.md` Day 5's 'no code change
 or redeploy' definition of done depends on").
 
 ```mermaid
@@ -143,8 +152,9 @@ sequenceDiagram
     participant Orchestrator as orchestrator
     participant ToolGateway as tool-gateway
 
-    Operator->>Registry: update App Manifest — remove tool from tool_allowlist (REST)
-    Registry->>Registry: persist to Postgres `apps.manifest` (jsonb)
+    Note over Operator: edit backend/apps/{app_id}/manifest.yaml<br/>(remove tool from tool_allowlist), commit
+    Operator->>Registry: register_app.py {app_id} → upsert App Manifest (REST)
+    Registry->>Registry: validate (tools, one entry agent, invoke_on)<br/>then persist to Postgres `apps.manifest` (jsonb)
     Registry-->>Operator: 200 OK
 
     Note over Orchestrator: in-memory manifest cache still holds<br/>the old manifest, TTL default 30s
@@ -160,7 +170,7 @@ sequenceDiagram
 
 | Step | Services | Message | Transport |
 |---|---|---|---|
-| 1 | operator → `registry` | manifest update | REST |
+| 1 | operator (`register_app.py`) → `registry` | manifest upsert | REST |
 | 2 | `registry` → Postgres | persist `apps.manifest` (jsonb) | internal (Postgres write) |
 | 3 | `orchestrator` → `registry` | manifest read, post-TTL-expiry | REST |
 | 4 | `orchestrator` → `tool-gateway` | tool-call (now minus the disabled tool) | MCP |
@@ -169,8 +179,8 @@ sequenceDiagram
 
 ## 4. Two apps, one shared core — isolation in practice
 
-*Illustrative — `cost-anomaly-triage` is invented for this diagram; only
-`it-ops-triage` actually exists in the repo.* Same `orchestrator`,
+*Planned — `cost-anomaly-triage` is app #2 in `docs/plan.md` (Day 13/17)
+but not built yet; only `it-ops-triage` exists in the repo so far.* Same `orchestrator`,
 `tool-gateway`, `memory-store` process handling both apps' alerts back to
 back, showing where the §3 isolation guarantee (`app_id`, `memory_namespace`,
 `tool_allowlist`) actually bites.
@@ -189,11 +199,11 @@ sequenceDiagram
     ClientA->>Ingestion: POST /apps/it-ops-triage/events (REST)
     Ingestion->>Orchestrator: alert.received (Kafka · app_id=it-ops-triage)
     Orchestrator->>Registry: resolve app_id=it-ops-triage → manifest (REST)
-    Registry-->>Orchestrator: Manifest A — agent: triage-agent<br/>tools: runbook-search, page-oncall<br/>memory_namespace="it-ops-triage:"
+    Registry-->>Orchestrator: Manifest A — agent: triage-agent<br/>tools: lookup_runbook, similar-past-case-lookup<br/>memory_namespace="it-ops-triage:"
     Orchestrator->>MemoryStore: GetContext (gRPC · app_id=it-ops-triage)
     Note over MemoryStore: key = ctx:it-ops-triage:{alert_key}:{window}
     MemoryStore-->>Orchestrator: GetContextResponse
-    Orchestrator->>ToolGateway: tool-call (MCP · allowlist = runbook-search, page-oncall)
+    Orchestrator->>ToolGateway: tool-call (MCP · allowlist = lookup_runbook, similar-past-case-lookup)
     ToolGateway-->>Orchestrator: tool-result
     Orchestrator->>ReviewConsole: alert.decided (Kafka · app_id=it-ops-triage)
     Note over ReviewConsole: `cases` row written with app_id=it-ops-triage
@@ -206,7 +216,7 @@ sequenceDiagram
     Note over MemoryStore: key = ctx:cost-anomaly-triage:{alert_key}:{window}<br/>— same alert_key as app A's request, never collides
     MemoryStore-->>Orchestrator: GetContextResponse
     Orchestrator->>ToolGateway: tool-call (MCP · allowlist = billing-lookup, similar-past-case-lookup)
-    Note over ToolGateway: cost-triage-agent cannot see or call<br/>runbook-search / page-oncall — app A's tools, not allowlisted here
+    Note over ToolGateway: cost-triage-agent cannot see or call<br/>lookup_runbook — app A's tool, not allowlisted here
     ToolGateway-->>Orchestrator: tool-result
     Orchestrator->>ReviewConsole: alert.decided (Kafka · app_id=cost-anomaly-triage)
     Note over ReviewConsole: `cases` row written with app_id=cost-anomaly-triage<br/>— every read filters by app_id, rows never cross apps
@@ -221,7 +231,8 @@ sequenceDiagram
 | 6 | `orchestrator` → `review-console` | `alert.decided` | Kafka | `cases` row carries `app_id`, filtered on every read |
 | 7–12 | same steps, client B, `app_id=cost-anomaly-triage` | — | — | identical mechanisms, disjoint values — same `alert_key` on both sides never collides |
 
-`similar-past-case-lookup` (from the §3 worked example, `scope: global`)
-would be available to both apps' allowlists if each manifest chose to
-include it — `billing-lookup` and `runbook-search`/`page-oncall` are
-`scope: app` and can never appear outside the manifest that declares them.
+`similar-past-case-lookup` (`scope: global`) is allowlisted by both apps
+— one implementation, but it filters by the calling agent's `app_id`, so
+each app only ever sees its own past cases. `billing-lookup` and
+`lookup_runbook` are `scope: app` and can never appear outside the
+manifest that declares them.

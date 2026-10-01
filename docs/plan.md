@@ -1,18 +1,33 @@
-# Build Plan: 4-Week / 20-Day Sequence
+# Build Plan: 5-Week / 25-Day Sequence
 
 Status: planning doc, pre-implementation beyond partial service skeletons. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
 
-Service map this plan assumes (see conversation / `docs/ARCHITECTURE.md` for full rationale): `ingestion`, `orchestrator`, `memory-store`, `review-console`, `registry`, `tool-gateway`, plus Celery workers. The platform is multi-app: 2-3 configurable use cases (products) run on the same shared core, each registered as an **App Manifest** in `registry` (introduced Day 5) rather than hardcoded. App #1 / reference domain adapter: IT ops alert triage (`ingestion` accepts alerts; `orchestrator`'s agent decides auto-resolve / escalate / suppress-as-noise). Apps #2-3 are registered Day 12 and stood up as real adapters Day 15. Agent-to-agent (A2A) communication between apps is explicitly out of scope — apps are isolated tenants sharing infrastructure (Kafka/gRPC/REST/MCP transports), not a mesh.
+Service map this plan assumes (see `docs/ARCHITECTURE.md` for full rationale): `ingestion`, `orchestrator`, `memory-store`, `review-console`, `registry`, `tool-gateway`, plus Celery workers. The platform is multi-app: three configurable use cases (products) run on the same shared core, each registered as an **App Manifest** in `registry` (introduced Day 5) rather than hardcoded. App #1 / reference domain adapter: IT ops alert triage (`it-ops-triage`; `ingestion` accepts alerts; `orchestrator`'s agent decides auto-resolve / escalate / suppress-as-noise). App #2 is **cloud cost-anomaly triage** (`cost-anomaly-triage`): a spend-spike alert from a cloud billing/cost tool. App #3 is **security alert triage** (`security-alert-triage`): SIEM/EDR alerts. All three use the same `AUTO_RESOLVE` / `ESCALATE` / `SUPPRESS` decision enum from `agent.proto` — apps that need a different decision vocabulary would require a proto change and are out of scope. App #2 gets a first cut on Day 13 and is finished Day 17; app #3 is built Day 18. Agent-to-agent (A2A) communication between apps is explicitly out of scope — apps are isolated tenants sharing infrastructure (Kafka/gRPC/REST/MCP transports), not a mesh. A "tenant" is an app; there is no per-customer tenancy in this build.
+
+Scope boundary for every day (`docs/ARCHITECTURE.md` §2, §11): the platform **triages** alerts that external systems already raised — it doesn't detect anomalies and doesn't remediate. Every tool is a read-only lookup backed by a fixture in this build; real data connectors are phase two (`docs/ENTERPRISE_READINESS.md`).
+
+**Shape of the five weeks**
+
+| Week | Days | Theme | Ends with |
+|---|---|---|---|
+| 1 | 1–5 | Agent fundamentals | One app, end to end, discovered via its manifest |
+| 2 | 6–10 | Context, guardrails, delegation, human feedback | Decisions shaped by memory, bounded by guardrails, reviewed by humans, improved by verdicts |
+| 3 | 11–15 | Integration + platform hardening | Resilient tools, app #2 first cut, budgets/rate limits, outbox relay |
+| 4 | 16–20 | Reliability + three apps | Exactly-once decisions under Kafka failure; three apps and the simulator running concurrently |
+| 5 | 21–25 | Observability, evals, load | Traces, cost dashboards, eval gate, load numbers, README |
+
+Buffer is built in on purpose: Day 11 and Day 20 are integration days with slack for whatever overran that week, and Day 25 morning is unscheduled. Don't fill them with new scope.
 
 ## Cross-cutting rules for every day
 
-- **Instrument as you build, not at the end.** Each service gets OpenTelemetry SDK + structured logging the day it's created, even before the collector/backends exist (logs to stdout, traces no-op'd). Day 16 wires the *pipeline*, not five services' instrumentation at once.
+- **Instrument as you build, not at the end.** Each service gets OpenTelemetry SDK + structured logging the day it's created, even before the collector/backends exist (logs to stdout, traces no-op'd). Day 21 wires the *pipeline*, not six services' instrumentation at once.
 - **Every day ends with something running in Docker Compose.** If a day's work isn't runnable via `docker compose up`, it isn't done.
 - **Proto contracts are written before the services that implement them** — they're the interface, not an afterthought.
 - **Unit tests are part of each day's work, not a separate pass.** Every day ends with a "Unit tests" step for the logic written that day; that day isn't done until those tests pass locally (`pytest`). Integration-style plumbing (gRPC/Kafka wiring) is covered by each day's "Definition of done" check — unit tests target the pure logic underneath (routing, scoring/threshold math, window aggregates, validation), which is what's easy to get subtly wrong and hard to catch by eyeballing a demo.
 - **Commit at the end of each day** with the system in a working state, so any day can be a checkpoint to roll back to.
 - **Platform core vs. domain adapter stays a live distinction, not just a doc section.** Anything specific to IT-ops (alert schema, runbook-lookup tool, the triage prompt) lives in a clearly separate module from platform code (registry, tool-gateway, orchestrator's agent-loop skeleton, memory-store's generic context API) — the whole point of this project is that a second (and third) domain can plug in without touching the platform core.
 - **App identity is explicit, everywhere.** Every event envelope, gRPC request, and persisted row that's app-specific carries an `app_id`. Nothing about routing to the right agent, tool set, or memory namespace is inferred — it's looked up from that app's App Manifest in `registry`.
+- **A changed decision gets an ADR.** If a day's work reverses or changes something in `docs/adr/`, write the new ADR that day, not later.
 
 ---
 
@@ -22,12 +37,14 @@ Service map this plan assumes (see conversation / `docs/ARCHITECTURE.md` for ful
 
 **Goal**: `docker compose up` brings up every piece of infrastructure the platform needs, and all 6 services register as empty-but-healthy.
 
-- Repo scaffold: `backend/services/{ingestion,orchestrator,memory-store,review-console,registry,tool-gateway}`, `backend/proto/`, `backend/local/`, `docs/`.
+- Repo scaffold: `backend/services/{ingestion,orchestrator,memory-store,review-console,registry,tool-gateway}`, `backend/proto/`, `backend/local/`, `docs/`. `tool-gateway` still needs its `pyproject.toml`, `Dockerfile`, and `app/main.py`.
 - `backend/local/docker-compose.yml`: Kafka (KRaft mode), Redis, **local Postgres** (not hosted — simpler for solo dev), OTel Collector, Loki, Mimir, Tempo, Grafana — all with health checks.
 - `backend/local/postgres/init.sql`: minimal `cases` and `memory_history` schemas.
-- Proto contracts: `memory_store.proto` (`GetContext`), `agent.proto` (`RunAgent`) in `backend/proto/`. Both carry an `app_id` field from day one, even though only one app exists yet — avoids a breaking-change rework when Day 5 introduces multi-app config. Generate Python stubs into `backend/shared/proto_gen/`, imported by both `orchestrator` and `memory-store`.
+- Proto contracts: `memory_store.proto` (`GetContext`), `agent.proto` (`RunAgent`) in `backend/proto/` — already written, including `app_id`, `payload`, and the verdict counts. Run `backend/scripts/gen_proto.sh` to generate Python stubs into `backend/shared/proto_gen/`, imported by both `orchestrator` and `memory-store`.
+- Generate and commit a `uv.lock` for every service and `backend/shared` — every Dockerfile runs `uv sync --frozen`, which fails without one.
 - Each of the 6 FastAPI services: skeleton app, `/healthz`, Dockerfile, OTel SDK wired to log to stdout (collector not yet consuming).
-- **Unit tests**: request/response schema validation for each service's skeleton endpoints; a test that generated proto stubs import cleanly and match `.proto` field names.
+- Deployment layout per `docs/ARCHITECTURE.md` §12: one container per service, never per app. Create `backend/apps/it-ops-triage/` (empty placeholder is fine) so the `ingestion`, `orchestrator`, and `tool-gateway` Dockerfiles can `COPY apps apps` from the `backend/` build context starting today; the other three services don't copy it. Compose bind-mounts `backend/apps` into those three for local iteration.
+- **Unit tests**: request/response schema validation for each service's skeleton endpoints; the existing `backend/shared` test that generated proto stubs import cleanly and match `.proto` field names (no longer skipped once stubs exist).
 
 **Definition of done**: `docker compose up` → all containers healthy, all 6 services respond `200` on `/healthz`, Grafana loads (empty dashboards okay), `pytest` passes across all service packages.
 
@@ -40,7 +57,8 @@ Service map this plan assumes (see conversation / `docs/ARCHITECTURE.md` for ful
 - Implement an MCP server in `tool-gateway` exposing `lookup_runbook(alert_type) -> RunbookEntry`.
 - Seed static/in-memory runbook data (JSON fixture) — no external dependency yet.
 - Tool schema (input/output) defined explicitly, not inferred — this schema is what `registry` will later store.
-- **Unit tests**: tool input schema validation, lookup logic (found / not-found cases).
+- `lookup_runbook` is IT-ops-specific, so it lives in `backend/apps/it-ops-triage/tools/`, not in `tool-gateway`'s own code. `tool-gateway` loads it via the startup scan described in `docs/ARCHITECTURE.md` §12 (import each `backend/apps/*/tools/` module by file path, register its tools by `tool_id`) — build that loader now rather than hardcoding the tool, so apps #2/#3 plug in the same way.
+- **Unit tests**: tool input schema validation, lookup logic (found / not-found cases), the loader (discovers tools from a fixture apps dir; an unknown `tool_id` returns an explicit not-found).
 
 **Definition of done**: a standalone MCP test client (or simple script) calls `tool-gateway` and gets a real runbook entry back for a seeded alert type, and a clear "not found" for an unseeded one.
 
@@ -50,10 +68,12 @@ Service map this plan assumes (see conversation / `docs/ARCHITECTURE.md` for ful
 
 **Goal**: an agent that receives an alert, calls a real tool via `tool-gateway`, and produces a decision with reasons.
 
-- LLM client integration (tool-use / function-calling format) inside `orchestrator`.
+- **Decide the LLM provider and model** for this build (and record it — an ADR if it's a real choice between providers).
+- LLM client integration (tool-use / function-calling format) inside `orchestrator`, behind a small provider-agnostic interface (messages, tool definitions, tool results, token usage) so the agent loop never calls a provider SDK directly — near-free now, and the basis for per-agent `model_ref` later (`docs/ENTERPRISE_READINESS.md` §3).
 - `RunAgent(Alert) -> AgentDecision` gRPC handler: builds tool definitions from `tool-gateway`, runs the tool-calling loop, returns `{decision, reasons[]}` — `reasons[]` is the explainability contract, same role as Sentinel's rule-names field, now populated by the agent's tool-call trace.
 - Kafka consumer on `alert.received` (no producer yet — test by hand-publishing).
-- **Unit tests**: decision-parsing logic, tool-call routing against a **mocked** `tool-gateway` client (no live LLM or network calls in unit tests — use fixture responses).
+- Prompt-injection baseline (`docs/ARCHITECTURE.md` §5, §13 T1/T2): the alert payload and every tool result go into the prompt as delimited, labelled data blocks; the system prompt states nothing inside them is an instruction. The run's `app_id`/`agent_id` travel in the MCP request context set by `orchestrator`, never as tool arguments — tool schemas don't expose them.
+- **Unit tests**: decision-parsing logic, tool-call routing against a **mocked** `tool-gateway` client (no live LLM or network calls in unit tests — use fixture responses), prompt assembly wraps payload/tool results in data blocks (including payload text that contains delimiter-like strings), tool calls carry `app_id` in context and never in arguments.
 
 **Definition of done**: hand-publish an `alert.received` event, observe `orchestrator` consume it, call `tool-gateway` for real, and produce an `alert.decided` event with a populated `reasons[]`.
 
@@ -65,9 +85,10 @@ Service map this plan assumes (see conversation / `docs/ARCHITECTURE.md` for ful
 
 - `ingestion`: `POST /alerts`, request validation, publish `alert.received` (envelope already carries `app_id`, hardcoded to `"it-ops-triage"` for now — generalized Day 5), return `202` with an alert ID immediately.
 - Wire the full chain: `ingestion` → Kafka → `orchestrator` → `tool-gateway` → Kafka `alert.decided`.
-- Temporary `GET /alerts/{id}` debug endpoint on `ingestion` (throwaway, superseded by `review-console` on Day 8) so results are observable before the review UI exists.
+- Partition key rule from the start (`docs/ARCHITECTURE.md` §8): every Kafka message is keyed `{app_id}:{alert_key}`, producers are idempotent, and topics are created with multiple partitions (e.g. 12) rather than the default 1. `orchestrator` processes one message at a time per key and commits offsets only after handling. (`alert_key` is built from the it-ops payload for now; Day 5 generalizes it via `alert_key_fields`.)
+- Temporary `GET /alerts/{id}` debug endpoint on `ingestion` (throwaway, superseded by `review-console` on Day 9) so results are observable before the review UI exists.
 - First rough latency read (not the real target yet — just a baseline).
-- **Unit tests**: `ingestion` request validation (malformed payloads rejected with clear `4xx` before anything touches Kafka), Kafka message (de)serialization round-trip.
+- **Unit tests**: `ingestion` request validation (malformed payloads rejected with clear `4xx` before anything touches Kafka), Kafka message (de)serialization round-trip, message key is `{app_id}:{alert_key}`.
 
 **Definition of done**: `curl -X POST /alerts` with a real payload results in an observable decision within the chain, with a first latency number recorded (even if rough).
 
@@ -75,25 +96,26 @@ Service map this plan assumes (see conversation / `docs/ARCHITECTURE.md` for ful
 
 ### Day 5 — `registry`: capability discovery goes live + App Manifest
 
-**Goal**: `orchestrator` discovers its tools from `registry` instead of a hardcoded list, and the platform gains a first-class **App** concept so 2-3 use cases can share the core without code changes.
+**Goal**: `orchestrator` discovers its tools from `registry` instead of a hardcoded list, and the platform gains a first-class **App** concept so multiple use cases (three in this build) can share the core without code changes.
 
-- `registry`: REST API to register/list agents and tools (name, version, description, input/output schema), plus a new **App Manifest** resource: `App { app_id, display_name, agents: [{agent_id, version, role: "entry"|"callable", prompt_ref, tool_allowlist[]}], tools: [{tool_id, version, scope: "app"|"global"}], event_schema_ref, memory_namespace }`.
-- Seed `registry` with one App Manifest (`app_id: "it-ops-triage"`) wrapping the one agent (`triage-agent`, role: `entry`) and the one tool (`lookup_runbook`) from Days 2–3.
-- `orchestrator` queries `registry` (startup or per-call, document the choice) by `app_id` to resolve the app's manifest, then filters tools by that app's `tool_allowlist` to build its tool-call definitions.
-- `ingestion` route becomes app-scoped: `POST /apps/{app_id}/events` (replaces Day 4's `POST /alerts`), resolves that app's manifest from `registry` to validate the payload against its `event_schema_ref`, and stops hardcoding `app_id: "it-ops-triage"` on the published `alert.received` envelope — this is the change Day 4 deferred, and what Day 15's "run 2-3 apps concurrently" depends on.
-- **Unit tests**: `registry` CRUD for both agents/tools and App Manifests, `orchestrator`'s discovery logic against a mocked `registry` client (including per-app tool filtering), `ingestion`'s per-app schema validation (a payload valid for one app's `event_schema_ref` rejected under a different `app_id`).
+- `registry`: REST API to register/list agents and tools (name, version, description, input/output schema), plus a new **App Manifest** resource: `App { app_id, display_name, agents: [{agent_id, version, role: "entry"|"callable", prompt_ref, tool_allowlist[], invoke_on[]}], tools: [{tool_id, version, scope: "app"|"global"}], event_schema_ref, alert_key_fields[], memory_namespace, escalate_when[] }`. Tool registrations carry `read_only: true` (`docs/ARCHITECTURE.md` §2, §13 T8).
+- Manifest source of truth is `backend/apps/it-ops-triage/manifest.yaml` (in git, next to the code it references), wrapping the one agent (`triage-agent`, role: `entry`) and the one tool (`lookup_runbook`) from Days 2–3. New `backend/scripts/register_app.py {app_id}` reads it and upserts it into `registry` (idempotent). This is how every app gets registered — see `docs/ARCHITECTURE.md` §12.
+- `registry` validates on register and rejects with a clear `4xx`: unknown `tool_id`/version, not exactly one `entry` agent, a `tool_allowlist` entry the manifest doesn't declare, `invoke_on` set on the entry agent, a callable agent with empty `invoke_on`, an `invoke_on` value that isn't a `Decision` enum value, empty `alert_key_fields`, an `escalate_when` rule on a `context.*` field that isn't in `GetContextResponse`, a tool registered without `read_only: true`. (`escalate_when` is used from Day 7 and `invoke_on` from Day 8; validating them now keeps the manifest shape stable.) (`prompt_ref`/`event_schema_ref` can't be checked here — they're files in other services' images; a missing one is an explicit per-app error at resolve time.)
+- `orchestrator` queries `registry` by `app_id` to resolve the app's manifest, cached in-memory with a 30s TTL (`docs/ARCHITECTURE.md` §3), then filters tools by that app's `tool_allowlist` to build its tool-call definitions. `tool-gateway` re-checks the allowlist on every call using the `app_id`/`agent_id` from the request context (defense in depth — a tool missing from the definitions still can't be called).
+- `ingestion` route becomes app-scoped: `POST /apps/{app_id}/events` (replaces Day 4's `POST /alerts`), resolves that app's manifest from `registry` (same 30s TTL cache as `orchestrator`, so the two never disagree for longer than one TTL) to validate the payload against its `event_schema_ref`, builds `alert_key` from the manifest's `alert_key_fields` (joined with `:`), puts the full validated event into `RunAgentRequest.payload` (`google.protobuf.Struct`, `docs/ARCHITECTURE.md` §5), and stops hardcoding `app_id: "it-ops-triage"` on the published `alert.received` envelope — this is the change Day 4 deferred, and what Day 20's "run all three apps concurrently" depends on.
+- **Unit tests**: `registry` CRUD for both agents/tools and App Manifests, `registry`'s manifest validation (each rejection case above), `register_app.py` idempotency (same file twice → no change), `orchestrator`'s discovery logic against a mocked `registry` client (including per-app tool filtering), `ingestion`'s per-app schema validation (a payload valid for one app's `event_schema_ref` rejected under a different `app_id`), `alert_key` construction from `alert_key_fields` (field order respected; a missing field → explicit `4xx`), payload round-trip into `RunAgentRequest.payload` and back (nested objects, arrays, numbers-as-doubles).
 
-**Definition of done**: changing a tool's entry in `registry` (e.g., disabling it) changes what `orchestrator` sees on its next fetch, without a code change or redeploy of `orchestrator`; a second, throwaway App Manifest in a test proves `orchestrator`'s tool set differs per `app_id`; `POST /apps/it-ops-triage/events` works end-to-end and a request against a made-up `app_id` with no manifest is rejected with a clear `4xx`.
+**Definition of done**: changing a tool's entry in `registry` (e.g., disabling it) changes what `orchestrator` sees on its next fetch, without a code change or redeploy of `orchestrator`; a second, throwaway App Manifest in a test proves `orchestrator`'s tool set differs per `app_id`; `POST /apps/it-ops-triage/events` works end-to-end and a request against a made-up `app_id` with no manifest is rejected with a clear `4xx`; `it-ops-triage` is registered by running `register_app.py` against its checked-in `manifest.yaml`, not by a hand-written REST call or SQL insert.
 
 ---
 
-## Week 2 — Orchestration + feedback loop
+## Week 2 — Context, guardrails, delegation, human feedback
 
 ### Day 6 — `memory-store`: real context, not a stub
 
 **Goal**: a working gRPC service serving real behavioral context out of Redis, backed durably by Postgres.
 
-- Redis schema: keys prefixed by `app_id`/`memory_namespace` (from the App Manifest), then per alert-source/type, recurrence counts and recent-alert aggregates over rolling windows (5m/1h/24h) — the alert-triage analogue of Sentinel's velocity aggregates. Namespacing by app now avoids a data migration when apps #2/#3 land Day 15.
+- Redis schema: keys prefixed by `app_id`/`memory_namespace` (from the App Manifest), then per alert-source/type, recurrence counts and recent-alert aggregates over rolling windows (1h/24h/7d, matching `GetContextResponse` in `memory_store.proto`) — decision counts now; the `confirmed_incident_count`/`confirmed_noise_count` fields exist from today but stay `0` until Day 10 feeds verdicts in — the alert-triage analogue of Sentinel's velocity aggregates. Namespacing by app now avoids a data migration when apps #2/#3 land.
 - Postgres `memory_history` table: durable snapshot on every update (rebuild-from-source-of-truth path), also keyed by `app_id`.
 - `GetContext` gRPC handler: takes `app_id` in the request, reads Redis, falls back to computing from Postgres on a cache miss and repopulates Redis.
 - `backend/scripts/seed.py`: populate Redis + Postgres with synthetic historical alerts.
@@ -103,61 +125,80 @@ Service map this plan assumes (see conversation / `docs/ARCHITECTURE.md` for ful
 
 ---
 
-### Day 7 — `orchestrator` uses context; supervisor logic; second agent (root-cause-summarizer)
+### Day 7 — `orchestrator` uses context; supervisor + guardrails
 
-**Goal**: agent decisions demonstrably change based on retrieved context, low-confidence cases get flagged for a human, and `it-ops-triage` gains a second, callable-only agent that deepens the explanation on escalated cases without changing the triage decision itself.
+**Goal**: agent decisions demonstrably change based on retrieved context, low-confidence cases get flagged for a human, and deterministic guardrails bound what the LLM can decide.
 
 - gRPC client from `orchestrator` to `memory-store` (connection reuse, not a channel per call).
-- Retrieved context (recurrence history, similar past alerts) feeds into the agent's reasoning — decide and document whether this is a direct gRPC call before the tool-calling loop or exposed as another callable tool.
-- Lightweight supervisor step: a confidence signal on the agent's decision; below a threshold, the decision is marked `ESCALATED` regardless of what the agent itself concluded.
-- Register a second agent in `it-ops-triage`'s App Manifest: `root-cause-summarizer` (role: `callable`), its own `prompt_ref` (write a deeper root-cause narrative, not a triage decision) and `tool_allowlist` (reuses `lookup_runbook`).
-- `orchestrator`'s `Agent.RunAgent` gRPC handler dispatches on `agent_id` (empty → entry agent, existing behavior unchanged). On `ESCALATE`, `triage-agent`'s loop calls `RunAgent` again with `agent_id: "root-cause-summarizer"`, gets back `reasons[]` holding the narrative (`decision` left `DECISION_UNSPECIFIED`), and folds those reasons — prefixed `"root-cause-summarizer: ..."` — into its own final `reasons[]` before publishing `alert.decided`. One direction only: the summarizer never calls back, and its own response is never published directly.
-- **Unit tests**: confidence-threshold routing (table-driven), mocked `memory-store` client, `agent_id` dispatch routing (empty → entry agent; explicit ID → that agent's handler), reason-folding logic (summarizer's `reasons[]` end up prefixed and appended, never dropped or double-published), delegation only fires on `ESCALATE` (not on `AUTO_RESOLVE`/`SUPPRESS`).
+- Retrieved context (recurrence history, verdict counts) feeds into the agent's reasoning — **decide and document** whether this is a direct gRPC call before the tool-calling loop or exposed as a tool (`docs/ARCHITECTURE.md` §6 notes this as open).
+- Lightweight supervisor step: a confidence signal on the agent's decision; below a threshold, the decision becomes `ESCALATE` regardless of what the agent itself concluded.
+- Guardrails step, right after the supervisor (`docs/ARCHITECTURE.md` §5 decision order, §13 T1/T3, ADR-0010): evaluate the manifest's `escalate_when` rules against `payload.*` and `context.*` (the `GetContext` response); any match forces `ESCALATE` with a reason naming the rule. Supervisor and guardrails can only move a decision *to* `ESCALATE`. `it-ops-triage` starts with `payload.severity in [critical]`.
+- Prompts treat the platform's own decision counts (`escalation_count`, `suppression_count`) as context, not evidence of noise; only analyst verdicts (`confirmed_noise_count`, Day 10) count as proof — this stops self-reinforcing suppression (§13 T3).
+- **Unit tests**: confidence-threshold routing (table-driven), mocked `memory-store` client, guardrail evaluation (table-driven: `payload.*` and `context.*` rules, match / no match / missing field → no match, a guardrail overrides an LLM `SUPPRESS`, a guardrail never changes an `ESCALATE`), decision order (LLM → supervisor → guardrails).
 
-**Definition of done**: the same alert type produces a different decision depending on seeded `memory-store` context (e.g., recurring/known-noise → auto-resolve, novel → escalate); an `ESCALATE`d alert's final `reasons[]` includes at least one `root-cause-summarizer`-prefixed entry; exactly one `alert.decided` event is published per alert regardless of the delegation call.
+**Definition of done**: the same alert type produces a different decision depending on seeded `memory-store` context (e.g., recurring/known-noise → auto-resolve, novel → escalate); a `critical` it-ops alert is `ESCALATE`d even when the LLM's own answer (forced via a fixture) was `SUPPRESS`, with the guardrail named in `reasons[]`.
 
 ---
 
-### Day 8 — `review-console`: human-in-the-loop
+### Day 8 — Second agent: `root-cause-summarizer` + `invoke_on` delegation
+
+**Goal**: `it-ops-triage` gains a second, callable-only agent that deepens the explanation on escalated cases without changing the triage decision itself — via a generic delegation mechanism, not a hardcoded call.
+
+- **Decide ADR-0012** (in-process dispatch vs. gRPC self-call for callables) before writing the dispatcher; mark it Accepted or Rejected and update `docs/ARCHITECTURE.md` §5/§9 to match.
+- Register a second agent in `it-ops-triage`'s App Manifest: `root-cause-summarizer` (role: `callable`, `invoke_on: ["ESCALATE"]`), its own `prompt_ref` (write a deeper root-cause narrative, not a triage decision) and `tool_allowlist` (`lookup_runbook` + new `recent-changes-lookup`).
+- New app-owned tool `recent-changes-lookup(service_or_host, window_start, window_end) -> [{timestamp, type: deploy|config|infra, service, author, summary, ref}]` in `backend/apps/it-ops-triage/tools/`, backed by a static JSON fixture (same approach as Day 2's runbooks) — read-only, and shaped so a real deploy/change source (GitHub, ArgoCD, a CMDB) can replace the fixture later behind the same interface. Allowlisted for `root-cause-summarizer` only; `triage-agent` decides without it. The query window is derived from the alert's own timestamp (e.g., the 2h before it fired).
+- Summarizer prompt frames its output as a **probable cause** citing evidence — a change from `recent-changes-lookup` in the window, a runbook match — and says so explicitly when no recent change was found, rather than inventing one.
+- `orchestrator`'s `Agent.RunAgent` handler dispatches on `agent_id` (empty → entry agent, existing behavior unchanged).
+- Delegation is generic, driven by `invoke_on` (`docs/ARCHITECTURE.md` §3/§5), not hardcoded to `root-cause-summarizer`: after the entry agent's decision is final (after supervisor and guardrails, Day 7), `orchestrator` selects every callable in the manifest whose `invoke_on` contains that decision and runs them **in parallel** with `agent_id` set. Each returns `reasons[]` (`decision` left `DECISION_UNSPECIFIED`); `orchestrator` folds them — each prefixed with its `agent_id`, in manifest order — into the entry agent's final `reasons[]` before publishing `alert.decided`. Callables are never exposed to the entry agent as tools.
+- A callable that errors, times out (per-callable timeout), or is over budget doesn't block the decision: `alert.decided` still goes out, with a reason naming the callable that didn't contribute. One direction only: callables never call back or call each other, and their own responses are never published directly.
+- **Unit tests**: `agent_id` dispatch routing (empty → entry agent; explicit ID → that agent's handler), reason-folding logic (each callable's `reasons[]` end up prefixed and appended in manifest order, never dropped or double-published), `invoke_on` selection (table-driven: decision × manifests with zero / one / several matching callables — e.g., with `invoke_on: ["ESCALATE"]`, `AUTO_RESOLVE`/`SUPPRESS` trigger nothing), `invoke_on` keys off the *final* decision (agent says `AUTO_RESOLVE`, supervisor or a guardrail raises it to `ESCALATE` → summarizer runs), matching callables run concurrently (two fake callables with delays finish in ~max, not sum), a failing/timed-out callable still yields one `alert.decided` with a "didn't contribute" reason, `recent-changes-lookup` window filtering against its fixture (changes inside / outside / on the edge of the window, no changes found).
+
+**Definition of done**: an `ESCALATE`d alert's final `reasons[]` includes at least one `root-cause-summarizer`-prefixed entry — one that cites a specific fixture change when one exists in the window (e.g., "deploy of `checkout-svc` v2.3.1 20 min before the alert"), and states that no recent change was found when none does; exactly one `alert.decided` event is published per alert regardless of delegation.
+
+---
+
+### Day 9 — `review-console`: human-in-the-loop
 
 **Goal**: escalated alerts are reviewable, and analyst verdicts are recorded.
 
-- `review-console`: Kafka consumer on `alert.decided`, persists `ESCALATED` alerts into the `cases` table (auto-resolved/suppressed alerts are not persisted here — high volume, no human action needed). `cases` carries an `app_id` column from the start.
-- REST API: `GET /cases` (list, filterable by `app_id` among other fields), `GET /cases/{id}` (detail, including `reasons[]`/tool-call trace — this is where explainability becomes visible to a human), `POST /cases/{id}/verdict`.
-- On verdict submission: persist it, produce `verdict.recorded` to Kafka.
-- **Unit tests**: verdict state-machine (a case moves `OPEN` → `RESOLVED` exactly once; a verdict on an already-resolved case is rejected with a clear error), persistence filter logic (only `ESCALATED` alerts land in `cases`).
+- `review-console`: Kafka consumer on `alert.decided` (and producer of `verdict.recorded`, keyed `{app_id}:{alert_key}` like every topic — `docs/ARCHITECTURE.md` §8), persists `ESCALATE` decisions into the `cases` table (unique on `(app_id, alert_id)`) (auto-resolved/suppressed alerts are not persisted here — high volume, no human action needed). `cases` carries an `app_id` column from the start.
+- REST API: `GET /cases` (list, filterable by `app_id` among other fields), `GET /cases/{id}` (detail, including `reasons[]`/tool-call summary — this is where explainability becomes visible to a human), `POST /cases/{id}/verdict`. `GET /cases` also filters by `alert_key` (used by Day 13's `similar-past-case-lookup`).
+- Verdict body: `verdict` (confirmed incident / noise), `verdict_by`, and optional `resolution_notes` — free text on what was actually done to fix it (e.g., "rotated logs, raised disk alert threshold on host-42"). This is the only place the platform learns *how* an alert was resolved; `memory-store` only learns *whether* it was real (`docs/ARCHITECTURE.md` §6).
+- On verdict submission: persist it (including `resolution_notes`) on the `cases` row, produce `verdict.recorded` to Kafka. `resolution_notes` stays on the case, not in the Kafka event — `memory-store` consumes counts and flags, not text.
+- **Unit tests**: verdict state-machine (a case moves `OPEN` → `RESOLVED` exactly once; a verdict on an already-resolved case is rejected with a clear error), persistence filter logic (only `ESCALATE` decisions land in `cases`), verdict with and without `resolution_notes` both accepted.
 
 **Definition of done**: an escalated alert appears in `GET /cases` with its reasoning visible; submitting a verdict via `POST /cases/{id}/verdict` produces `verdict.recorded`.
 
 ---
 
-### Day 9 — Close the feedback loop
+### Day 10 — Close the feedback loop
 
 **Goal**: analyst verdicts measurably change future agent behavior.
 
-- Extend `memory-store`'s Kafka consumer to handle `verdict.recorded` — a confirmed-noise verdict should lower future escalation likelihood for that alert type/source; a confirmed-real-incident verdict should raise it.
+- Extend `memory-store`'s Kafka consumer to handle `verdict.recorded` — increment `confirmed_noise_count` or `confirmed_incident_count` in each window for that `alert_key` (and set `has_confirmed_incident_history` on an incident). That's the mechanism: a confirmed-noise verdict lowers future escalation likelihood for that alert key; a confirmed-real-incident verdict raises it. Update each app's prompt to use these fields explicitly.
 - Remove the Day 4 throwaway debug endpoint on `ingestion` now that `review-console` is the real read path.
-- **Unit tests**: verdict-driven adjustment logic against a mocked/in-memory Redis.
+- **Unit tests**: verdict-driven adjustment logic against a mocked/in-memory Redis (noise verdict → `confirmed_noise_count` up in all windows; incident verdict → `confirmed_incident_count` up and the all-time flag set; a verdict for app A never touches app B's key).
 
 **Definition of done**: re-querying `GetContext` for an alert type after a verdict shows a measurable change in the returned aggregates.
 
 ---
 
-### Day 10 — Week 2 integration pass
+## Week 3 — Integration + platform hardening
 
-**Goal**: the full loop works end to end, and drift from the week is caught.
+### Day 11 — Week 2 integration pass (+ buffer)
 
-- Manually walk one alert through the entire chain: `ingestion` → `orchestrator` (with `memory-store` context) → `review-console` → verdict → `memory-store` adjustment — observe each stage.
-- Fix any schema/contract drift introduced across Days 6–9 (a Day 6 test asserting on something Day 9 quietly changed, etc.).
+**Goal**: the full loop works end to end, and drift from Weeks 1–2 is caught. Any Week 2 overrun lands here.
+
+- Manually walk one alert through the entire chain: `ingestion` → `orchestrator` (with `memory-store` context, supervisor, guardrails, summarizer) → `review-console` → verdict → `memory-store` adjustment — observe each stage.
+- Fix any schema/contract drift introduced across Days 6–10 (a Day 6 test asserting on something Day 10 quietly changed, etc.).
+- Check `docs/ARCHITECTURE.md` §3/§5/§6 against the code so far; fix whichever is wrong.
 - **Unit tests**: full regression run across `ingestion`, `orchestrator`, `memory-store`, `review-console`, `registry`, `tool-gateway`.
 
 **Definition of done**: one alert can be traced through the entire feedback loop by hand, and `pytest` is green across every service touched so far.
 
 ---
 
-## Week 3 — Platform concerns
-
-### Day 11 — `tool-gateway`: resilience + sandboxing
+### Day 12 — `tool-gateway`: resilience + sandboxing
 
 **Goal**: a broken tool degrades the platform predictably instead of hanging or crashing it.
 
@@ -169,100 +210,168 @@ Service map this plan assumes (see conversation / `docs/ARCHITECTURE.md` for ful
 
 ---
 
-### Day 12 — `registry`: versioning + a second tool + second App Manifest
+### Day 13 — `registry`: versioning + a global tool + app #2 first cut
 
 **Goal**: adding a new tool, or a whole new app, requires no code change to `orchestrator`.
 
-- Add a `version` field to registered agents/tools; `orchestrator` resolves "latest" or a pinned version.
-- Register a second real tool (e.g., similar-past-incident lookup, backed by `memory-store`) under the existing `it-ops-triage` app.
-- Register a second **App Manifest** (`app_id` for whatever app #2 actually is — pick its real shape now) with its own agent, at least one tool, and event schema, proving the Day 5 App Manifest mechanism holds more than one app.
-- **Unit tests**: version resolution logic, `registry` rejects a malformed schema on register (both tool and App Manifest registration).
+- Version resolution for registered agents/tools (the `version` field exists since Day 5): `orchestrator` resolves "latest" or a pinned version.
+- Register a second real tool, `similar-past-case-lookup`, with `scope: "global"` — the first global tool, implemented in `tool-gateway`'s own package (platform code, not under any app). Backed by `review-console`'s `GET /cases` (REST, filtered by the caller's `app_id` and `alert_key`; no direct read of `review-console`'s table). The `app_id` comes from the MCP request context, never a tool argument, so injected text can't make it query another app (`docs/ARCHITECTURE.md` §13 T4). It returns recent resolved cases with their `decision`, `reasons[]`, `verdict`, and `resolution_notes`, so on a repeat incident the agent's `reasons[]` can say "last time this was fixed by …" — a *suggestion* for the analyst, never an action (`docs/ARCHITECTURE.md` §2). `resolution_notes` is analyst-written free text passed into an LLM prompt: the tool returns it as clearly delimited data, and the prompt treats it as reference material, not instructions. Add it to `it-ops-triage`'s `triage-agent` `tool_allowlist`.
+- Register app #2, **`cost-anomaly-triage`** (see `docs/ARCHITECTURE.md` §3), as a minimal first cut under `backend/apps/cost-anomaly-triage/`:
+  - `manifest.yaml`: one agent, `cost-triage-agent` (role: `entry`), allowlisting `billing-lookup` and the global `similar-past-case-lookup`; `alert_key_fields: [service, region]`.
+  - Event schema: a spend-spike alert (`account`, `service`, `region`, `tags`, `window_start`/`window_end`, `baseline_cost`, `observed_cost`).
+  - App-owned tool `billing-lookup(service, region, window) -> cost breakdown by resource/tag`, backed by a static JSON fixture (same no-external-dependency approach as Day 2's runbook data).
+  - Prompt: decide `AUTO_RESOLVE` / `ESCALATE` / `SUPPRESS` on the spike.
+  - Rollout per `docs/ARCHITECTURE.md` §12: rebuild `ingestion`/`orchestrator`/`tool-gateway` with the new app dir, then `register_app.py cost-anomaly-triage`.
+- **Unit tests**: version resolution logic, `registry` rejects a malformed schema on register (both tool and App Manifest registration), `billing-lookup` against its fixture, `cost-anomaly-triage` event-schema validation, `similar-past-case-lookup` never returns another app's cases (including when the LLM-supplied arguments try to name another app) and includes `resolution_notes` when present.
 
-**Definition of done**: the new tool is available to `orchestrator` purely by registering it in `registry` — no `orchestrator` code change, just a restart/refresh of its discovery call; an event tagged with app #2's `app_id` routes to app #2's agent/tools/memory-namespace, not app #1's.
+**Definition of done**: the new tool is available to `orchestrator` purely by registering it in `registry` — no `orchestrator` code change, just a restart/refresh of its discovery call; an event posted to `POST /apps/cost-anomaly-triage/events` routes to `cost-triage-agent` with `billing-lookup` + `similar-past-case-lookup` and the `cost-anomaly-triage` memory namespace, never to `it-ops-triage`'s agent, tools, or memory; `triage-agent` cannot see `billing-lookup`.
 
 ---
 
-### Day 13 — Rate & cost governance
+### Day 14 — Rate & cost governance
 
 **Goal**: the platform has a visible, enforced budget instead of unlimited LLM/tool spend.
 
-- Per-agent token/cost budget tracking (Redis counter), reject or queue new runs when a budget is exceeded.
-- Basic per-alert-source rate limiting on `ingestion`.
-- **Unit tests**: budget counter increment/reset logic, rejection behavior when over budget.
+- Per-`app_id`/`agent_id` token/cost budget tracking (Redis `budget:{app_id}:{agent_id}:{date}`, `docs/ARCHITECTURE.md` §8/§10). Over budget → the run is **rejected** with an explicit reason, never queued: an over-budget entry agent publishes `alert.decided` as `ESCALATE` with "not evaluated: budget exceeded" (so a human still sees the alert); an over-budget callable just doesn't contribute (Day 8).
+- Rate limiting on `ingestion`, per `app_id` and per alert source within an app (Redis counters), returning `429` with `Retry-After` — so one app's flood can't starve the others even when each source is under its own limit.
+- **Unit tests**: budget counter increment/reset logic, over-budget entry run → `ESCALATE` with the budget reason, over-budget callable → "didn't contribute" reason, rate-limit counters per app and per source, `429` when either limit is hit.
 
-**Definition of done**: artificially lower a budget and observe `orchestrator` refuse new agent runs with a clear, explicit reason — not a silent failure or a hang.
-
----
-
-### Day 14 — Reliability: outbox + DLQ on `ingestion`
-
-**Goal**: no alert is silently lost if Kafka is briefly unavailable.
-
-- Adapt `ai_microservice_patterns/08_outbox_dead_letter_queue` into `ingestion`'s publish path: an outbox table + relay, with a DLQ for repeated publish failures.
-- **Unit tests**: outbox write-then-relay round trip, DLQ routing on a forced/injected failure.
-
-**Definition of done**: kill Kafka briefly during a burst of `POST /alerts`, restore it, and confirm every alert is eventually published (outbox drains) with induced failures landing in the DLQ rather than vanishing.
+**Definition of done**: artificially lower a budget and observe `orchestrator` reject new agent runs with a clear, explicit reason — not a silent failure, a queue, or a hang; flood one app past its rate limit and confirm the other app's events are still accepted.
 
 ---
 
-### Day 15 — Week 3 integration + stand up apps #2 and #3
+### Day 15 — Reliability, part 1: outbox + Celery relay
 
-**Goal**: the platform-core-vs-domain-adapter boundary is proven, not just asserted — by actually running 2-3 apps side by side.
+**Goal**: `ingestion` no longer publishes to Kafka directly — every accepted alert is durably recorded first and relayed in order.
+
+- Adapt `ai_microservice_patterns/08_outbox_dead_letter_queue` into `ingestion`'s publish path, per `docs/ARCHITECTURE.md` §10 and ADR-0008:
+  - `outbox` table in `init.sql` (§8 schema, including `kafka_key`). `POST /apps/{app_id}/events` now writes the validated event + trace headers there and returns `202` — no direct Kafka publish from `ingestion` anymore.
+  - Celery is the relay: add `celery-worker` and `celery-beat` to `docker-compose.yml` with **Redis as the broker** (its own DB index, §8). A beat-scheduled task every ~1s claims `PENDING` rows in `id` order with `FOR UPDATE SKIP LOCKED`, publishes each to `alert.received` keyed by its stored `kafka_key` (`{app_id}:{alert_key}`), marks `SENT`. A Redis lock keeps only one relay run active at a time, so a slow run can't overlap the next tick and reorder a key's messages.
+  - Prune `SENT` rows after a retention window (another small beat task).
+- **Unit tests**: outbox write-then-relay round trip, two concurrent relay workers never publish the same row twice, the relay lock prevents overlapping runs, rows for one key are published in `id` order with the stored key.
+
+**Definition of done**: alerts posted to both registered apps flow through outbox → relay → Kafka → decision exactly as before, with ordering per key preserved; note the added end-to-end latency from the relay interval.
+
+---
+
+## Week 4 — Reliability + three apps
+
+### Day 16 — Reliability, part 2: DLQ, dedupe, Kafka-outage test
+
+**Goal**: no alert is silently lost or decided twice when Kafka is briefly unavailable.
+
+- Kafka unreachable → outbox rows stay `PENDING`, no attempt counted. Message-specific failure → `attempts++`; at 5, mark `DEAD` and publish to the new `alert.received.dlq` topic.
+- At-least-once delivery means duplicates are possible: `orchestrator` dedupes on `alert_id` via a TTL'd Redis marker (`seen:{app_id}:{alert_id}`, shared across replicas), and `review-console` via the `cases` unique constraint (`docs/ARCHITECTURE.md` §8).
+- A small burst script (`backend/scripts/burst.py`, or a loop of hand-posted `POST /apps/{app_id}/events` calls) to drive the outage test — the full simulator comes Day 19 and will replace it.
+- **Unit tests**: Kafka-down keeps rows `PENDING` without burning attempts, DLQ routing after 5 injected message failures, `orchestrator`/`review-console` ignore a duplicate `alert_id`.
+
+**Definition of done**: kill Kafka briefly during a burst, restore it, and confirm every alert is eventually published (outbox drains) and decided exactly once; induced message failures land in `alert.received.dlq` rather than vanishing.
+
+---
+
+### Day 17 — Finish app #2 + platform-core review
+
+**Goal**: `cost-anomaly-triage` is a real adapter, and the platform-core-vs-adapter boundary is checked in code, not just asserted.
 
 - Review the codebase: confirm IT-ops-specific code (alert schema, runbook tool, triage prompt) is isolated from platform code (`registry`, `tool-gateway`, `orchestrator`'s agent-loop skeleton, `memory-store`'s generic context API); refactor any leakage found.
-- Build out app #2 (registered Day 12) and app #3 as real, minimal adapters: each gets its own module under `backend/apps/{app_id}/` (event schema, prompt, any app-specific tool), registered in `registry` as its own App Manifest — no changes to `orchestrator`, `memory-store`, `tool-gateway`, or `registry` code itself.
-- Run all 2-3 apps' events through the shared pipeline concurrently and confirm no cross-app leakage: app #2's and #3's memory context, tool access, and cases stay scoped to their own `app_id`.
-- **Unit tests**: full regression run across all registered apps.
+- Each app is a module under `backend/apps/{app_id}/` (manifest, event schema, prompts, any app-specific tool), registered via `register_app.py` — no changes to `orchestrator`, `memory-store`, `tool-gateway`, or `registry` code itself.
+- **App #2, `cost-anomaly-triage`** (first cut Day 13): finish it as a real adapter. Use `memory-store` context so a recurring known spike (e.g., a monthly batch job on the same `service:region`) is `SUPPRESS`ed instead of re-escalated every cycle. Seed fixture history that shows this. Add its guardrails (`escalate_when`, e.g. on a very large `observed_cost`/`baseline_cost` jump expressed as a payload field).
+- **Unit tests**: `cost-anomaly-triage` prompt assembly and guardrails, recurring-spike suppression against seeded history.
 
-**Definition of done**: `docs/ARCHITECTURE.md`'s platform-core-vs-adapter section is checked against the actual code and corrected if it drifted; 2-3 apps are simultaneously registered and each produces correctly-scoped decisions, memory context, and cases through the identical platform code path.
+**Definition of done**: a seeded monthly batch-job spike is `SUPPRESS`ed with a reason citing its history, while a novel spike on another `service:region` is `ESCALATE`d; the core-vs-adapter review finds no app-specific code in platform services (or fixes what it finds).
 
 ---
 
-## Week 4 — Observability & evals
+### Day 18 — App #3: `security-alert-triage`
 
-### Day 16 — Full OTel pipeline
+**Goal**: a third, unrelated domain runs on the same core — and the one where payload text is attacker-chosen.
+
+- Under `backend/apps/security-alert-triage/`:
+  - `manifest.yaml`: one agent, `security-triage-agent` (role: `entry`), allowlisting the app-owned `ioc-reputation-lookup` and the global `similar-past-case-lookup`; `alert_key_fields: [rule_id, host]`.
+  - Event schema: a SIEM/EDR alert (`rule_id`, `severity`, `host`, `src_ip`, `dst_ip`, `user`, `indicators[]` of IP/domain/file-hash).
+  - App-owned tool `ioc-reputation-lookup(indicator) -> {verdict: known-bad|known-benign|unknown, source}`, backed by a static JSON fixture — no live threat-intel API calls.
+  - Prompt: `ESCALATE` anything with a known-bad indicator or high severity, `SUPPRESS` recurring benign noise (e.g., an internal vulnerability scanner tripping the same rule, recognized via analyst-confirmed noise in `memory-store`), `AUTO_RESOLVE` only for known-benign indicators on low-severity rules.
+  - Guardrails (`escalate_when`): `payload.severity in [high, critical]` and `context.has_confirmed_incident_history in [true]` — security alerts are where payload text is attacker-chosen, so these are never left to the LLM alone (`docs/ARCHITECTURE.md` §13 T1/T3).
+  - Rollout per `docs/ARCHITECTURE.md` §12 (code first, then `register_app.py`).
+- **Unit tests**: `ioc-reputation-lookup` against its fixture, `security-alert-triage` event-schema validation, guardrails fire on high/critical severity and on confirmed-incident history.
+
+**Definition of done**: a known-bad-IOC alert is `ESCALATE`d citing the IOC verdict; a high-severity alert whose payload text urges suppression is still `ESCALATE`d with the guardrail named; standing up app #3 added no containers and no platform code.
+
+---
+
+### Day 19 — Alert simulator
+
+**Goal**: realistic, mixed, reproducible traffic for all three apps, standing in for the alert sources that live outside the platform.
+
+- `backend/scripts/simulate_alerts.py` posts schema-valid events to `POST /apps/{app_id}/events` for all three apps (real generators — monitoring tools, cost-anomaly detectors, SIEMs — are outside the platform, `docs/ARCHITECTURE.md` §2). Replaces Day 16's burst script.
+- Scenario mix per app, so every decision path is exercised: **repeats** (same `alert_key` at a steady cadence), **noise** (known-benign — scanner hits, monthly batch-job spikes), **real-looking incidents** (novel `alert_key`, high severity, known-bad IOC), **change-correlated incidents** (it-ops alerts timed just after a deploy in the `recent-changes-lookup` fixture, so `root-cause-summarizer` has something to find), and **adversarial** scenarios (`docs/ARCHITECTURE.md` §13): prompt-injection text in payload fields (command lines, usernames, file names, user agents) urging `SUPPRESS`, and memory poisoning (a long run of benign-looking alerts on one `alert_key`, then a real-looking attack on the same key).
+- Scenario definitions live with each app (`backend/apps/{app_id}/simulator/`), not in the script — the script stays app-agnostic and discovers apps the same way `tool-gateway` does (`docs/ARCHITECTURE.md` §12), so app #4 gets simulated traffic by adding a folder.
+- Knobs: `--apps`, `--rate` (events/sec per app), `--duration`, `--mix` (scenario weights), `--seed` (deterministic replay for demos and debugging), `--collide-keys` (reuse `alert_key` values across apps).
+- Every event is tagged with its scenario and expected decision (in a header, not the payload), so a run can report expected-vs-actual decisions per app — a cheap live sanity check, and the seed for Day 23's eval sets.
+- **Unit tests**: every simulator scenario produces an event that passes its app's event schema, same `--seed` → identical event sequence, scenario discovery from a fixture apps dir.
+
+**Definition of done**: one `simulate_alerts.py` run against all three apps produces a per-app expected-vs-actual report; adversarial scenarios that should escalate do.
+
+---
+
+### Day 20 — Three apps concurrently (+ buffer)
+
+**Goal**: the platform-core-vs-domain-adapter boundary is proven by running all three apps side by side under load. Any Week 4 overrun lands here.
+
+- Run all three apps' events through the shared pipeline concurrently, driven by `simulate_alerts.py` (security alerts at the highest rate), and confirm no cross-app leakage: memory context, tool access, cases, budgets, and rate limits stay scoped to each `app_id`. Include deliberately colliding `alert_key` values across apps (`--collide-keys`).
+- Check `docs/ARCHITECTURE.md` §3/§4/§12 against the code; fix whichever drifted.
+- **Unit tests**: full regression run across all three registered apps.
+
+**Definition of done**: `it-ops-triage`, `cost-anomaly-triage`, and `security-alert-triage` are simultaneously registered and each produces correctly-scoped decisions, memory context, and cases through the identical platform code path; each app's agent sees only its own app tools plus allowlisted global ones; standing up apps #2/#3 added no containers to `docker-compose.yml` — only an image rebuild of `ingestion`/`orchestrator`/`tool-gateway` plus manifest registration (`docs/ARCHITECTURE.md` §12).
+
+---
+
+## Week 5 — Observability, evals, load
+
+### Day 21 — Full OTel pipeline
 
 **Goal**: one alert's journey is visible as a single connected trace.
 
 - Point every service's OTel SDK at the real Collector (swap from stdout-only); Collector fans out to Tempo (traces), Mimir (metrics), Loki (logs).
-- Propagate trace context through Kafka message headers so a trace spans `ingestion` → `orchestrator` → `tool-gateway` (gRPC) → `review-console`/Celery as one connected trace.
-- Grafana dashboards: RED metrics per service, Kafka consumer-lag, one domain dashboard (decision distribution: auto-resolve/escalate/suppress).
+- Propagate trace context through Kafka message headers so a trace spans `ingestion` → Celery outbox relay → `orchestrator` → `tool-gateway` (MCP) / `memory-store` (gRPC) → `review-console` as one connected trace (the outbox row stores the trace headers, Day 15).
+- Grafana dashboards: RED metrics per service, Kafka consumer-lag, outbox backlog and DLQ count, and a domain dashboard broken out **per `app_id`** (decision distribution auto-resolve/escalate/suppress, guardrail hits, end-to-end latency, `429`s) — all apps share one `orchestrator`, so a noisy app has to be visible as such.
+- Scope: this stack observes the platform only — never alert sources or the systems they monitor (`docs/ARCHITECTURE.md` §7).
 - **Unit tests**: trace-context propagation round-trip (a trace ID injected into a Kafka header comes back unchanged on the consumer side).
 
 **Definition of done**: fire one alert through the full system and find it as a single connected span tree in Tempo, with correlated logs in Loki.
 
 ---
 
-### Day 17 — LLM-specific observability
+### Day 22 — LLM-specific observability
 
 **Goal**: cost and token spend are visible per agent call, not invisible.
 
 - Custom OTel span attributes on every LLM call: model, prompt tokens, completion tokens, cost estimate, tool-call count, latency.
-- Grafana dashboard: cost/token burn rate over time, tool-call volume by tool.
+- Grafana dashboard: cost/token burn rate over time and tool-call volume by tool, broken out per `app_id` and `agent_id` (the same keys Day 14's budgets use), plus budget consumption vs. limit.
 - **Unit tests**: span-attribute population logic against a mocked LLM response.
 
-**Definition of done**: the dashboard shows real token/cost numbers from a handful of live test alerts run through the system.
+**Definition of done**: the dashboard shows real token/cost numbers from a simulator run across all three apps.
 
 ---
 
-### Day 18 — Eval harness
+### Day 23 — Eval harness
 
 **Goal**: a prompt or logic regression is caught automatically, not by eyeballing a demo.
 
-- A small labeled fixture set (synthetic alerts with expected decisions) checked into the repo.
-- Eval script: run `orchestrator` against the fixtures, report accuracy/precision on escalate-vs-auto-resolve, flag regressions.
-- Wire as a Celery task (batch re-eval trigger), mirroring Sentinel's batch re-scoring shape.
-- **Unit tests**: the eval scoring logic itself (given known predictions vs. labels, correct metrics computed).
+- A small labeled fixture set per app (synthetic alerts with expected decisions — reuse Day 19's simulator scenarios as the starting point) checked into `backend/apps/{app_id}/`, including an **adversarial set** per app (§13 T1–T3: injection in payload, injection in `resolution_notes`, memory poisoning).
+- Eval script: run `orchestrator` against the fixtures, report per-app accuracy plus precision/recall per decision (`AUTO_RESOLVE` / `ESCALATE` / `SUPPRESS`) — missed escalations are the costliest error, so report `ESCALATE` recall explicitly — and flag regressions. Adversarial cases are a hard gate, not an average: any injected or poisoned case that ends `SUPPRESS`/`AUTO_RESOLVE` when it should escalate fails the run.
+- Wire as a Celery task (batch re-eval trigger), mirroring Sentinel's batch re-scoring shape — scheduled nightly by the `celery-beat` added Day 15, and runnable on demand.
+- **Unit tests**: the eval scoring logic itself (given known predictions vs. labels, correct metrics computed), the adversarial hard gate fails on a single miss.
 
-**Definition of done**: the eval script reports a baseline accuracy number locally; deliberately regressing the prompt/logic causes the eval to catch it.
+**Definition of done**: the eval script reports a baseline accuracy number per app locally; deliberately regressing the prompt/logic causes the eval to catch it.
 
 ---
 
-### Day 19 — Load & resilience
+### Day 24 — Load & resilience
 
 **Goal**: the platform's behavior under load and under failure is measured, not assumed.
 
-- Load test (k6/locust) against `POST /alerts` at a sustained rate; capture p50/p95/p99.
+- Load test at a sustained rate against `POST /apps/{app_id}/events` across all three apps, using `simulate_alerts.py` (Day 19) for realistic mixed traffic — either directly at higher `--rate`, or as the event generator inside a k6/locust harness. Capture p50/p95/p99 per `app_id`, not just overall, so one noisy app slowing the others is visible.
 - One deliberate failure scenario (kill `memory-store` or `tool-gateway` mid-load), observed through Grafana/Tempo — confirm `orchestrator` degrades predictably (e.g., escalate-by-default) rather than silently misbehaving.
 - **Unit tests**: none new — full regression suite run.
 
@@ -270,24 +379,32 @@ Service map this plan assumes (see conversation / `docs/ARCHITECTURE.md` for ful
 
 ---
 
-### Day 20 — Polish, docs, buffer
+### Day 25 — Polish, docs, buffer
 
 **Goal**: a stranger (or future-you) can pick this up from a clean checkout.
 
 - Fill in `CLAUDE.md`'s status section with real build/run/test commands.
-- README: what it is, how to run it (`docker compose up`, seed script, example `curl`), link to `docs/ARCHITECTURE.md`.
-- Buffer time for whichever day ran over — treat Day 20 morning as unscheduled slack, not additional scope.
+- README: what it is, how to run it (`docker compose up`, seed script, `register_app.py`, `simulate_alerts.py` for a live demo, example `curl`), links to `docs/ARCHITECTURE.md`, `docs/adr/`, and `docs/ENTERPRISE_READINESS.md`.
+- Record the measured numbers (eval accuracy and `ESCALATE` recall per app, p95 latency per app, cost per 1,000 alerts per app) in the README.
+- Buffer time for whichever day ran over — treat Day 25 morning as unscheduled slack, not additional scope.
 - **Unit tests**: no new logic — full suite across all 6 services plus Celery as a single regression pass.
 
 **Definition of done**: documented load-test numbers against a stated target, one documented failure-mode behavior, a README that lets a stranger run the whole stack from a clean checkout, and a full `pytest` run passing green.
 
 ---
 
-## Explicitly out of scope for this 4-week build (phase-two candidates)
+## Explicitly out of scope for this 5-week build (phase-two candidates)
+
+Planned in order in `docs/ENTERPRISE_READINESS.md` §8.
 
 - Kubernetes manifests / Helm charts (Compose is the target for this build).
-- Agent-to-agent (A2A) communication *across apps* — apps registered via the App Manifest (Day 5) are isolated tenants sharing platform infrastructure (Kafka/gRPC/REST/MCP), not agents calling each other directly. A dedicated A2A protocol is validation work for later. (Within-app delegation from an entry agent to a callable-only agent, e.g. `triage-agent → root-cause-summarizer` on Day 7, is in scope — that's a fixed edge in one app's own manifest, not agent discovery.)
-- A dynamic/self-serve app-registration UI or workflow — apps #2-3 are registered by hand (Day 12, Day 15), not through a built admin flow.
+- Agent-to-agent (A2A) communication *across apps* — apps registered via the App Manifest (Day 5) are isolated tenants sharing platform infrastructure (Kafka/gRPC/REST/MCP), not agents calling each other directly. A dedicated A2A protocol is validation work for later. (Within-app delegation from an entry agent to a callable-only agent, e.g. `triage-agent → root-cause-summarizer` on Day 8, is in scope — that's a fixed edge in one app's own manifest, not agent discovery.)
+- A dynamic/self-serve app-registration UI or workflow — apps #2-3 are registered by hand with `register_app.py` (Day 13, Day 18), not through a built admin flow.
+- Automated remediation — agents and tools are read-only; `AUTO_RESOLVE` closes the alert, not the problem (`docs/ARCHITECTURE.md` §2, §11).
+- Anomaly detection — alerts are raised by external systems; the platform only triages them.
+- Real data connectors and a per-app credentials model — every app-owned tool reads a fixture in this build.
+- Per-customer (org) tenancy — a tenant is an app.
+- Callable → callable agent calls, or LLM-chosen delegation (`invoke_on` decides, Day 8).
 - A real trained classifier replacing/augmenting the agent's reasoning.
-- Auth/authz on the analyst (`review-console`) API.
+- Security controls that gate real data (`docs/ARCHITECTURE.md` §13 phase-two items): authentication on `ingestion` (per-source credentials bound to an `app_id`) and on the analyst (`review-console`) API, mTLS between services and Kafka ACLs, process isolation for app-owned tools, redaction of sensitive fields before prompts and traces. Acceptable to skip only because this build runs locally on synthetic data.
 - A frontend (this build stays API + Grafana only).

@@ -12,14 +12,22 @@ message GetContextRequest {
   // Scopes lookup to this app's memory_namespace (see ARCHITECTURE.md §3) —
   // the same alert_key in two different apps must never collide.
   string app_id = 1;
-  string alert_key = 2; // e.g. "<source>:<host>:<alert_type>"
+  // Built per app from the manifest's alert_key_fields, e.g.
+  // "service:region" (cost-anomaly-triage). See agent.proto RunAgentRequest.
+  string alert_key = 2;
 }
 
-// Alert-count/outcome stats over a single rolling window.
+// Alert-count/outcome stats over a single rolling window. The first three
+// count the platform's own decisions; the confirmed_* counts are analyst
+// verdicts fed back from review-console's verdict.recorded events — what
+// lets a confirmed-noise verdict lower future escalation and a
+// confirmed-incident verdict raise it (plan.md Day 10).
 message ContextAggregate {
   uint32 alert_count = 1;
   uint32 escalation_count = 2;
   uint32 suppression_count = 3;
+  uint32 confirmed_incident_count = 4;
+  uint32 confirmed_noise_count = 5;
 }
 
 message GetContextResponse {
@@ -33,7 +41,9 @@ message GetContextResponse {
   // True if this exact alert_key has never been seen before.
   bool is_novel_alert = 6;
 
-  // True if a confirmed-incident verdict has been recorded for this
-  // alert_key (fed back from review-console's verdict.recorded events).
+  // True if a confirmed-incident verdict has ever been recorded for this
+  // alert_key, regardless of window (fed back from review-console's
+  // verdict.recorded events). Kept alongside the windowed counts because
+  // one real incident long ago should still argue against SUPPRESS.
   bool has_confirmed_incident_history = 7;
 }
