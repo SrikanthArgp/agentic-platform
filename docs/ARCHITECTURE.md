@@ -461,8 +461,9 @@ action (§2).
 ## 7. Observability & tracing
 
 Every service ships OpenTelemetry SDK from the day it's created (logs to
-stdout until Day 23 wires the real Collector — Tempo/Mimir/Loki via
-Grafana). Trace context propagates through Kafka message headers, so one
+stdout until Day 23 points the services at the Collector — Tempo/Mimir/Loki
+via Grafana). The Collector and its backends run in Compose from Day 1;
+only the service-side export is deferred. Trace context propagates through Kafka message headers, so one
 event's journey (`ingestion → orchestrator → tool-gateway/memory-store →
 review-console`) is a single connected span tree, not five disjoint traces.
 

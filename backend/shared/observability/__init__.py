@@ -1,8 +1,8 @@
 """OTel SDK + structured logging setup, shared by every service.
 
 Day 1: logs go to stdout as JSON; traces are created against a TracerProvider
-with no exporter attached (spans are simply dropped). Week 4 swaps in the
-real OTLP exporter pointed at the Collector — nothing above this module's
+with no exporter attached (spans are simply dropped). Day 23 (Week 5) swaps
+in the real OTLP exporter pointed at the Collector — nothing above this module's
 `setup_observability()` / `get_tracer()` API should need to change then.
 """
 

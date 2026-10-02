@@ -238,8 +238,9 @@ publishes, drained by the Celery relay).
 ### OTel Collector
 Receives OTLP traces/logs/metrics from every service and fans out to the
 three backends below. Before Day 23 of `docs/plan.md`, services log JSON to
-stdout and create spans against a no-op-exported `TracerProvider` — this
-plane exists from Day 1 conceptually, but isn't actually wired until Day 23.
+stdout and create spans against a no-op-exported `TracerProvider`. The
+Collector and its three backends run in Compose from Day 1 (it accepts OTLP
+on `4317`/`4318`), but no service exports to it until Day 23.
 
 ### Tempo / Mimir / Loki
 Traces, metrics, and logs respectively — each queried through Grafana, not

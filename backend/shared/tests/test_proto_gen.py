@@ -3,8 +3,8 @@ their message fields must match the .proto source of truth field-for-field.
 Catches a stale `proto_gen/` (edited .proto, forgot to rerun gen_proto.sh)
 before any real handler code depends on the wrong shape.
 
-Skipped until `scripts/gen_proto.sh` has actually been run once (Week 1
-Day 1) — `proto_gen/` only contains the empty `__init__.py` until then.
+The stubs are committed, so this always runs; the importorskip guards
+below only matter if `proto_gen/` is ever emptied.
 """
 
 from __future__ import annotations

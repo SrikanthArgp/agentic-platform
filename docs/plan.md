@@ -1,6 +1,6 @@
 # Build Plan: 27-Day Sequence
 
-Status: planning doc, pre-implementation beyond partial service skeletons. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
+Status: Day 1 done (branch `day-1-foundation`); Day 2 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
 
 Service map this plan assumes (see `docs/ARCHITECTURE.md` for full rationale): `ingestion`, `orchestrator`, `memory-store`, `review-console`, `registry`, `tool-gateway`, plus Celery workers. The platform is multi-app: three configurable use cases (products) run on the same shared core, each registered as an **App Manifest** in `registry` (introduced Day 5) rather than hardcoded. App #1 / reference domain adapter: IT ops alert triage (`it-ops-triage`; `ingestion` accepts alerts; `orchestrator`'s agent decides auto-resolve / escalate / suppress-as-noise). App #2 is **cloud cost-anomaly triage** (`cost-anomaly-triage`): a spend-spike alert from a cloud billing/cost tool. App #3 is **security alert triage** (`security-alert-triage`): SIEM/EDR alerts. All three use the same `AUTO_RESOLVE` / `ESCALATE` / `SUPPRESS` decision enum from `agent.proto` — apps that need a different decision vocabulary would require a proto change and are out of scope. App #2 gets a first cut on Day 13 and is finished Day 17; a local Kubernetes cluster is stood up on Days 18–19 (ADR-0014), and app #3 is built Day 20 and shipped to it by rolling update. Agent-to-agent (A2A) communication between apps is explicitly out of scope — apps are isolated tenants sharing infrastructure (Kafka/gRPC/REST/MCP transports), not a mesh. A "tenant" is an app; there is no per-customer tenancy in this build.
 
@@ -34,20 +34,26 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 ## Week 1 — Agent fundamentals
 
-### Day 1 — Foundation: infra, contracts, skeletons
+### Day 1 — Foundation: infra, contracts, skeletons ✅
 
 **Goal**: `docker compose up` brings up every piece of infrastructure the platform needs, and all 6 services register as empty-but-healthy.
 
-- Repo scaffold: `backend/services/{ingestion,orchestrator,memory-store,review-console,registry,tool-gateway}`, `backend/proto/`, `backend/local/`, `docs/`. `tool-gateway` still needs its `pyproject.toml`, `Dockerfile`, and `app/main.py`.
+- Repo scaffold: `backend/services/{ingestion,orchestrator,memory-store,review-console,registry,tool-gateway}`, `backend/proto/`, `backend/local/`, `docs/`.
 - `backend/local/docker-compose.yml`: Kafka (KRaft mode), Redis, **local Postgres** (not hosted — simpler for solo dev), OTel Collector, Loki, Mimir, Tempo, Grafana — all with health checks.
 - `backend/local/postgres/init.sql`: minimal `cases` and `memory_history` schemas.
-- Proto contracts: `memory_store.proto` (`GetContext`), `agent.proto` (`RunAgent`) in `backend/proto/` — already written, including `app_id`, `payload`, and the verdict counts. Run `backend/scripts/gen_proto.sh` to generate Python stubs into `backend/shared/proto_gen/`, imported by both `orchestrator` and `memory-store`.
+- Proto contracts: `memory_store.proto` (`GetContext`), `agent.proto` (`RunAgent`) in `backend/proto/` — already written, including `app_id`, `payload`, and the verdict counts. Run `backend/scripts/gen_proto.sh` to generate Python stubs into `backend/shared/proto_gen/`, imported by both `orchestrator` and `memory-store`. The stubs are committed (images `COPY shared` as-is); rerun the script after any `.proto` edit.
 - Generate and commit a `uv.lock` for every service and `backend/shared` — every Dockerfile runs `uv sync --frozen`, which fails without one.
 - Each of the 6 FastAPI services: skeleton app, `/healthz`, Dockerfile, OTel SDK wired to log to stdout (collector not yet consuming).
 - Deployment layout per `docs/ARCHITECTURE.md` §12: one container per service, never per app. Create `backend/apps/it-ops-triage/` (empty placeholder is fine) so the `ingestion`, `orchestrator`, and `tool-gateway` Dockerfiles can `COPY apps apps` from the `backend/` build context starting today; the other three services don't copy it. Compose bind-mounts `backend/apps` into those three for local iteration.
 - **Unit tests**: request/response schema validation for each service's skeleton endpoints; the existing `backend/shared` test that generated proto stubs import cleanly and match `.proto` field names (no longer skipped once stubs exist).
 
 **Definition of done**: `docker compose up` → all containers healthy, all 6 services respond `200` on `/healthz`, Grafana loads (empty dashboards okay), `pytest` passes across all service packages.
+
+**As built** (notes for later days):
+- Host ports: services `8001`–`8006` (ingestion, orchestrator, tool-gateway, memory-store, registry, review-console), Grafana `3000` (anonymous admin), Postgres `5432` (`platform`/`platform`), Redis `6379`, Kafka `localhost:29092` from the host / `kafka:9092` in Compose, Collector OTLP `4317` (gRPC) / `4318` (HTTP).
+- The upstream OTel Collector and Mimir images are distroless, so `backend/local/{otel-collector,mimir}/Dockerfile` re-home their binaries onto busybox to get `wget` for health checks.
+- Service Dockerfiles set `UV_NO_SYNC=1`; without it `uv run` re-syncs at container start and installs the dev group that `uv sync --no-dev` left out.
+- Services get no `OTEL_EXPORTER_OTLP_ENDPOINT` yet: FastAPI ≥0.142 auto-attaches OTLP exporters whenever it's set (see Day 23).
 
 ---
 
@@ -365,7 +371,7 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 **Goal**: one alert's journey is visible as a single connected trace.
 
-- Point every service's OTel SDK at the real Collector (swap from stdout-only); Collector fans out to Tempo (traces), Mimir (metrics), Loki (logs). Deploy the same stack to the kind cluster (Day 18 left only a no-op Collector there) and add a rollout panel: per-app `202` rate and tool-error rate during a `rollout_app.sh` run.
+- Point every service's OTel SDK at the real Collector (swap from stdout-only); Collector fans out to Tempo (traces), Mimir (metrics), Loki (logs). The Collector → backends half already runs from Day 1; only the service side is new. Mind FastAPI ≥0.142's automatic telemetry: setting `OTEL_EXPORTER_OTLP_ENDPOINT` makes it attach its own OTLP/HTTP (`http/protobuf`, Collector port `4318`) exporters. Either rely on that or pass `telemetry={'auto_configure': False}` to `FastAPI()` and configure exporters in `setup_observability()` — not both, or spans export twice. Deploy the same stack to the kind cluster (Day 18 left only a no-op Collector there) and add a rollout panel: per-app `202` rate and tool-error rate during a `rollout_app.sh` run.
 - Propagate trace context through Kafka message headers so a trace spans `ingestion` → Celery outbox relay → `orchestrator` → `tool-gateway` (MCP) / `memory-store` (gRPC) → `review-console` as one connected trace (the outbox row stores the trace headers, Day 15).
 - Grafana dashboards: RED metrics per service, Kafka consumer-lag, outbox backlog and DLQ count, and a domain dashboard broken out **per `app_id`** (decision distribution auto-resolve/escalate/suppress, guardrail hits, end-to-end latency, `429`s) — all apps share one `orchestrator`, so a noisy app has to be visible as such.
 - Scope: this stack observes the platform only — never alert sources or the systems they monitor (`docs/ARCHITECTURE.md` §7).
