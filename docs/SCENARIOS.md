@@ -112,8 +112,16 @@ produces per `app_id`:
 | Business question | Platform metric | Where it comes from |
 |---|---|---|
 | Are we missing real problems? | `ESCALATE` recall, including the adversarial set | Eval harness (Day 25) |
-| How much noise did we remove? | Share of alerts `SUPPRESS`ed / `AUTO_RESOLVE`d that analysts confirmed as correct | Verdicts in `review-console` (Days 9–10) |
+| How much noise did we remove? | Share of alerts `SUPPRESS`ed / `AUTO_RESOLVE`d, and how often that was correct on labeled data | Decision distribution per app (Day 23 dashboards); correctness from the eval harness (Day 25) only |
 | Does it get better with feedback? | Precision/recall before vs. after verdicts on replayed traffic | Simulator replay (Day 21) + eval harness |
 | What does it cost? | Cost per 1,000 alerts | LLM observability (Day 24) |
 | Is it fast enough? | p95 time from `202` to `alert.decided` | Load test (Day 26) |
 | Can we add a use case safely? | Interruptions to existing apps during a new app's rollout | Rollout check (Days 19–20) |
+
+**Known gap**: `review-console` only receives `ESCALATE` decisions
+(`BLOCK_DIAGRAM.md`), so analysts never review an `AUTO_RESOLVE`d or
+`SUPPRESS`ed alert. In the live system, nobody finds out when one of those
+was wrong; their accuracy is measured only against the synthetic eval set.
+The candidate fix is audit sampling: send a small random share of
+non-escalated decisions per app to `review-console` as low-priority audit
+cases. It isn't designed yet and needs an ADR before Days 9–10 if adopted.
