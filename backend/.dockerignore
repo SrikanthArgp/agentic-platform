@@ -1,0 +1,7 @@
+# Build context is backend/. Keep host virtualenvs and caches out of images —
+# a macOS .venv copied into a Linux image breaks `uv sync`.
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+local

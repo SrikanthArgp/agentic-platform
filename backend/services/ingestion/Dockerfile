@@ -3,12 +3,15 @@
 FROM python:3.12-slim
 COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /uvx /bin/
 
-ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy PYTHONUNBUFFERED=1
+# UV_NO_SYNC: `uv run` must not re-sync at start (it would install the dev
+# group that `uv sync --no-dev` deliberately left out).
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy PYTHONUNBUFFERED=1 UV_NO_SYNC=1
 
 # Preserve the same relative layout as the repo (services/ingestion/../../shared)
 # so the path dependency in pyproject.toml resolves identically in and out of Docker.
 WORKDIR /repo/backend
 COPY shared shared
+COPY apps apps
 COPY services/ingestion services/ingestion
 
 WORKDIR /repo/backend/services/ingestion

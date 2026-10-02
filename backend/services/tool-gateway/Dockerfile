@@ -7,12 +7,14 @@ COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /uvx /bin/
 # group that `uv sync --no-dev` deliberately left out).
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy PYTHONUNBUFFERED=1 UV_NO_SYNC=1
 
+# Preserve the same relative layout as the repo (services/tool-gateway/../../shared)
+# so the path dependency in pyproject.toml resolves identically in and out of Docker.
 WORKDIR /repo/backend
 COPY shared shared
 COPY apps apps
-COPY services/orchestrator services/orchestrator
+COPY services/tool-gateway services/tool-gateway
 
-WORKDIR /repo/backend/services/orchestrator
+WORKDIR /repo/backend/services/tool-gateway
 RUN uv sync --frozen --no-dev
 
 EXPOSE 8000

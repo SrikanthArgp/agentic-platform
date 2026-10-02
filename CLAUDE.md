@@ -27,30 +27,25 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Pre-implementation, mid-way through Day 1 of `docs/plan.md`. Nothing is
-runnable end-to-end yet:
+Day 1 of `docs/plan.md` is done (infra, contracts, skeletons); Day 2
+(`tool-gateway`'s first MCP tool) is next.
 
-- `ingestion`, `orchestrator`, `memory-store`, `registry`, `review-console`
-  each have a FastAPI skeleton (`app/main.py`, `/healthz` only), a
-  `pyproject.toml`, a `Dockerfile`, and one passing health-check test.
-  Package subdirectories (`app/api`, `app/kafka`, `app/grpc`, etc.) exist
-  as empty `__init__.py` stubs, matching the layout described below, but
-  contain no logic yet.
-- `tool-gateway` is further behind: only empty `__init__.py` stubs under
-  `app/core`, `app/grpc`, `app/mcp` — no `main.py`, `pyproject.toml`, or
-  `Dockerfile` yet.
-- `backend/proto/agent.proto` and `memory_store.proto` are written
-  (including the `app_id` field the multi-app model requires), but
-  `backend/scripts/gen_proto.sh` has not been run — `backend/shared/proto_gen/`
-  is still an empty package, and `backend/shared/tests/test_proto_gen.py`
-  self-skips until it has been.
-- No `backend/local/docker-compose.yml` and no
-  `backend/local/postgres/init.sql` yet — both are Day 1 scope in
-  `docs/plan.md` and don't exist. `docker compose up` is not yet possible.
+- All 6 services have a FastAPI skeleton (`app/main.py`, `/healthz` only),
+  a `pyproject.toml`, a committed `uv.lock`, a `Dockerfile`, and passing
+  health-check tests. Package subdirectories (`app/api`, `app/kafka`,
+  `app/grpc`, etc.) are still empty `__init__.py` stubs.
+- `backend/local/docker-compose.yml` runs the full stack: Kafka (KRaft),
+  Redis, Postgres, OTel Collector, Loki, Mimir, Tempo, Grafana, and the 6
+  services — all with health checks. `backend/local/postgres/init.sql`
+  creates `cases` and `memory_history`.
+- Services log JSON to stdout and drop spans; nothing exports to the
+  collector until Day 23. Don't set `OTEL_EXPORTER_OTLP_ENDPOINT` on a
+  service before then — FastAPI >=0.142 auto-attaches OTLP exporters when
+  it's set.
+- Generated proto stubs in `backend/shared/proto_gen/` are committed; rerun
+  `backend/scripts/gen_proto.sh` after editing any `.proto`.
+- `backend/apps/it-ops-triage/` is an empty placeholder (README only).
 - `backend/scripts/seed.py` is a stub docstring, no implementation.
-- No `backend/apps/` directory yet (where app-specific adapters — event
-  schema, prompt, app-owned tools — are meant to live per
-  `docs/ARCHITECTURE.md` §3).
 
 ## Commands
 
@@ -60,15 +55,12 @@ and `backend/shared` is its own independent `uv` project, path-depending on
 inside each service's directory:
 
 ```bash
-cd backend/services/<service>   # ingestion | orchestrator | memory-store | registry | review-console
+cd backend/services/<service>   # ingestion | orchestrator | tool-gateway | memory-store | registry | review-console
 uv sync                          # install deps (incl. editable ap-shared)
 uv run pytest                    # run that service's tests
 uv run pytest tests/test_main.py::test_healthz_returns_200_with_expected_shape  # single test
 uv run uvicorn app.main:app --reload --port 8000   # run locally
 ```
-
-`tool-gateway` has no `pyproject.toml` yet, so none of the above works there
-until its Day 1 scaffolding lands (`docs/plan.md` Day 1).
 
 `backend/shared` (the `ap-shared` package: proto stubs + `observability`
 module) has its own tests:
@@ -88,9 +80,17 @@ backend/scripts/gen_proto.sh
 
 Python version is pinned to 3.12 (`backend/.python-version`).
 
-Once `docker-compose.yml` exists (Day 1), the platform-wide check is:
-`docker compose up` → all services `200` on `/healthz` → `pytest` green in
-every service directory.
+Platform-wide check (from `backend/local`):
+
+```bash
+docker compose up -d --build --wait   # all containers healthy
+# services on host ports 8001–8006 (ingestion, orchestrator, tool-gateway,
+# memory-store, registry, review-console); Grafana on :3000 (anonymous admin);
+# Postgres :5432 (platform/platform), Redis :6379, Kafka localhost:29092
+docker compose down -v                # reset volumes (re-runs init.sql)
+```
+
+then `pytest` green in every service directory.
 
 ## Architecture essentials
 

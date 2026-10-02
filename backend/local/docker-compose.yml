@@ -1,0 +1,224 @@
+# Local dev stack (docs/plan.md Day 1, docs/ARCHITECTURE.md §12).
+# One container per platform service, never per app. Run from backend/local:
+#
+#   docker compose up --build
+#
+# Credentials below are local-dev only.
+
+name: agentic-platform
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  environment:
+    POSTGRES_DSN: postgresql://platform:platform@postgres:5432/platform
+    REDIS_URL: redis://redis:6379/0
+    KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    # No OTEL_EXPORTER_OTLP_ENDPOINT until Day 23: FastAPI >=0.142 auto-attaches
+    # OTLP exporters when it's set, and Day 1 services must drop spans.
+
+services:
+  # ---------------------------------------------------------------- infra
+
+  kafka:
+    image: apache/kafka:3.9.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # PLAINTEXT for containers on the compose network, HOST for tools on
+      # the host machine (localhost:29092).
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    ports:
+      - "29092:29092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      start_period: 20s
+      retries: 10
+
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: platform
+      POSTGRES_DB: platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Runs only when the volume is empty; `docker compose down -v` to re-apply.
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform -d platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # -------------------------------------------------------- observability
+
+  otel-collector:
+    build: ./otel-collector
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    depends_on:
+      loki: { condition: service_healthy }
+      tempo: { condition: service_healthy }
+      mimir: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:13133/"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  loki:
+    image: grafana/loki:3.2.0
+    ports:
+      - "3100:3100"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:3100/ready"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 10
+
+  mimir:
+    build: ./mimir
+    volumes:
+      - ./mimir/mimir.yaml:/etc/mimir/mimir.yaml:ro
+      - mimir-data:/data
+    ports:
+      - "9009:9009"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9009/ready"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 10
+
+  tempo:
+    image: grafana/tempo:2.6.0
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    user: root
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:3200/ready"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 10
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      loki: { condition: service_healthy }
+      tempo: { condition: service_healthy }
+      mimir: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # ------------------------------------------------------------- platform
+  # Build context is backend/ so each image can COPY shared/ (and apps/ for
+  # the three services that read app code). Host ports 8001–8006.
+
+  ingestion:
+    <<: *service-defaults
+    build: { context: .., dockerfile: services/ingestion/Dockerfile }
+    ports: ["8001:8000"]
+    volumes:
+      # Local iteration only; the image copy is authoritative (§12).
+      - ../apps:/repo/backend/apps:ro
+    depends_on:
+      kafka: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  orchestrator:
+    <<: *service-defaults
+    build: { context: .., dockerfile: services/orchestrator/Dockerfile }
+    ports: ["8002:8000"]
+    volumes:
+      - ../apps:/repo/backend/apps:ro
+    depends_on:
+      kafka: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  tool-gateway:
+    <<: *service-defaults
+    build: { context: .., dockerfile: services/tool-gateway/Dockerfile }
+    ports: ["8003:8000"]
+    volumes:
+      - ../apps:/repo/backend/apps:ro
+
+  memory-store:
+    <<: *service-defaults
+    build: { context: .., dockerfile: services/memory-store/Dockerfile }
+    ports: ["8004:8000"]
+    depends_on:
+      kafka: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  registry:
+    <<: *service-defaults
+    build: { context: .., dockerfile: services/registry/Dockerfile }
+    ports: ["8005:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  review-console:
+    <<: *service-defaults
+    build: { context: .., dockerfile: services/review-console/Dockerfile }
+    ports: ["8006:8000"]
+    depends_on:
+      kafka: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+
+volumes:
+  kafka-data:
+  redis-data:
+  postgres-data:
+  mimir-data:
+  tempo-data:
+  grafana-data:
