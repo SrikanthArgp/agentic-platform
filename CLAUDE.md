@@ -27,13 +27,21 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Day 1 of `docs/plan.md` is done (infra, contracts, skeletons); Day 2
-(`tool-gateway`'s first MCP tool) is next.
+Days 1–2 of `docs/plan.md` are done (infra, contracts, skeletons;
+`tool-gateway`'s MCP server and first tool); Day 3 (`orchestrator` agent
+core with tool-calling) is next.
 
-- All 6 services have a FastAPI skeleton (`app/main.py`, `/healthz` only),
+- All 6 services have a FastAPI skeleton (`app/main.py`, `/healthz`),
   a `pyproject.toml`, a committed `uv.lock`, a `Dockerfile`, and passing
-  health-check tests. Package subdirectories (`app/api`, `app/kafka`,
-  `app/grpc`, etc.) are still empty `__init__.py` stubs.
+  health-check tests. Apart from `tool-gateway`, package subdirectories
+  (`app/api`, `app/kafka`, `app/grpc`, etc.) are still empty `__init__.py`
+  stubs.
+- `tool-gateway` serves MCP (stateless Streamable HTTP) at `POST /mcp`. At
+  startup it loads app tools from `backend/apps/*/tools/` (`app/core/loader.py`;
+  the `TOOLS` dict contract is in its docstring). Tool failures are
+  `is_error` results with a `tool_not_found`/`invalid_arguments`/`tool_failed`
+  code. `uv run backend/scripts/mcp_call.py [tool_id] [json-args]` calls it
+  from the host (`localhost:8003`). Day 2 as-built notes in `docs/plan.md`.
 - `backend/local/docker-compose.yml` runs the full stack: Kafka (KRaft),
   Redis, Postgres, OTel Collector, Loki, Mimir, Tempo, Grafana, and the 6
   services — all with health checks. `backend/local/postgres/init.sql`
@@ -44,7 +52,8 @@ Day 1 of `docs/plan.md` is done (infra, contracts, skeletons); Day 2
   it's set.
 - Generated proto stubs in `backend/shared/proto_gen/` are committed; rerun
   `backend/scripts/gen_proto.sh` after editing any `.proto`.
-- `backend/apps/it-ops-triage/` is an empty placeholder (README only).
+- `backend/apps/it-ops-triage/` has only `tools/` (`lookup_runbook` +
+  `runbooks.json` fixture); manifest, event schema, and prompt come later.
 - `backend/scripts/seed.py` is a stub docstring, no implementation.
 
 ## Commands

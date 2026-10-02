@@ -57,7 +57,7 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 ---
 
-### Day 2 — `tool-gateway`: first real MCP tool
+### Day 2 — `tool-gateway`: first real MCP tool ✅
 
 **Goal**: a working MCP server exposing one real tool, callable by anything that speaks MCP.
 
@@ -68,6 +68,16 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 - **Unit tests**: tool input schema validation, lookup logic (found / not-found cases), the loader (discovers tools from a fixture apps dir; an unknown `tool_id` returns an explicit not-found).
 
 **Definition of done**: a standalone MCP test client (or simple script) calls `tool-gateway` and gets a real runbook entry back for a seeded alert type, and a clear "not found" for an unseeded one.
+
+**As built** (notes for later days):
+- MCP SDK `mcp` 2.x (`>=2.2,<3`), low-level `Server`, so tools are registered from the loader with their declared schemas, never inferred from function signatures. Served as stateless Streamable HTTP with JSON responses at `POST /mcp` on the service port (`http://tool-gateway:8000/mcp` in Compose, `http://localhost:8003/mcp` from the host). Stateless means any replica serves any call.
+- App tool contract: each non-`_` module in `backend/apps/{app_id}/tools/` exports `TOOLS = {tool_id: {version, description, input_model, output_model, handler}}` (pydantic models, sync or async handler). App modules import no platform code. Any load problem (import error, bad `TOOLS`, duplicate `tool_id`) fails startup, naming the file.
+- Errors are tool results, not protocol errors: `is_error=True` with `structured_content.error` set to `tool_not_found`, `invalid_arguments`, or `tool_failed` (internals not leaked). A runbook that doesn't exist is a normal result (`found: false`), not an error. Day 3's MCP client should branch on `is_error` and these codes.
+- `tools/list` carries each tool's `version`, `scope`, `app_id` in `_meta` and `read_only_hint: true`. These are the fields Day 4's `registry` will want.
+- DNS-rebinding protection on `/mcp`: only Host headers in `MCP_ALLOWED_HOSTS` (default `localhost:*,127.0.0.1:*,tool-gateway:*`) are served; others get `421`. The kind cluster (Day 18) must add its Service DNS names.
+- `APPS_DIR` overrides where tools are scanned from (default `backend/apps`, same layout in the image).
+- `backend/scripts/mcp_call.py` is the standalone client (PEP 723 script, `uv run backend/scripts/mcp_call.py [tool_id] [json-args]`).
+- No allowlist or `app_id` request context yet; Days 3 and 13 (§13 T4).
 
 ---
 
