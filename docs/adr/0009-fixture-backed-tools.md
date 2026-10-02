@@ -25,7 +25,7 @@ none of which is designed yet (§13 T9).
 - **One real connector for `it-ops-triage`** (e.g. a Prometheus/Loki query
   plus deploy history) — would prove more real-world value than three
   apps on fixtures. Deferred because it pulls credentials and isolation
-  work into the 5-week build; it is the recommended first phase-two step.
+  work into the build; it is the recommended first phase-two step.
 - **Real connectors for all apps** — out of reach in the build window.
 
 ## Consequences

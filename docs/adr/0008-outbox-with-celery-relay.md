@@ -22,7 +22,7 @@ background jobs (the outbox relay, nightly evals).
   counted. Message-specific failure → after 5 attempts, `DEAD` and
   published to `alert.received.dlq`.
 - **Redis is the Celery broker** (own DB index); Celery also runs the
-  Day 23 batch eval.
+  Day 25 batch eval.
 
 ## Alternatives considered
 

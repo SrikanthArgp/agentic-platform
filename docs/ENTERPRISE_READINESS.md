@@ -168,7 +168,7 @@ general "fail toward escalation" rule.
 **Change control through evals**
 
 - Changing an agent's model or prompt must pass that app's eval set first
-  (`plan.md` Day 23), including the adversarial hard gate. The eval
+  (`plan.md` Day 25), including the adversarial hard gate. The eval
   harness runs per candidate `model_ref`, so model upgrades are compared
   on accuracy, `ESCALATE` recall, latency, and cost — not chosen by
   benchmark reputation.
@@ -184,7 +184,7 @@ general "fail toward escalation" rule.
 
 **Cost**
 
-- Day 22's spans already record model, tokens, and cost per call; with
+- Day 24's spans already record model, tokens, and cost per call; with
   `model_ref` per agent, cost per app and per agent becomes directly
   comparable across models.
 
@@ -299,7 +299,7 @@ That's the main reason to decide it early if customer tenancy is likely.
 
 | Area | Target |
 |---|---|
-| **Runtime** | Kubernetes (replacing Compose): one Deployment per service, HPA on `orchestrator` bounded by partition count (ADR-0002) |
+| **Runtime** | Production Kubernetes, building on the build's local kind setup (ADR-0014: Kustomize, rolling app rollouts, graceful drain): managed multi-node cluster, one Deployment per service, HPA on `orchestrator` bounded by partition count (ADR-0002), managed Kafka/Postgres/Redis |
 | **SLOs** | Per app: time from `202` to `alert.decided` (e.g. p95 < 30s), `ESCALATE` recall from evals, zero lost alerts (outbox backlog alarm) |
 | **Data durability** | Managed Postgres with backups/PITR; Kafka replication factor ≥ 3; Redis treated as rebuildable cache (already true for memory, §6) |
 | **Releases** | Prompt/model/guardrail changes ship via manifest PR + eval gate; service releases via canary on one app's traffic (dedicated deployment, §12) |
@@ -335,10 +335,10 @@ The order matters: each phase's prerequisites come from the one before.
 
 | Phase | Goal | Includes | Exit criteria |
 |---|---|---|---|
-| **0 — This build** | Prove the platform | Everything in `plan.md` (5 weeks) | Three apps, evals, threat model; synthetic data only |
+| **0 — This build** | Prove the platform | Everything in `plan.md` (27 days) | Three apps, evals, threat model; synthetic data only |
 | **1 — Safe for real data** | Close the §13 phase-two gate | Identity and roles, audit log, mTLS + Kafka ACLs, `prompt_fields` + redaction, retention jobs, model gateway | No real data before this exit: T6, T7, T10, T11, T12 closed |
 | **2 — First real app** | Real value on one app | Credentials + tool isolation (T9), real read-only connectors for `it-ops-triage`, inbound adapters, ITSM sync, kill switch | Measured noise reduction at an agreed `ESCALATE` recall, on real alerts, with analyst verdicts |
-| **3 — Scale out** | More apps and customers | `org_id` tenancy (if needed), per-app dedicated deployments, Kubernetes, SLOs and DR | Second real app onboarded via manifest + adapters only |
+| **3 — Scale out** | More apps and customers | `org_id` tenancy (if needed), per-app dedicated deployments, production Kubernetes, SLOs and DR | Second real app onboarded via manifest + adapters only |
 
 Remediation (ADR-0004) is deliberately absent from every phase: it would
 start only after phase 2 produces a verdict-measured accuracy record, as

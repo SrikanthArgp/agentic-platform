@@ -39,7 +39,7 @@ and how an alert finds its app.
 
 ## Consequences
 
-- ✅ A new app is a folder plus `register_app.py`; Days 17–20 prove it with
+- ✅ A new app is a folder plus `register_app.py`; Days 17–22 prove it with
   zero platform code changes.
 - ✅ Deterministic routing; isolation is testable (colliding-key tests).
 - ❌ No runtime isolation between apps: one app's flood shares

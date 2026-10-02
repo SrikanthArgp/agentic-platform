@@ -30,3 +30,5 @@ Rules:
 | [0010](0010-escalation-guardrails.md) | Deterministic `escalate_when` guardrails against prompt injection | Accepted |
 | [0011](0011-resolution-notes-on-cases.md) | Fixes recorded on cases (`resolution_notes`), not in memory | Accepted |
 | [0012](0012-callable-dispatch-in-process.md) | Run callable agents in-process instead of a gRPC self-call | Proposed |
+| [0013](0013-tool-gateway-hot-reload.md) | Hot-reload app-scoped tools in `tool-gateway` via explicit, atomic reload | Rejected (see 0014) |
+| [0014](0014-kubernetes-rolling-rollouts.md) | Local Kubernetes from app #3 on; new apps ship by rolling update | Accepted |

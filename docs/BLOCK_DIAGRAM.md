@@ -10,6 +10,10 @@ publishes on the alert path (including the Celery outbox relay, which
 carries every alert from Day 15); dashed arrows are telemetry
 (traces/logs/metrics) or supporting links (Celery's broker).
 
+**Deployment**: each block is one container (Compose) or one Deployment
+(the local kind cluster from `docs/plan.md` Day 18), shared by every app.
+Adding an app adds no blocks (`ARCHITECTURE.md` §12, ADR-0014).
+
 **Scope**: everything drawn here is the platform. Alert sources and the
 systems they monitor are outside it — they only appear as the external
 client posting events. The platform triages; it doesn't detect or
@@ -192,7 +196,7 @@ Scheduled background work, with Redis as the broker and `celery-beat` as
 the scheduler. Two jobs: the **outbox relay** (Days 15–16) — every ~1s,
 publishes pending `outbox` rows to `alert.received`, or to
 `alert.received.dlq` after repeated message-specific failures — and **batch
-re-evaluation** against the eval fixture set (Day 23), nightly and on
+re-evaluation** against the eval fixture set (Day 25), nightly and on
 demand. The relay is the one place Celery sits on the alert path: it adds
 up to one relay interval of latency per alert, in exchange for no alert
 being lost during a Kafka outage (`ARCHITECTURE.md` §10).
@@ -233,9 +237,9 @@ publishes, drained by the Celery relay).
 
 ### OTel Collector
 Receives OTLP traces/logs/metrics from every service and fans out to the
-three backends below. Before Day 21 of `docs/plan.md`, services log JSON to
+three backends below. Before Day 23 of `docs/plan.md`, services log JSON to
 stdout and create spans against a no-op-exported `TracerProvider` — this
-plane exists from Day 1 conceptually, but isn't actually wired until Day 21.
+plane exists from Day 1 conceptually, but isn't actually wired until Day 23.
 
 ### Tempo / Mimir / Loki
 Traces, metrics, and logs respectively — each queried through Grafana, not
@@ -244,6 +248,6 @@ directly.
 ### Grafana
 Dashboards: RED metrics per service, Kafka consumer lag, outbox backlog and
 DLQ count, decision distribution (auto-resolve/escalate/suppress) and
-latency per app, and — from Day 22 — LLM cost/token burn rate and tool-call
+latency per app, and — from Day 24 — LLM cost/token burn rate and tool-call
 volume per app and agent. For the platform's operators only; it never
 shows alert sources' or monitored systems' own telemetry.

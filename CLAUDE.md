@@ -17,7 +17,8 @@ system-of-record for the service map, transport choices, proto contracts,
 and the multi-app model, with section numbers referenced directly from code
 comments in `backend/proto/*.proto`. **Read `docs/adr/`** before changing or reversing a major decision — each
 ADR records why it was made and what was rejected; a changed decision gets
-a new ADR, not an edit. Security risks and required mitigations are in
+a new ADR, not an edit. Business scenarios (who would use each app, and where the platform
+doesn't fit) are in `docs/SCENARIOS.md`. Security risks and required mitigations are in
 `docs/ARCHITECTURE.md` §13; the phase-two path to an enterprise
 deployment is `docs/ENTERPRISE_READINESS.md`. **Read `docs/plan.md`** for the
 day-by-day build sequence and what each day's definition-of-done is — it's
@@ -119,7 +120,7 @@ every service directory.
 - **`ap-shared`** (`backend/shared`) is the one cross-service dependency:
   generated proto stubs (`proto_gen/`) and the `observability` module
   (`setup_observability()` — stdout JSON logging + a no-op-exported
-  `TracerProvider` for now; Week 5 (Day 21) of `docs/plan.md` points it at a real
+  `TracerProvider` for now; Week 5 (Day 23) of `docs/plan.md` points it at a real
   OTel Collector without changing that API).
 - **Explainability is a field, not a log line**: agent decisions carry
   `reasons[]`, populated from the actual tool-call trace — this is what
@@ -145,7 +146,11 @@ every service directory.
   Deterministic manifest `escalate_when` guardrails force `ESCALATE` after
   the LLM and can never be lowered by it; `app_id` reaches tools via
   request context, never as a tool argument.
-- **Deployment** (§12): one container per platform service, never per app;
+- **Deployment** (§12, ADR-0014): one container per platform service, never per app;
   `ingestion`/`orchestrator`/`tool-gateway` images `COPY` `backend/apps/`.
+  Compose for apps #1–#2 and the dev loop; from Day 18 a local kind
+  cluster (`backend/deploy/k8s/`, Kustomize) where app #3 onward ships by
+  rolling update (`rollout_app.sh`: roll the three services, wait, then
+  `register_app.py`).
   Celery (Redis broker, `celery-beat`) runs the Day 15 outbox relay and
-  the Day 23 batch eval.
+  the Day 25 batch eval.

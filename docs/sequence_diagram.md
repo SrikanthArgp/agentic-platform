@@ -1,6 +1,6 @@
 # Sequence diagrams
 
-Four representative runtime flows through the platform, drawn from
+Five representative flows through the platform, drawn from
 `docs/ARCHITECTURE.md` §3–§9. The first three aren't formally named "use
 cases" in that doc — they're the sequences that are actually distinct
 end-to-end (the fourth possible decision path, `SUPPRESS`, is
@@ -15,7 +15,8 @@ isolation visible. It's documented as a second worked example in
 exists in the repo yet** — treat this diagram as the intended design, not
 documentation of something already built. App #3, `security-alert-triage`,
 follows the exact same sequence as diagram 1/2 with its own manifest and
-isn't drawn separately.
+isn't drawn separately; diagram 5 shows how it's *shipped* (the first app
+rolled out on Kubernetes, `docs/plan.md` Day 20, ADR-0014).
 
 All diagrams draw `ingestion → orchestrator` as a single Kafka hop. From
 Day 15 that hop physically goes through the Postgres `outbox` and a Celery
@@ -236,3 +237,50 @@ sequenceDiagram
 each app only ever sees its own past cases. `billing-lookup` and
 `lookup_runbook` are `scope: app` and can never appear outside the
 manifest that declares them.
+
+---
+
+## 5. Adding an app on Kubernetes — rolling update, then registration
+
+*Planned — `docs/plan.md` Days 18–20, ADR-0014.* App #3 and every app
+after it ship this way. Code goes first, one pod at a time, while other
+apps keep being served. The manifest is registered only when every pod of
+all three services runs the new image, so the new app can't receive an
+event that an old pod can't handle (§12 rollout order, ADR-0006).
+
+```mermaid
+sequenceDiagram
+    participant Operator as operator (rollout_app.sh)
+    participant K8s as Kubernetes
+    participant Old as old pods<br/>(ingestion / orchestrator / tool-gateway)
+    participant New as new pods
+    participant Registry as registry
+    participant Client as alert source (app #3)
+
+    Operator->>K8s: kubectl set image (new git-SHA tag) ×3 Deployments
+    loop per pod, maxUnavailable 0 / maxSurge 1
+        K8s->>New: start pod
+        New-->>K8s: /readyz 200 (tool scan done / consumer joined / outbox reachable)
+        K8s->>Old: SIGTERM
+        Note over Old: /readyz → 503, leave endpoints,<br/>finish in-flight requests, MCP calls,<br/>current Kafka message; commit offset
+        Old-->>K8s: exit
+    end
+    Note over Old,New: apps #1/#2 served throughout —<br/>no non-202s, no tool-call failures
+    Operator->>K8s: kubectl rollout status ×3 (all complete)
+    Operator->>Registry: register_app.py {app_id} (REST)
+    Registry-->>Operator: 200 OK (validated)
+    Client->>New: POST /apps/{app_id}/events (accepted after the 30s manifest TTL at most)
+```
+
+| Step | Who | What | Transport |
+|---|---|---|---|
+| 1 | operator → Kubernetes | new image tag on `ingestion`, `orchestrator`, `tool-gateway` | `kubectl` |
+| 2 | Kubernetes ↔ pods | start new pod, wait for `/readyz`, drain and stop an old pod; repeat | HTTP probes, SIGTERM |
+| 3 | operator → Kubernetes | wait for all three rollouts to complete | `kubectl rollout status` |
+| 4 | operator → `registry` | register the new app's manifest | REST |
+| 5 | alert source → `ingestion` | first events for the new app | REST |
+
+Before step 4, `ingestion` rejects the new `app_id` (no registered
+manifest), so nothing for the new app is in flight while old and new pods
+coexist. A pod that fails `/readyz` stalls the rollout with old pods still
+serving; `kubectl rollout undo` reverts it.
