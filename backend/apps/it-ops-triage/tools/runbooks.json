@@ -1,0 +1,134 @@
+[
+  {
+    "runbook_id": "RB-001",
+    "alert_type": "disk_full",
+    "title": "Disk usage above threshold",
+    "description": "A filesystem on the host has crossed its usage threshold.",
+    "likely_causes": [
+      "Log rotation failed or is misconfigured",
+      "Temp or cache files not cleaned up",
+      "Genuine data growth"
+    ],
+    "diagnostic_checks": [
+      "Check which directories grew in the last 24h",
+      "Check whether log rotation ran on schedule"
+    ],
+    "suggested_action": "AUTO_RESOLVE",
+    "action_conditions": "Auto-resolve if usage dropped back below threshold within 15 minutes (transient spike). Escalate if usage is above 95% or still rising.",
+    "owner_team": "platform-infra",
+    "severity_hint": "medium"
+  },
+  {
+    "runbook_id": "RB-002",
+    "alert_type": "high_cpu",
+    "title": "Sustained high CPU utilisation",
+    "description": "CPU utilisation on the host has stayed above threshold for the alert window.",
+    "likely_causes": [
+      "Traffic spike",
+      "Runaway process or tight loop after a deploy",
+      "Scheduled batch job"
+    ],
+    "diagnostic_checks": [
+      "Check the top processes by CPU",
+      "Check whether a deploy or batch job started in the window"
+    ],
+    "suggested_action": "AUTO_RESOLVE",
+    "action_conditions": "Auto-resolve if it coincides with a known scheduled batch job or has already recovered. Escalate if above 95% for more than 30 minutes or latency SLOs are affected.",
+    "owner_team": "platform-infra",
+    "severity_hint": "medium"
+  },
+  {
+    "runbook_id": "RB-003",
+    "alert_type": "service_down",
+    "title": "Service health check failing",
+    "description": "The service's health endpoint is failing on all instances.",
+    "likely_causes": [
+      "Crash loop after a bad deploy",
+      "Dependency (database, cache, downstream API) unavailable",
+      "Expired credentials or certificate"
+    ],
+    "diagnostic_checks": [
+      "Check recent deploys for the service",
+      "Check the health of the service's dependencies"
+    ],
+    "suggested_action": "ESCALATE",
+    "action_conditions": "Always escalate; a full outage is never auto-resolved or suppressed.",
+    "owner_team": "service-owners",
+    "severity_hint": "critical"
+  },
+  {
+    "runbook_id": "RB-004",
+    "alert_type": "db_replication_lag",
+    "title": "Database replica lagging behind primary",
+    "description": "Replication lag on a database replica has exceeded its threshold.",
+    "likely_causes": [
+      "Long-running write transaction or bulk load on the primary",
+      "Replica under-provisioned for current write volume",
+      "Network degradation between primary and replica"
+    ],
+    "diagnostic_checks": [
+      "Check for long-running transactions on the primary",
+      "Check replica I/O and CPU saturation"
+    ],
+    "suggested_action": "ESCALATE",
+    "action_conditions": "Escalate; stale reads can corrupt downstream decisions. Lag that recovered within 5 minutes during a known bulk load may be noted as transient.",
+    "owner_team": "data-platform",
+    "severity_hint": "high"
+  },
+  {
+    "runbook_id": "RB-005",
+    "alert_type": "cert_expiring",
+    "title": "TLS certificate nearing expiry",
+    "description": "A TLS certificate is within its expiry warning window.",
+    "likely_causes": [
+      "Automated renewal failed",
+      "Certificate managed manually and not yet renewed"
+    ],
+    "diagnostic_checks": [
+      "Check days remaining until expiry",
+      "Check the renewal job's last run and result"
+    ],
+    "suggested_action": "ESCALATE",
+    "action_conditions": "Escalate if fewer than 7 days remain or renewal has failed. With 7 or more days remaining and renewal scheduled, auto-resolve.",
+    "owner_team": "security-engineering",
+    "severity_hint": "high"
+  },
+  {
+    "runbook_id": "RB-006",
+    "alert_type": "healthcheck_flap",
+    "title": "Health check flapping",
+    "description": "A health check is alternating between passing and failing without a sustained failure.",
+    "likely_causes": [
+      "Health check timeout set too tight",
+      "Brief network blips",
+      "Instance under GC or I/O pauses"
+    ],
+    "diagnostic_checks": [
+      "Check the flap frequency over the last hour",
+      "Check whether user-facing error rates moved"
+    ],
+    "suggested_action": "SUPPRESS",
+    "action_conditions": "Suppress if no user-facing error-rate change and the check never stayed failed for more than 2 minutes. Escalate if it turns into a sustained failure.",
+    "owner_team": "platform-infra",
+    "severity_hint": "low"
+  },
+  {
+    "runbook_id": "RB-007",
+    "alert_type": "memory_leak",
+    "title": "Memory usage growing without bound",
+    "description": "Process memory has grown steadily across the alert window without levelling off.",
+    "likely_causes": [
+      "Leak introduced in a recent deploy",
+      "Unbounded cache or queue",
+      "Traffic pattern change exposing an existing leak"
+    ],
+    "diagnostic_checks": [
+      "Check the memory growth slope against recent deploys",
+      "Check time remaining until the memory limit at the current rate"
+    ],
+    "suggested_action": "ESCALATE",
+    "action_conditions": "Escalate; the process will hit its memory limit and be killed. Restarts mask the leak rather than resolve it.",
+    "owner_team": "service-owners",
+    "severity_hint": "high"
+  }
+]
