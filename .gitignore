@@ -21,7 +21,6 @@ venv/
 .vscode/
 .idea/
 
-# Generated protobuf stubs (regenerated via backend/scripts/gen_proto.sh)
-backend/shared/proto_gen/*_pb2.py
-backend/shared/proto_gen/*_pb2.pyi
-backend/shared/proto_gen/*_pb2_grpc.py
+# Generated protobuf stubs in backend/shared/proto_gen/ are committed (images
+# COPY shared/ as-is). Rerun backend/scripts/gen_proto.sh after editing a
+# .proto; backend/shared/tests/test_proto_gen.py catches stale stubs.
