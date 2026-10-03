@@ -27,21 +27,33 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Days 1–2 of `docs/plan.md` are done (infra, contracts, skeletons;
-`tool-gateway`'s MCP server and first tool); Day 3 (`orchestrator` agent
-core with tool-calling) is next.
+Days 1–3 of `docs/plan.md` are done (infra, contracts, skeletons;
+`tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core);
+Day 4 (`ingestion` + end-to-end hot path) is next. As-built notes for each
+day are in `docs/plan.md`.
 
 - All 6 services have a FastAPI skeleton (`app/main.py`, `/healthz`),
   a `pyproject.toml`, a committed `uv.lock`, a `Dockerfile`, and passing
-  health-check tests. Apart from `tool-gateway`, package subdirectories
-  (`app/api`, `app/kafka`, `app/grpc`, etc.) are still empty `__init__.py`
+  health-check tests. `ingestion`, `memory-store`, `registry`, and
+  `review-console` package subdirectories are still empty `__init__.py`
   stubs.
 - `tool-gateway` serves MCP (stateless Streamable HTTP) at `POST /mcp`. At
   startup it loads app tools from `backend/apps/*/tools/` (`app/core/loader.py`;
   the `TOOLS` dict contract is in its docstring). Tool failures are
   `is_error` results with a `tool_not_found`/`invalid_arguments`/`tool_failed`
   code. `uv run backend/scripts/mcp_call.py [tool_id] [json-args]` calls it
-  from the host (`localhost:8003`). Day 2 as-built notes in `docs/plan.md`.
+  from the host (`localhost:8003`).
+- `orchestrator` consumes `alert.received`, runs the entry agent's
+  tool-calling loop (OpenAI, ADR-0015, behind `app/agent/llm.py`), and
+  publishes `alert.decided`; the same run is exposed as gRPC `RunAgent`
+  (`:50051`, host `:50052`). It reads the app manifest from
+  `backend/apps/{app_id}/manifest.yaml` until Day 5's `registry`. Needs
+  `OPENAI_API_KEY` in `backend/local/.env` (see `.env.example`).
+  `uv run backend/scripts/publish_alert.py` hand-publishes an alert and
+  prints the decision. Unit tests use a scripted fake LLM; none call the
+  real one.
+- Run context (`app_id`/`agent_id`/`alert_id`) travels in MCP `_meta` via
+  `ap-shared`'s `run_context` module, never as a tool argument.
 - `backend/local/docker-compose.yml` runs the full stack: Kafka (KRaft),
   Redis, Postgres, OTel Collector, Loki, Mimir, Tempo, Grafana, and the 6
   services — all with health checks. `backend/local/postgres/init.sql`
@@ -52,8 +64,9 @@ core with tool-calling) is next.
   it's set.
 - Generated proto stubs in `backend/shared/proto_gen/` are committed; rerun
   `backend/scripts/gen_proto.sh` after editing any `.proto`.
-- `backend/apps/it-ops-triage/` has only `tools/` (`lookup_runbook` +
-  `runbooks.json` fixture); manifest, event schema, and prompt come later.
+- `backend/apps/it-ops-triage/` has `tools/` (`lookup_runbook` +
+  `runbooks.json`), a partial `manifest.yaml` (agents, tools), and
+  `prompts/triage-agent.md`; event schema comes Day 5.
 - `backend/scripts/seed.py` is a stub docstring, no implementation.
 
 ## Commands

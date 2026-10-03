@@ -1,6 +1,6 @@
 # Build Plan: 27-Day Sequence
 
-Status: Day 1 done (branch `day-1-foundation`); Day 2 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
+Status: Days 1–3 done; Day 4 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
 
 Service map this plan assumes (see `docs/ARCHITECTURE.md` for full rationale): `ingestion`, `orchestrator`, `memory-store`, `review-console`, `registry`, `tool-gateway`, plus Celery workers. The platform is multi-app: three configurable use cases (products) run on the same shared core, each registered as an **App Manifest** in `registry` (introduced Day 5) rather than hardcoded. App #1 / reference domain adapter: IT ops alert triage (`it-ops-triage`; `ingestion` accepts alerts; `orchestrator`'s agent decides auto-resolve / escalate / suppress-as-noise). App #2 is **cloud cost-anomaly triage** (`cost-anomaly-triage`): a spend-spike alert from a cloud billing/cost tool. App #3 is **security alert triage** (`security-alert-triage`): SIEM/EDR alerts. All three use the same `AUTO_RESOLVE` / `ESCALATE` / `SUPPRESS` decision enum from `agent.proto` — apps that need a different decision vocabulary would require a proto change and are out of scope. App #2 gets a first cut on Day 13 and is finished Day 17; a local Kubernetes cluster is stood up on Days 18–19 (ADR-0014), and app #3 is built Day 20 and shipped to it by rolling update. Agent-to-agent (A2A) communication between apps is explicitly out of scope — apps are isolated tenants sharing infrastructure (Kafka/gRPC/REST/MCP transports), not a mesh. A "tenant" is an app; there is no per-customer tenancy in this build.
 
@@ -81,7 +81,7 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 ---
 
-### Day 3 — `orchestrator`: agent core with tool-calling
+### Day 3 — `orchestrator`: agent core with tool-calling ✅
 
 **Goal**: an agent that receives an alert, calls a real tool via `tool-gateway`, and produces a decision with reasons.
 
@@ -93,6 +93,19 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 - **Unit tests**: decision-parsing logic, tool-call routing against a **mocked** `tool-gateway` client (no live LLM or network calls in unit tests — use fixture responses), prompt assembly wraps payload/tool results in data blocks (including payload text that contains delimiter-like strings), tool calls carry `app_id` in context and never in arguments.
 
 **Definition of done**: hand-publish an `alert.received` event, observe `orchestrator` consume it, call `tool-gateway` for real, and produce an `alert.decided` event with a populated `reasons[]`.
+
+**As built** (notes for later days):
+- LLM: OpenAI, default `gpt-5.4-mini`, set by `LLM_MODEL` (ADR-0015). `app/agent/llm.py` is the provider-agnostic interface; `app/agent/openai_llm.py` is the only module importing `openai`. The key is `OPENAI_API_KEY` in the gitignored `backend/local/.env` (template: `.env.example`), passed by Compose to `orchestrator` only.
+- Interim manifest: `backend/apps/it-ops-triage/manifest.yaml` exists with `agents` and `tools` only, read from disk by `app/core/manifest.py` (`FileManifestStore`). Day 5 swaps that class for a `registry` client and adds the remaining fields; the `AppManifest` model ignores unknown fields. Prompt: `prompts/triage-agent.md` (the app part); the platform part (data-block rules, JSON answer format) is `PLATFORM_RULES` in `app/agent/prompt.py`.
+- Tools offered to the LLM: on the agent's `tool_allowlist` *and* global or owned by the run's app (`visible_tools`). A tool call outside that set is refused in `orchestrator` (`tool_not_allowed`) and never reaches `tool-gateway`.
+- Data blocks: `<<<DATA {nonce} kind=...>>>` … `<<<END DATA {nonce}>>>`, a random nonce per run, JSON-encoded content. The alert envelope *and* payload are inside the block, not just the payload.
+- Fail toward `ESCALATE`: an unparseable final answer, hitting `MAX_TOOL_ROUNDS` (default 5), or an infrastructure tool failure (`tool_failed`, `gateway_unreachable`) escalate with an `orchestrator: ` reason. A run that can't happen at all (LLM down, unknown app) still publishes `alert.decided` as `ESCALATE` with a `not evaluated: …` reason. Day 7's supervisor/guardrails add to this; they don't replace it.
+- Run context: the shared `run_context` module (`ap-shared`) puts `app_id`/`agent_id`/`alert_id` in MCP `_meta` under `agentic-platform/*` keys. `tool-gateway` reads and logs it; enforcement is Day 13.
+- Kafka: `app/kafka/alerts.py` consumes `alert.received` (group `orchestrator`, manual commit after publishing) and produces `alert.decided` keyed `{app_id}:{alert_key}` with an idempotent producer; it reconnects if Kafka is down. Topics are still auto-created with 1 partition, so `orchestrator` logs a few `Topic … not found` errors at first start; Day 4 creates them explicitly.
+- gRPC: `Agent.RunAgent` on port `50051` (host `50052`). Unknown app/agent → `NOT_FOUND`; other failures → `ESCALATE` "not evaluated", same as Kafka.
+- `backend/scripts/publish_alert.py` hand-publishes `alert.received` and waits for the matching `alert.decided` (stand-in for `ingestion` until Day 4).
+- First latency read (live, `gpt-5.4-mini`, one tool call): 3–5 s per decision, about 2.3k input / 150 output tokens.
+- Not yet: memory context and the supervisor/guardrails (Day 7), callable agents (Day 8; a callable run today still expects a decision), dedupe on `alert_id` (Day 16), traces exported (Day 23).
 
 ---
 
