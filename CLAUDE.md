@@ -27,16 +27,21 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Days 1–3 of `docs/plan.md` are done (infra, contracts, skeletons;
-`tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core);
-Day 4 (`ingestion` + end-to-end hot path) is next. As-built notes for each
+Days 1–4 of `docs/plan.md` are done (infra, contracts, skeletons;
+`tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core;
+`ingestion` and the end-to-end hot path); Day 5 (`registry` + App
+Manifest) is next. As-built notes for each
 day are in `docs/plan.md`.
 
 - All 6 services have a FastAPI skeleton (`app/main.py`, `/healthz`),
   a `pyproject.toml`, a committed `uv.lock`, a `Dockerfile`, and passing
-  health-check tests. `ingestion`, `memory-store`, `registry`, and
-  `review-console` package subdirectories are still empty `__init__.py`
-  stubs.
+  health-check tests. `memory-store`, `registry`, and `review-console`
+  package subdirectories are still empty `__init__.py` stubs.
+- `ingestion`: `POST /alerts` (envelope + `payload`) validates the payload
+  against the app's `event_schema.json`, builds `alert_key` from the
+  manifest's `alert_key_fields`, publishes `alert.received`, returns `202`.
+  `app_id` is fixed to `it-ops-triage` until Day 5. `GET /alerts/{id}` is a
+  throwaway debug view of the decision (until Day 9's `review-console`).
 - `tool-gateway` serves MCP (stateless Streamable HTTP) at `POST /mcp`. At
   startup it loads app tools from `backend/apps/*/tools/` (`app/core/loader.py`;
   the `TOOLS` dict contract is in its docstring). Tool failures are
@@ -49,15 +54,16 @@ day are in `docs/plan.md`.
   (`:50051`, host `:50052`). It reads the app manifest from
   `backend/apps/{app_id}/manifest.yaml` until Day 5's `registry`. Needs
   `OPENAI_API_KEY` in `backend/local/.env` (see `.env.example`).
-  `uv run backend/scripts/publish_alert.py` hand-publishes an alert and
-  prints the decision. Unit tests use a scripted fake LLM; none call the
+  `uv run backend/scripts/publish_alert.py` publishes straight to Kafka
+  (bypassing `ingestion`) and prints the decision. Unit tests use a scripted fake LLM; none call the
   real one.
 - Run context (`app_id`/`agent_id`/`alert_id`) travels in MCP `_meta` via
   `ap-shared`'s `run_context` module, never as a tool argument.
 - `backend/local/docker-compose.yml` runs the full stack: Kafka (KRaft),
   Redis, Postgres, OTel Collector, Loki, Mimir, Tempo, Grafana, and the 6
-  services — all with health checks. `backend/local/postgres/init.sql`
-  creates `cases` and `memory_history`.
+  services — all with health checks. The one-shot `kafka-init` service
+  creates the four topics with 12 partitions (broker auto-create is off).
+  `backend/local/postgres/init.sql` creates `cases` and `memory_history`.
 - Services log JSON to stdout and drop spans; nothing exports to the
   collector until Day 23. Don't set `OTEL_EXPORTER_OTLP_ENDPOINT` on a
   service before then — FastAPI >=0.142 auto-attaches OTLP exporters when
@@ -65,8 +71,9 @@ day are in `docs/plan.md`.
 - Generated proto stubs in `backend/shared/proto_gen/` are committed; rerun
   `backend/scripts/gen_proto.sh` after editing any `.proto`.
 - `backend/apps/it-ops-triage/` has `tools/` (`lookup_runbook` +
-  `runbooks.json`), a partial `manifest.yaml` (agents, tools), and
-  `prompts/triage-agent.md`; event schema comes Day 5.
+  `runbooks.json`), a partial `manifest.yaml` (agents, tools,
+  `event_schema_ref`, `alert_key_fields`), `event_schema.json`, and
+  `prompts/triage-agent.md`.
 - `backend/scripts/seed.py` is a stub docstring, no implementation.
 
 ## Commands
@@ -82,6 +89,7 @@ uv sync                          # install deps (incl. editable ap-shared)
 uv run pytest                    # run that service's tests
 uv run pytest tests/test_main.py::test_healthz_returns_200_with_expected_shape  # single test
 uv run uvicorn app.main:app --reload --port 8000   # run locally
+uv run pytest -m integration     # integration tests (orchestrator, ingestion): need the Compose stack up
 ```
 
 `backend/shared` (the `ap-shared` package: proto stubs + `observability`

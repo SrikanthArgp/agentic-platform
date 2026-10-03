@@ -1,6 +1,6 @@
 # Build Plan: 27-Day Sequence
 
-Status: Days 1–3 done; Day 4 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
+Status: Days 1–4 done; Day 5 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
 
 Service map this plan assumes (see `docs/ARCHITECTURE.md` for full rationale): `ingestion`, `orchestrator`, `memory-store`, `review-console`, `registry`, `tool-gateway`, plus Celery workers. The platform is multi-app: three configurable use cases (products) run on the same shared core, each registered as an **App Manifest** in `registry` (introduced Day 5) rather than hardcoded. App #1 / reference domain adapter: IT ops alert triage (`it-ops-triage`; `ingestion` accepts alerts; `orchestrator`'s agent decides auto-resolve / escalate / suppress-as-noise). App #2 is **cloud cost-anomaly triage** (`cost-anomaly-triage`): a spend-spike alert from a cloud billing/cost tool. App #3 is **security alert triage** (`security-alert-triage`): SIEM/EDR alerts. All three use the same `AUTO_RESOLVE` / `ESCALATE` / `SUPPRESS` decision enum from `agent.proto` — apps that need a different decision vocabulary would require a proto change and are out of scope. App #2 gets a first cut on Day 13 and is finished Day 17; a local Kubernetes cluster is stood up on Days 18–19 (ADR-0014), and app #3 is built Day 20 and shipped to it by rolling update. Agent-to-agent (A2A) communication between apps is explicitly out of scope — apps are isolated tenants sharing infrastructure (Kafka/gRPC/REST/MCP transports), not a mesh. A "tenant" is an app; there is no per-customer tenancy in this build.
 
@@ -109,7 +109,7 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 ---
 
-### Day 4 — `ingestion` + end-to-end hot path
+### Day 4 — `ingestion` + end-to-end hot path ✅
 
 **Goal**: a real HTTP request produces an agent decision, through the full pipeline.
 
@@ -121,6 +121,19 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 - **Unit tests**: `ingestion` request validation (malformed payloads rejected with clear `4xx` before anything touches Kafka), Kafka message (de)serialization round-trip, message key is `{app_id}:{alert_key}`.
 
 **Definition of done**: `curl -X POST /alerts` with a real payload results in an observable decision within the chain, with a first latency number recorded (even if rough).
+
+**As built** (notes for later days):
+- Request shape: `POST /alerts` takes the `RunAgentRequest` envelope (`source`, `severity`, `message`, optional `timestamp` with a UTC offset) plus `payload`, the app event. `alert_id` (UUID), `alert_key`, and `app_id` are set by `ingestion`; a body that tries to set them is a `422`. Response `202 {alert_id, app_id, alert_key, status}`.
+- No it-ops code in `ingestion`: the payload is validated against `backend/apps/it-ops-triage/event_schema.json` (JSON Schema 2020-12, `jsonschema`), and `alert_key` is built from `alert_key_fields: [alert_type, host]`, both read from the app's `manifest.yaml` by `app/core/apps.py` (`FileAppStore`). Day 5 only changes where the manifest comes from (`registry`) and the route (`POST /apps/{app_id}/events`); `app_id` is `DEFAULT_APP_ID` until then.
+- Rejections before Kafka: envelope `422` (pydantic), payload over `MAX_PAYLOAD_BYTES` (32 KiB serialized) `413`, schema violation `422` with `{path, message}` per error, unusable `alert_key` field `422`.
+- Publishing is inline (`app/kafka/publisher.py`, idempotent, `acks=all`): `202` means Kafka has it; Kafka unreachable → `503` + `Retry-After: 5` after the 10 s send timeout. Day 15's outbox replaces this.
+- Known gap, closed by Day 15: a `503` from a send *timeout* is ambiguous. Verified by stopping Kafka: the alert that got `503` stayed queued in the producer and was delivered and decided once Kafka returned, so a client retry creates a second alert (new `alert_id`, which Day 16's `alert_id` dedupe won't catch). aiokafka only expires queued batches when the partition has no known leader, not during a plain broker outage. With the outbox, `202`/`503` depends on a Postgres commit, not on Kafka.
+- Topics: the one-shot `kafka-init` Compose service (`backend/local/kafka/create-topics.sh`) creates `alert.received`, `alert.decided`, `verdict.recorded`, `alert.received.dlq` with 12 partitions, and grows existing smaller ones; broker auto-create is now off. `ingestion` and `orchestrator` wait for it (`service_completed_successfully`). The Day 18 kind setup needs an equivalent Job.
+- Fixed: Kafka's data wasn't on its volume (the image writes to `/tmp/kraft-combined-logs`), so recreating the container lost topics and offsets. `KAFKA_LOG_DIRS=/var/lib/kafka/data` now.
+- Debug `GET /alerts/{id}` (`app/kafka/decisions.py`): in-memory, per-replica, last 10k alerts, fed by a group-less `alert.decided` consumer reading from the start. Shows `pending`/`decided`, the decision, reasons, tool calls, and `latency_ms` (accept → decision seen). After an `ingestion` restart, decisions come back but without `alert_key`/`latency_ms` (no accept record). Delete on Day 9.
+- Integration tests, opt-in with `uv run pytest -m integration` while the stack is up (default runs exclude them): `orchestrator/tests/integration/test_kafka_pipeline.py` runs `AlertPipeline` against the real Kafka with the fake LLM on throwaway topics (order per key, commit after publish, LLM down → `ESCALATE`, undecodable message skipped and committed); `ingestion/tests/integration/test_hot_path.py` goes through the whole stack with the real LLM.
+- First latency read (`gpt-5.4-mini`, one tool call each, 8 mixed it-ops alerts): sequential p50 2.6 s (2.1–2.9 s); a burst of 8 at once p50 10.6 s, max 18.6 s, because `orchestrator` handles every message strictly one at a time, not just one at a time per key. ADR-0002 allows different keys concurrently; worth doing before Day 21's simulator or Day 26's load test, or with replicas on Kubernetes (12 partitions now allow up to 12).
+- The same alert can get a different decision on different runs (e.g. a `healthcheck_flap` with thin data: `SUPPRESS` once, `ESCALATE` once). Expected from an LLM at default settings; Day 7's guardrails bound the risky direction, and Day 25's evals measure it.
 
 ---
 
