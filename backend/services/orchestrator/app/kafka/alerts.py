@@ -63,9 +63,24 @@ async def handle_alert(raw: bytes, runner: AgentRunner) -> tuple[bytes, agent_pb
 
 
 class AlertPipeline:
-    def __init__(self, runner: AgentRunner, bootstrap_servers: str):
+    """Consumes one message at a time (so one key at a time, in partition
+    order) and commits only after its `alert.decided` is published. Topic and
+    group names are parameters for the integration test only."""
+
+    def __init__(
+        self,
+        runner: AgentRunner,
+        bootstrap_servers: str,
+        *,
+        received_topic: str = ALERT_RECEIVED,
+        decided_topic: str = ALERT_DECIDED,
+        group_id: str = CONSUMER_GROUP,
+    ):
         self._runner = runner
         self._bootstrap_servers = bootstrap_servers
+        self._received_topic = received_topic
+        self._decided_topic = decided_topic
+        self._group_id = group_id
         self._task: asyncio.Task | None = None
 
     def start(self) -> None:
@@ -91,9 +106,9 @@ class AlertPipeline:
 
     async def _consume(self) -> None:
         consumer = AIOKafkaConsumer(
-            ALERT_RECEIVED,
+            self._received_topic,
             bootstrap_servers=self._bootstrap_servers,
-            group_id=CONSUMER_GROUP,
+            group_id=self._group_id,
             enable_auto_commit=False,
             auto_offset_reset="earliest",
         )
@@ -102,12 +117,12 @@ class AlertPipeline:
         try:
             await consumer.start()
             try:
-                logger.info("consuming %s", ALERT_RECEIVED)
+                logger.info("consuming %s", self._received_topic)
                 async for msg in consumer:
                     decided = await handle_alert(msg.value, self._runner)
                     if decided is not None:
                         key, response = decided
-                        await producer.send_and_wait(ALERT_DECIDED, value=response.SerializeToString(), key=key)
+                        await producer.send_and_wait(self._decided_topic, value=response.SerializeToString(), key=key)
                     await consumer.commit()
             finally:
                 await consumer.stop()

@@ -1,10 +1,14 @@
 # it-ops-triage
 
 App bundle for the reference IT-ops alert triage app (`docs/ARCHITECTURE.md`
-§3, §12). The event schema lands Day 5 of `docs/plan.md`.
+§3, §12).
 
-- `manifest.yaml`: partial App Manifest (agents, tools). Read from disk by
-  `orchestrator` until Day 5, when `registry` serves it.
+- `manifest.yaml`: partial App Manifest (agents, tools, `event_schema_ref`,
+  `alert_key_fields`). Read from disk by `orchestrator` and `ingestion`
+  until Day 5, when `registry` serves it.
+- `event_schema.json`: what `ingestion` accepts as this app's `payload`
+  (`alert_type` and `host` required; extra fields allowed and passed to
+  the agent as data).
 - `prompts/triage-agent.md`: the entry agent's app-specific instructions.
   `orchestrator` wraps them in the platform rules (data blocks, JSON answer
   format).

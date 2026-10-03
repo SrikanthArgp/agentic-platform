@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "it-ops-triage/event_schema.json",
+  "title": "it-ops-triage event payload",
+  "description": "The app-specific part of an IT-ops alert (RunAgentRequest.payload). The envelope (source, severity, message, timestamp) is validated by ingestion, not here. Extra fields are allowed and passed to the agent as data.",
+  "type": "object",
+  "required": ["alert_type", "host"],
+  "properties": {
+    "alert_type": {
+      "description": "Alert type; the key lookup_runbook uses, e.g. disk_full.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "host": {
+      "description": "Host the alert fired on.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253
+    },
+    "service": { "type": "string", "maxLength": 128 },
+    "metric": { "type": "string", "maxLength": 128 },
+    "value": { "type": "number" },
+    "threshold": { "type": "number" },
+    "duration_minutes": { "type": "number", "minimum": 0 },
+    "labels": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "maxLength": 256 }
+    }
+  },
+  "additionalProperties": true
+}
