@@ -9,8 +9,11 @@ failure (docs/ARCHITECTURE.md §10, §12):
 - `invalid_arguments`: arguments failed the tool's input schema.
 - `tool_failed`: the tool raised, or returned the wrong shape.
 
-Not yet: per-agent `tool_allowlist` checks and the `app_id`/`agent_id` run
-context from `orchestrator` (§13 T4; plan.md Days 3 and 13).
+`orchestrator` sends the run's `app_id`/`agent_id` in each request's
+`_meta` (`run_context`), never as a tool argument. Today it's only logged;
+Day 13 enforces the agent's `tool_allowlist` with it and passes it to global
+tools (§13 T4). Calls without it (e.g. `backend/scripts/mcp_call.py`) are
+still served.
 """
 
 import json
@@ -23,6 +26,7 @@ from mcp.server.context import ServerRequestContext
 from pydantic import ValidationError
 
 from app.core.registry import ToolNotFoundError, ToolRegistry, ToolSpec
+from run_context import RunContext, from_meta
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +42,22 @@ def build_mcp_server(registry: ToolRegistry) -> Server:
     async def on_call_tool(
         ctx: ServerRequestContext, params: types.CallToolRequestParams
     ) -> types.CallToolResult:
-        return await call_tool(registry, params.name, params.arguments or {})
+        context = from_meta(params.meta)
+        return await call_tool(registry, params.name, params.arguments or {}, context)
 
     return Server(SERVER_NAME, on_list_tools=on_list_tools, on_call_tool=on_call_tool)
 
 
-async def call_tool(registry: ToolRegistry, name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+async def call_tool(
+    registry: ToolRegistry, name: str, arguments: dict[str, Any], context: RunContext | None = None
+) -> types.CallToolResult:
+    if context:
+        logger.info(
+            "tools/call %s app_id=%s agent_id=%s alert_id=%s",
+            name, context.app_id, context.agent_id, context.alert_id,
+        )
+    else:
+        logger.info("tools/call %s without run context", name)
     try:
         tool = registry.get(name)
     except ToolNotFoundError as e:

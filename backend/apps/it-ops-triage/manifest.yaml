@@ -1,0 +1,23 @@
+# App Manifest for it-ops-triage (docs/ARCHITECTURE.md §3, ADR-0006).
+#
+# Day 3: partial. Only the fields orchestrator reads today (agents, tools).
+# orchestrator reads this file directly until Day 5, when registry serves
+# it (registered via backend/scripts/register_app.py) and the remaining
+# fields (event_schema_ref, alert_key_fields, memory_namespace,
+# escalate_when) are added.
+
+app_id: it-ops-triage
+display_name: IT-ops alert triage
+
+agents:
+  - agent_id: triage-agent
+    version: 0.1.0
+    role: entry
+    prompt_ref: prompts/triage-agent.md
+    tool_allowlist:
+      - lookup_runbook
+
+tools:
+  - tool_id: lookup_runbook
+    version: 1.0.0
+    scope: app

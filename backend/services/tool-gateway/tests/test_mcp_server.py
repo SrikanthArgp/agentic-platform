@@ -68,3 +68,24 @@ async def test_tool_failure_returns_tool_failed_error_without_internals(server, 
     assert result.is_error
     assert result.structured_content["error"] == "tool_failed"
     assert "fixture backend unavailable" not in result.content[0].text
+
+
+async def test_call_reads_run_context_from_meta_not_arguments(server, caplog):
+    from run_context import RunContext
+
+    context = RunContext(app_id="app-one", agent_id="triage-agent", alert_id="a-1")
+    caplog.set_level("INFO", logger="app.mcp.server")
+    async with Client(server) as client:
+        result = await client.call_tool("echo", {"text": "hi"}, meta=context.to_meta())
+
+    assert not result.is_error
+    assert "tools/call echo app_id=app-one agent_id=triage-agent alert_id=a-1" in caplog.text
+
+
+async def test_call_without_run_context_is_still_served(server, caplog):
+    caplog.set_level("INFO", logger="app.mcp.server")
+    async with Client(server) as client:
+        result = await client.call_tool("echo", {"text": "hi"})
+
+    assert not result.is_error
+    assert "tools/call echo without run context" in caplog.text
