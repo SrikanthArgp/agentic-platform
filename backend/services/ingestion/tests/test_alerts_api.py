@@ -205,3 +205,14 @@ def test_alert_key_field_not_in_schema_fails_the_apps_events_explicitly(client, 
 
 def test_old_alerts_route_is_gone(client):
     assert client.post("/alerts", json=alert_body()).status_code == 404
+
+
+def test_missing_alert_key_field_is_422_before_kafka(client, publisher, registry):
+    # `value` is a schema property but not required: the schema passes, the
+    # alert_key can't be built, and the caller gets an explicit 4xx.
+    registry.apps[APP_ID] = resolved_app(alert_key_fields=["alert_type", "value"])
+    response = client.post(EVENTS_URL, json=alert_body(payload={"alert_type": "disk_full", "host": "web-01"}))
+
+    assert response.status_code == 422
+    assert "payload.value" in response.json()["detail"]["message"]
+    assert publisher.sent == []
