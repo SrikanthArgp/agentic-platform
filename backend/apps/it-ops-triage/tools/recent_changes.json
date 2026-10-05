@@ -1,0 +1,65 @@
+[
+  {
+    "ref": "argocd:checkout-svc@v2.3.1",
+    "timestamp": "2026-10-05T09:40:00Z",
+    "type": "deploy",
+    "service": "checkout-svc",
+    "hosts": ["app-03", "app-04"],
+    "author": "deploy-bot (PR #4812 by a.rivera)",
+    "summary": "Deploy checkout-svc v2.3.1: new payment-provider client, connection pool size 50 -> 10."
+  },
+  {
+    "ref": "cmdb:CHG-20931",
+    "timestamp": "2026-10-05T08:15:00Z",
+    "type": "config",
+    "service": "web-frontend",
+    "hosts": ["web-01"],
+    "author": "j.chen",
+    "summary": "Log level for web-frontend raised from INFO to DEBUG on web-01 to investigate session errors; log rotation unchanged."
+  },
+  {
+    "ref": "terraform:infra-live#771",
+    "timestamp": "2026-10-05T07:05:00Z",
+    "type": "infra",
+    "service": "postgres-replica",
+    "hosts": ["db-02"],
+    "author": "terraform-ci (a.okafor)",
+    "summary": "db-02 replica instance resized m6i.2xlarge -> m6i.xlarge; storage IOPS 12000 -> 6000."
+  },
+  {
+    "ref": "argocd:api-gateway@v5.12.0",
+    "timestamp": "2026-10-05T10:20:00Z",
+    "type": "deploy",
+    "service": "api-gateway",
+    "hosts": ["api-gw", "api-01"],
+    "author": "deploy-bot (PR #4830 by m.singh)",
+    "summary": "Deploy api-gateway v5.12.0: response cache moved in-process (was Redis)."
+  },
+  {
+    "ref": "cmdb:CHG-20902",
+    "timestamp": "2026-10-04T16:30:00Z",
+    "type": "config",
+    "service": "load-balancer",
+    "hosts": ["lb-02"],
+    "author": "s.patel",
+    "summary": "Health-check interval on lb-02 shortened 30s -> 5s; failure threshold unchanged at 2."
+  },
+  {
+    "ref": "argocd:checkout-svc@v2.3.0",
+    "timestamp": "2026-10-03T14:00:00Z",
+    "type": "deploy",
+    "service": "checkout-svc",
+    "hosts": ["app-03", "app-04"],
+    "author": "deploy-bot (PR #4790 by a.rivera)",
+    "summary": "Deploy checkout-svc v2.3.0: dependency updates only."
+  },
+  {
+    "ref": "cmdb:CHG-20950",
+    "timestamp": "2026-10-05T11:00:00Z",
+    "type": "infra",
+    "service": "web-frontend",
+    "hosts": ["web-01", "web-02"],
+    "author": "a.okafor",
+    "summary": "Kernel patch and reboot of web-01 and web-02 (maintenance window)."
+  }
+]

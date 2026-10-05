@@ -16,7 +16,7 @@ from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 
 from app.kafka.alerts import AlertPipeline, message_key
 from proto_gen import agent_pb2
-from tests.conftest import FakeChatModel, final, make_request, make_runner
+from tests.conftest import FakeChatModel, FakeRegistry, explanation, final, make_request, make_runner
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -146,3 +146,49 @@ async def test_undecodable_message_is_skipped_and_committed(apps_dir, topics):
 
     [message] = await _run_pipeline(pipeline, until)
     assert agent_pb2.RunAgentResponse.FromString(message.value).alert_id == "alert-0"
+
+
+async def test_delegation_still_publishes_exactly_one_decision_per_alert(apps_dir, topics):
+    """Two escalations, each running two callables: two alert.decided messages, not six."""
+    received, decided, group, admin = topics
+    (apps_dir / "test-app" / "prompts" / "blast.md").write_text("Assess the blast radius.")
+    registry = FakeRegistry()
+    registry.apps["test-app"]["agents"][1]["invoke_on"] = ["ESCALATE"]  # the summarizer
+    registry.apps["test-app"]["agents"].append({
+        **registry.apps["test-app"]["agents"][1], "agent_id": "blast", "prompt_ref": "prompts/blast.md",
+    })
+    llm = FakeChatModel(
+        responses=[final("ESCALATE", f"reason {i}") for i in range(2)],
+        scripts={"Summarize.": [explanation("cause")] * 2, "blast radius": [explanation("two hosts")] * 2},
+    )
+    pipeline = AlertPipeline(
+        make_runner(apps_dir, llm, registry=registry), BOOTSTRAP,
+        received_topic=received, decided_topic=decided, group_id=group,
+    )
+
+    async def until():
+        messages = await _read(decided, 2)
+        await _wait_committed(admin, group, received, 2)
+        return messages
+
+    await _publish(received, _requests(2))
+    messages = await _run_pipeline(pipeline, until)
+    responses = [agent_pb2.RunAgentResponse.FromString(m.value) for m in messages]
+
+    assert [r.alert_id for r in responses] == ["alert-0", "alert-1"]
+    assert all(r.agent_id == "triage-agent" for r in responses)
+    assert [list(r.reasons) for r in responses] == [
+        [f"reason {i}", "summarizer: cause", "blast: two hosts"] for i in range(2)
+    ]
+    # Read the whole topic again: still exactly two.
+    assert len(await _read_all(decided)) == 2
+
+
+async def _read_all(topic: str, idle_s: float = 2) -> list:
+    consumer = AIOKafkaConsumer(topic, bootstrap_servers=BOOTSTRAP, auto_offset_reset="earliest")
+    await consumer.start()
+    try:
+        batches = await consumer.getmany(timeout_ms=int(idle_s * 1000))
+        return [m for msgs in batches.values() for m in msgs]
+    finally:
+        await consumer.stop()

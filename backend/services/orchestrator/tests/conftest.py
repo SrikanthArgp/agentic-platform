@@ -3,6 +3,7 @@
 No test calls a real LLM or opens a network connection (docs/plan.md Day 3).
 """
 
+import asyncio
 import copy
 import json
 import socket
@@ -59,7 +60,9 @@ RESOLVED_APP: dict[str, Any] = {
             "role": "callable",
             "prompt_ref": "prompts/summarizer.md",
             "tool_allowlist": [],
-            "invoke_on": ["ESCALATE"],
+            # Empty here so only Day 8's delegation tests (which set it) run it
+            # after a decision; RunAgent can still run it directly by agent_id.
+            "invoke_on": [],
             "tools": [],
         },
     ],
@@ -129,6 +132,11 @@ def text(content: str) -> AIMessage:
     return AIMessage(content=content, usage_metadata=USAGE)
 
 
+def explanation(*reasons: str) -> AIMessage:
+    """A callable agent's final reply."""
+    return text(json.dumps({"reasons": list(reasons)}))
+
+
 def final(decision: str = "AUTO_RESOLVE", *reasons: str, confidence: float = 0.9) -> AIMessage:
     return text(json.dumps(
         {"decision": decision, "confidence": confidence, "reasons": list(reasons) or ["RB-001 says so"]}
@@ -170,9 +178,17 @@ class FakeMemory:
 class FakeChatModel(BaseChatModel):
     """A LangChain chat model that returns scripted replies in order (an
     Exception in the script is raised instead) and records every call: the
-    system prompt, the other messages, and the tools bound at the time."""
+    system prompt, the other messages, and the tools bound at the time.
 
-    responses: list[Any]  # AIMessage, or an Exception to raise
+    `scripts` gives some agents their own replies: the first key found in
+    the system prompt (e.g. a callable's prompt text) picks that list, and
+    `delays` (same keys) makes those calls slow. Everything else uses
+    `responses`. Agents running in parallel never take each other's replies.
+    """
+
+    responses: list[Any] = []  # AIMessage, or an Exception to raise
+    scripts: dict[str, list[Any]] = {}
+    delays: dict[str, float] = {}
     calls: list[dict[str, Any]] = []
     bound: list[BaseTool] = []
 
@@ -181,20 +197,32 @@ class FakeChatModel(BaseChatModel):
         return "fake-chat-model"
 
     def bind_tools(self, tools: list[BaseTool], **kwargs: Any) -> "FakeChatModel":
-        self.bound = list(tools)
-        return self
+        # A copy per binding: parallel agents each keep their own tools.
+        return self.model_copy(update={"bound": list(tools)})
+
+    def _script(self, system: str) -> str | None:
+        return next((key for key in self.scripts if key in system), None)
 
     def _generate(self, messages: list[BaseMessage], stop=None, run_manager=None, **kwargs: Any) -> ChatResult:
-        system = [m.content for m in messages if isinstance(m, SystemMessage)]
+        system = next((m.content for m in messages if isinstance(m, SystemMessage)), "")
+        # model_copy shares these lists with the original, so one record of every call.
         self.calls.append({
-            "system": system[0] if system else "",
+            "system": system,
             "messages": [m for m in messages if not isinstance(m, SystemMessage)],
             "tools": list(self.bound),
         })
-        response = self.responses.pop(0)
+        key = self._script(system)
+        response = (self.scripts[key] if key is not None else self.responses).pop(0)
         if isinstance(response, Exception):
             raise response
         return ChatResult(generations=[ChatGeneration(message=response)])
+
+    async def _agenerate(self, messages: list[BaseMessage], stop=None, run_manager=None, **kwargs: Any) -> ChatResult:
+        system = next((m.content for m in messages if isinstance(m, SystemMessage)), "")
+        key = self._script(system)
+        if key is not None and self.delays.get(key):
+            await asyncio.sleep(self.delays[key])
+        return self._generate(messages, stop, run_manager, **kwargs)
 
 
 RUNBOOK_RESULT = {"found": True, "alert_type": "disk_full", "runbook": {"runbook_id": "RB-001"}}
@@ -236,8 +264,10 @@ def make_runner(
     registry: FakeRegistry | None = None,
     memory: FakeMemory | None = None,
     min_confidence: float = 0.6,
+    callable_timeout_s: float = 30.0,
 ):
     manifests = ManifestStore(registry or FakeRegistry(), apps_dir)
     return AgentRunner(
-        manifests, gateway or FakeGateway(), llm, memory or FakeMemory(), max_tool_rounds, min_confidence
+        manifests, gateway or FakeGateway(), llm, memory or FakeMemory(), max_tool_rounds, min_confidence,
+        callable_timeout_s,
     )

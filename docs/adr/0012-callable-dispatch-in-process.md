@@ -1,6 +1,6 @@
 # ADR-0012: Run callable agents in-process instead of a gRPC self-call
 
-- **Status**: Proposed
+- **Status**: Accepted (2026-10-05, Day 8)
 - **Date**: 2026-10-01
 - **See**: `ARCHITECTURE.md` §5, §9; `plan.md` Day 8
 
@@ -29,5 +29,13 @@ types and `agent_id` dispatch, no network hop.
 - ❌ Moving callables to their own deployment later needs a code change
   (swap the dispatcher), which is small because the contract is unchanged.
 
-Not yet decided — needs a call at the start of Day 8. If accepted, update
-`ARCHITECTURE.md` §5/§9 and `plan.md` Day 8.
+## Decision (Day 8)
+
+Accepted. Callables run in-process, as nodes of `orchestrator`'s LangGraph
+run graph (ADR-0022): after the guardrails, the graph fans out one
+`callable` branch per matching agent (LangGraph `Send`, so they run
+concurrently in one step), each running that agent's own tool loop with
+its own prompt and tools, and a `fold` node merges their `reasons[]`. The
+gRPC `RunAgent` with `agent_id` set still runs a callable directly, for
+tests and debugging; it shares the same per-agent code, not a network
+hop. `ARCHITECTURE.md` §5/§9 updated.

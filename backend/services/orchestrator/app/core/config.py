@@ -32,6 +32,8 @@ class Settings:
     llm_model: str = "gpt-5.4-mini"
     # Rounds of LLM tool calls before a run gives up and escalates.
     max_tool_rounds: int = 5
+    # Per callable agent run (Day 8); one that takes longer doesn't contribute.
+    callable_timeout_s: float = 30.0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -50,4 +52,5 @@ class Settings:
             llm_provider=env.get("LLM_PROVIDER", cls.llm_provider),
             llm_model=env.get("LLM_MODEL", cls.llm_model),
             max_tool_rounds=int(env.get("MAX_TOOL_ROUNDS", cls.max_tool_rounds)),
+            callable_timeout_s=float(env.get("CALLABLE_TIMEOUT_S", cls.callable_timeout_s)),
         )

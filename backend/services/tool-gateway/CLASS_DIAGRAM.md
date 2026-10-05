@@ -1,6 +1,6 @@
 # tool-gateway — class diagram
 
-As built through Day 5 of `docs/plan.md`. `tool-gateway` is the platform's
+As built through Day 8 of `docs/plan.md`. `tool-gateway` is the platform's
 MCP server. At startup it imports every app's tool modules from
 `backend/apps/*/tools/` into a `ToolRegistry`. It then serves MCP
 `tools/list` and `tools/call` over stateless Streamable HTTP at
@@ -172,6 +172,32 @@ classDiagram
             <<pydantic, extra=forbid>>
             +alert_type: str
         }
+        class recent_changes_lookup {
+            <<module: it-ops-triage/tools/recent_changes_lookup.py>>
+            +CHANGES: list~Change~
+            +recent_changes_lookup(args) RecentChangesOutput
+            -_load_changes(path) list
+        }
+        class RecentChangesInput {
+            <<pydantic, extra=forbid>>
+            +service_or_host: str
+            +window_start, window_end: AwareDatetime
+        }
+        class RecentChangesOutput {
+            <<pydantic, extra=forbid>>
+            +service_or_host: str
+            +window_start, window_end
+            +found: bool
+            +changes: list~Change~
+            +message: str?
+        }
+        class Change {
+            <<pydantic, extra=forbid>>
+            +ref, service, author, summary: str
+            +timestamp: AwareDatetime
+            +type: deploy or config or infra
+            +hosts: list~str~
+        }
         class LookupRunbookOutput {
             <<pydantic>>
             +found: bool
@@ -238,6 +264,10 @@ classDiagram
     lookup_runbook ..|> AppToolModule : exports TOOLS
     lookup_runbook ..> LookupRunbookInput
     lookup_runbook ..> LookupRunbookOutput
+    recent_changes_lookup ..|> AppToolModule : exports TOOLS
+    recent_changes_lookup ..> RecentChangesInput
+    recent_changes_lookup ..> RecentChangesOutput
+    RecentChangesOutput *-- Change
     LookupRunbookOutput *-- RunbookEntry
     ToolSpec ..> LookupRunbookInput : input_model
     ToolSpec ..> LookupRunbookOutput : output_model
@@ -395,7 +425,9 @@ These live in `backend/apps/{app_id}/tools/`, not in this service, and
 never import `tool-gateway` code. The only contract is the shape of the
 `TOOLS` dict (**`AppToolModule`** in the diagram).
 
-The one tool so far is **`lookup_runbook`** (`it-ops-triage`):
+Two tools so far, both `it-ops-triage`'s.
+
+**`lookup_runbook`** (Day 2), used by both of its agents:
 - **`LookupRunbookInput`**: `alert_type`, slug pattern, `extra="forbid"`.
 - **`LookupRunbookOutput`**: `found` plus an optional `RunbookEntry` or
   `message`.
@@ -404,7 +436,21 @@ The one tool so far is **`lookup_runbook`** (`it-ops-triage`):
 - **`RUNBOOKS`**: loaded from `runbooks.json` at import, rejecting
   duplicate `alert_type`s.
 
-The data is fixture-backed and changes only through git (ADR-0009).
+**`recent-changes-lookup`** (Day 8), allowlisted only for
+`root-cause-summarizer`:
+- **`RecentChangesInput`**: `service_or_host` and a window. Both ends must
+  be timezone-aware ISO 8601, the end no earlier than the start, and the
+  window at most 7 days; `extra="forbid"`.
+- **`RecentChangesOutput`**: the query echoed back, `found`, the matching
+  **`Change`**s (most recent first), or a "no recorded changes" `message`.
+- A change matches when the target is its `service` or one of its `hosts`
+  (exact match), and its `timestamp` is inside `[window_start,
+  window_end]`, both ends included.
+- **`CHANGES`**: loaded from `recent_changes.json` at import, rejecting
+  duplicate `ref`s. Timestamps are absolute, like a real change log. The
+  shape is meant to survive swapping in GitHub, ArgoCD or a CMDB.
+
+Both are fixture-backed and change only through git (ADR-0009).
 
 ## Request flow (`tools/call`)
 

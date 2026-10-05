@@ -79,6 +79,11 @@ class AppManifest(BaseModel):
     escalate_when: list[EscalateRule] = []
     supervisor: SupervisorSpec | None = None
 
+    def callables_for(self, decision: str) -> list[AgentSpec]:
+        """Callable agents whose `invoke_on` lists `decision` (a Decision
+        name), in manifest order (docs/ARCHITECTURE.md §3/§5)."""
+        return [a for a in self.agents if a.role == "callable" and decision in a.invoke_on]
+
     def guardrails(self) -> list[Rule]:
         return [r.rule() for r in self.escalate_when]
 

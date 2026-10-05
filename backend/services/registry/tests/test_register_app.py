@@ -22,28 +22,39 @@ def manifest():
     return register_app.load_manifest(APP_ID)
 
 
+def _served_tool(description: str) -> dict:
+    return {
+        "description": description,
+        "input_schema": {"type": "object"},
+        "output_schema": {"type": "object"},
+        "version": "1.0.0",
+        "scope": "app",
+        "app_id": APP_ID,
+        "read_only": True,
+    }
+
+
 @pytest.fixture
 def served():
+    """What tool-gateway serves for it-ops-triage: both its tools."""
     return {
-        "lookup_runbook": {
-            "description": "Look up the runbook.",
-            "input_schema": {"type": "object"},
-            "output_schema": {"type": "object"},
-            "version": "1.0.0",
-            "scope": "app",
-            "app_id": APP_ID,
-            "read_only": True,
-        }
+        "lookup_runbook": _served_tool("Look up the runbook."),
+        "recent-changes-lookup": _served_tool("Recent changes."),
     }
 
 
 def test_checked_in_manifest_registers(client, manifest, served):
     assert register_app.register(manifest, served, client) == [
         "tool lookup_runbook 1.0.0: created",
+        "tool recent-changes-lookup 1.0.0: created",
         f"app {APP_ID}: created",
     ]
     app = client.get(f"/apps/{APP_ID}").json()
-    assert [t["tool_id"] for t in app["agents"][0]["tools"]] == ["lookup_runbook"]
+    tools = {a["agent_id"]: [t["tool_id"] for t in a["tools"]] for a in app["agents"]}
+    assert tools == {
+        "triage-agent": ["lookup_runbook"],
+        "root-cause-summarizer": ["lookup_runbook", "recent-changes-lookup"],
+    }
 
 
 def test_same_file_twice_changes_nothing(client, manifest, served):
@@ -52,6 +63,7 @@ def test_same_file_twice_changes_nothing(client, manifest, served):
 
     assert register_app.register(manifest, served, client) == [
         "tool lookup_runbook 1.0.0: unchanged",
+        "tool recent-changes-lookup 1.0.0: unchanged",
         f"app {APP_ID}: unchanged",
     ]
     assert client.get(f"/apps/{APP_ID}").json() == before
@@ -78,4 +90,11 @@ def test_tool_not_declared_read_only_is_refused_by_registry(client, manifest, se
 def test_invalid_manifest_reports_registry_errors(client, manifest, served):
     manifest["alert_key_fields"] = []
     with pytest.raises(register_app.RegistrationError, match="alert_key_fields"):
+        register_app.register(manifest, served, client)
+
+
+def test_a_tool_only_one_agent_declares_is_still_required(client, manifest, served):
+    """recent-changes-lookup is the summarizer's alone; registering without it still fails."""
+    del served["recent-changes-lookup"]
+    with pytest.raises(register_app.RegistrationError, match="serves nothing for 'recent-changes-lookup'"):
         register_app.register(manifest, served, client)

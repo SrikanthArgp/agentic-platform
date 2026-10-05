@@ -16,12 +16,26 @@ agents:
     tool_allowlist:
       - lookup_runbook
 
+  # Callable (Day 8, ADR-0012): runs after the final decision is ESCALATE,
+  # adds a probable root cause to reasons[]; never changes the decision.
+  - agent_id: root-cause-summarizer
+    version: 0.1.0
+    role: callable
+    invoke_on: [ESCALATE]
+    prompt_ref: prompts/root-cause-summarizer.md
+    tool_allowlist:
+      - lookup_runbook
+      - recent-changes-lookup
+
 event_schema_ref: event_schema.json
 # Joined with ":" into alert_key, e.g. "disk_full:web-01" (ADR-0007).
 alert_key_fields: [alert_type, host]
 
 tools:
   - tool_id: lookup_runbook
+    version: 1.0.0
+    scope: app
+  - tool_id: recent-changes-lookup
     version: 1.0.0
     scope: app
 

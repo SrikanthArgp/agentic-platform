@@ -33,6 +33,7 @@ def build_runner(settings: Settings, registry: RegistryClient, memory: MemorySto
         memory=memory,
         max_tool_rounds=settings.max_tool_rounds,
         min_confidence=settings.min_confidence,
+        callable_timeout_s=settings.callable_timeout_s,
     )
 
 
