@@ -54,7 +54,7 @@ sequenceDiagram
     Orchestrator->>ToolGateway: tool-call (MCP, allowlisted tools only)
     ToolGateway-->>Orchestrator: tool-result
 
-    Note over Orchestrator: supervisor + escalate_when guardrails<br/>(none matched) → decision = AUTO_RESOLVE or SUPPRESS
+    Note over Orchestrator: LLM (with context) → supervisor (confidence ≥ threshold)<br/>→ escalate_when guardrails (none matched) → decision = AUTO_RESOLVE or SUPPRESS
 
     Orchestrator->>ReviewConsole: alert.decided (Kafka · RunAgentResponse)
     Note over ReviewConsole: decision ≠ ESCALATE →<br/>not persisted to `cases`, no analyst action

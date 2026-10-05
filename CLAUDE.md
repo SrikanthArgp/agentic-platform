@@ -27,10 +27,11 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Days 1–6 of `docs/plan.md` are done (infra, contracts, skeletons;
+Days 1–7 of `docs/plan.md` are done (infra, contracts, skeletons;
 `tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core;
 `ingestion` and the end-to-end hot path; `registry` + App Manifest;
-`memory-store`); Day 7 (`orchestrator` uses context, guardrails) is next. As-built notes for each
+`memory-store`; context, supervisor and guardrails in `orchestrator`);
+Day 8 (callable agents) is next. As-built notes for each
 day are in `docs/plan.md`.
 
 - All 6 services have a FastAPI skeleton (`app/main.py`, `/healthz`),
@@ -70,7 +71,16 @@ day are in `docs/plan.md`.
 - `orchestrator` consumes `alert.received`, runs the entry agent's
   tool-calling loop (OpenAI, ADR-0015, behind `app/agent/llm.py`), and
   publishes `alert.decided`; the same run is exposed as gRPC `RunAgent`
-  (`:50051`, host `:50052`). It resolves the app from `registry` and offers
+  (`:50051`, host `:50052`). Before the loop it calls `memory-store`'s
+  `GetContext` once (one shared channel, `MEMORY_STORE_TARGET`) and gives
+  the agent the history as a data block (ADR-0019). After it, in order:
+  the supervisor (agent's `confidence`, capped by fixed rules, below the
+  manifest's `supervisor.min_confidence` / default 0.6 → `ESCALATE`,
+  ADR-0020), then the manifest's `escalate_when` guardrails (`alert.*`,
+  `payload.*`, `context.*`; a match → `ESCALATE`, named in `reasons[]`,
+  ADR-0010/0021). Both only ever move toward `ESCALATE`; memory down →
+  the run continues without context and the supervisor escalates.
+  `RunAgentResponse.confidence` carries the final value. It resolves the app from `registry` and offers
   the agent exactly its resolved `tools`; prompts are read from
   `backend/apps/{app_id}/prompts/` in its image. Needs
   `OPENAI_API_KEY` in `backend/local/.env` (see `.env.example`).
@@ -94,8 +104,8 @@ day are in `docs/plan.md`.
 - Generated proto stubs in `backend/shared/proto_gen/` are committed; rerun
   `backend/scripts/gen_proto.sh` after editing any `.proto`.
 - `backend/apps/it-ops-triage/` has `tools/` (`lookup_runbook` +
-  `runbooks.json`), a complete `manifest.yaml` (`escalate_when: []` until
-  Day 7), `event_schema.json`, and `prompts/triage-agent.md`.
+  `runbooks.json`), a complete `manifest.yaml` (guardrail `alert.severity in
+  [critical]`, `supervisor.min_confidence: 0.6`), `event_schema.json`, and `prompts/triage-agent.md`.
 
 ## Commands
 

@@ -145,13 +145,22 @@ App {
                                  # → "checkout:us-east-1" (§5/§6)
   memory_namespace: string      # Redis/Postgres key prefix in memory-store
 
-  escalate_when: [{             # deterministic guardrails (§13, ADR-0010):
-    field: string               # "payload.<path>" or "context.<GetContext
-                                 # field>", e.g. "payload.severity",
+  escalate_when: [{             # deterministic guardrails (§13, ADR-0010,
+                                 # ADR-0021):
+    field: string               # "alert.<envelope field>" (source, severity,
+                                 # message, alert_key), "payload.<path>", or
+                                 # "context.<GetContext field>", e.g.
+                                 # "alert.severity",
                                  # "context.has_confirmed_incident_history"
-    in: [value]                 # match if the field's value is in this list
+    in: [value]                 # match if the field's value equals one of
+                                 # these (type-strict; missing → no match)
   }]                            # any match → decision forced to ESCALATE,
                                  # whatever the LLM/supervisor said
+
+  supervisor: {                 # optional (ADR-0020)
+    min_confidence: number      # 0–1; below it the decision becomes
+  }                             # ESCALATE. Omitted → orchestrator's
+                                 # MIN_CONFIDENCE (default 0.6)
 }
 ```
 
@@ -325,9 +334,11 @@ Steps, app-agnostic:
    publish goes through the outbox (§10): `ingestion` writes an `outbox` row
    and returns `202`; a Celery relay task publishes it to Kafka.
 2. `orchestrator` consumes `alert.received`, resolves the app's manifest
-   (§3), calls `memory-store.GetContext` (gRPC, §6) for behavioral context,
-   runs its tool-calling loop against `tool-gateway` (MCP, allowlisted tools
-   only), and applies supervisor/confidence logic. Once the decision is
+   (§3), calls `memory-store.GetContext` (gRPC, §6) for behavioral context
+   once, before the loop (ADR-0019), runs its tool-calling loop against
+   `tool-gateway` (MCP, allowlisted tools only) with that context in the
+   prompt, then applies the supervisor and the `escalate_when` guardrails
+   (§5). Once the decision is
    final, it runs every callable agent whose `invoke_on` matches, in
    parallel (§3/§5) — internal `RunAgent` gRPC calls, not a new hop in
    this diagram. Each run is ephemeral: built from the cached manifest,
@@ -385,7 +396,9 @@ to keep in sync.
   `ESCALATE` / `SUPPRESS`, left `DECISION_UNSPECIFIED` for a callable-only
   agent — it explains, it doesn't classify), `reasons[]` (explainability —
   every signal that drove the decision), `tool_calls[]` (summary of each
-  tool invocation: `tool_name`, `result_summary`).
+  tool invocation: `tool_name`, `result_summary`), `alert_key` (echoed,
+  ADR-0016), `confidence` (0–1, the supervisor's capped value, ADR-0020;
+  0 when the run produced no answer of its own).
 
 `reasons[]` is populated from the agent's actual tool-call trace and
 supervisor logic, not written after the fact — this is the platform's
@@ -395,10 +408,19 @@ analyst.
 **Decision order** — how the published decision is reached, every app,
 every alert:
 
-1. Entry agent's LLM loop proposes a decision with `reasons[]`.
-2. Supervisor: low confidence → `ESCALATE` (`plan.md` Day 7).
+1. Entry agent's LLM loop proposes a decision, a `confidence` (0–1) and
+   `reasons[]`, with the alert and its memory context (§6) in the prompt.
+   A failed tool lookup forces `ESCALATE`; an answer that doesn't parse is
+   `ESCALATE` with confidence 0.
+2. Supervisor (code, not an agent or a tool; ADR-0020): confidence is the
+   agent's own value capped by fixed rules — no memory context 0.5; a novel
+   `alert_key` 0.5 unless the decision is `ESCALATE`; `SUPPRESS` on a key
+   with `has_confirmed_incident_history` 0.3. Below the manifest's
+   `supervisor.min_confidence` (default 0.6) → `ESCALATE`, with a reason
+   giving the value, the threshold and the cap.
 3. Guardrails: any matching manifest `escalate_when` rule → `ESCALATE`,
-   with a reason naming the rule (§13 T1/T3). Steps 2–3 can only move a
+   with a reason naming the rule (§13 T1/T3, ADR-0010/0021); a match on an
+   already-`ESCALATE` decision is still named. Steps 2–3 can only move a
    decision *to* `ESCALATE`, never away from it.
 4. Callables whose `invoke_on` matches the now-final decision run (below).
 5. `alert.decided` is published.
@@ -456,9 +478,17 @@ exactly. A Redis miss recomputes from Postgres and repopulates Redis (§8).
 `memory-store` resolves `memory_namespace` from `app_id` through
 `registry` (ADR-0018).
 
-(`plan.md` Day 7 still owes one decision here: whether `orchestrator` calls
-`GetContext` directly before the tool-calling loop, or exposes it to the
-agent as a tool.)
+**How `orchestrator` uses it** (ADR-0019): one `GetContext` call per run,
+before the tool-calling loop, over one `grpc.aio` channel reused for the
+process's lifetime (`MEMORY_STORE_TARGET`, 1s deadline). The response goes
+into the agent's first message as a `memory_context` data block, and is the
+same object the supervisor and the `context.*` guardrails read. It is not
+a tool: the agent can't skip it, and the guardrails need it on every run.
+The platform rules tell the agent the decision counts are context, never
+evidence of noise; only verdict counts are (§13 T3). If the call fails,
+the run goes on without context (`{"available": false}`), `context.*`
+guardrails can't match, and the supervisor caps confidence at 0.5, so
+the alert reaches a human.
 
 **What memory does *not* hold**: fixes. `memory-store` knows whether an
 `alert_key` is a repeat and how it was decided and judged (real vs. noise),
@@ -773,8 +803,10 @@ it's data. The flow:
    whose `tool_allowlist`s reference tools the manifest doesn't declare, or
    whose `invoke_on` is set on the entry agent, empty on a callable, or not
    a valid `Decision` value, or whose `alert_key_fields` is empty, or
-   whose `escalate_when` rules reference a `context.*` field that isn't in
-   `GetContextResponse` (§3, §13). Tools without `read_only: true` are
+   whose `escalate_when` rules reference a `context.*` field that isn't a
+   scalar in `GetContextResponse` or an `alert.*` field that isn't an
+   envelope field, or whose `supervisor.min_confidence` is outside 0–1
+   (§3, §13). Tools without `read_only: true` are
    rejected at tool registration. It
    can't check that `alert_key_fields` exist in the event schema — that
    file lives in `ingestion`'s image — so `ingestion` checks it when it

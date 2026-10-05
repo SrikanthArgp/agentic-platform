@@ -130,11 +130,15 @@ and per source (Day 14, `429` + `Retry-After`).
 The agent runtime — the only service that runs LLM tool-calling loops. On
 consuming `alert.received`, it resolves the event's `app_id` against
 `registry` to get that app's agent config and tool allowlist, calls
-`memory-store` for behavioral context, runs the tool-calling loop against
-`tool-gateway`, applies a confidence/supervisor check and the manifest's
-deterministic `escalate_when` guardrails (which can only raise a decision
-to `ESCALATE`, `ARCHITECTURE.md` §5/§13), and publishes
-`alert.decided` with `reasons[]` populated from its own tool-call trace.
+`memory-store` once for behavioral context (before the loop, over one
+shared gRPC channel, ADR-0019), runs the tool-calling loop against
+`tool-gateway` with that context in the prompt, applies the supervisor
+(the agent's confidence capped by fixed rules, against the manifest's
+threshold, ADR-0020) and the manifest's deterministic `escalate_when`
+guardrails (both can only raise a decision to `ESCALATE`,
+`ARCHITECTURE.md` §5/§13), and publishes `alert.decided` with
+`confidence` and `reasons[]` populated from its own tool-call trace and
+those checks.
 One service runs every app's agents: an agent is a manifest entry (prompt,
 tool allowlist, role), and each alert gets an ephemeral run of it — nothing
 is spawned per app or per alert.

@@ -1,6 +1,6 @@
 # Build Plan: 27-Day Sequence
 
-Status: Days 1–6 done; Day 7 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
+Status: Days 1–7 done; Day 8 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
 
 Service map this plan assumes (see `docs/ARCHITECTURE.md` for full rationale): `ingestion`, `orchestrator`, `memory-store`, `review-console`, `registry`, `tool-gateway`, plus Celery workers. The platform is multi-app: three configurable use cases (products) run on the same shared core, each registered as an **App Manifest** in `registry` (introduced Day 5) rather than hardcoded. App #1 / reference domain adapter: IT ops alert triage (`it-ops-triage`; `ingestion` accepts alerts; `orchestrator`'s agent decides auto-resolve / escalate / suppress-as-noise). App #2 is **cloud cost-anomaly triage** (`cost-anomaly-triage`): a spend-spike alert from a cloud billing/cost tool. App #3 is **security alert triage** (`security-alert-triage`): SIEM/EDR alerts. All three use the same `AUTO_RESOLVE` / `ESCALATE` / `SUPPRESS` decision enum from `agent.proto` — apps that need a different decision vocabulary would require a proto change and are out of scope. App #2 gets a first cut on Day 13 and is finished Day 17; a local Kubernetes cluster is stood up on Days 18–19 (ADR-0014), and app #3 is built Day 20 and shipped to it by rolling update. Agent-to-agent (A2A) communication between apps is explicitly out of scope — apps are isolated tenants sharing infrastructure (Kafka/gRPC/REST/MCP transports), not a mesh. A "tenant" is an app; there is no per-customer tenancy in this build.
 
@@ -192,7 +192,7 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 ---
 
-### Day 7 — `orchestrator` uses context; supervisor + guardrails
+### Day 7 — `orchestrator` uses context; supervisor + guardrails ✅
 
 **Goal**: agent decisions demonstrably change based on retrieved context, low-confidence cases get flagged for a human, and deterministic guardrails bound what the LLM can decide.
 
@@ -205,6 +205,17 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 **Definition of done**: the same alert type produces a different decision depending on seeded `memory-store` context (e.g., recurring/known-noise → auto-resolve, novel → escalate); a `critical` it-ops alert is `ESCALATE`d even when the LLM's own answer (forced via a fixture) was `SUPPRESS`, with the guardrail named in `reasons[]`.
 
+
+**As built** (notes for later days):
+- Three decisions, each an ADR: `orchestrator` calls `GetContext` once per run before the loop, not as a tool (ADR-0019); confidence is the agent's own 0–1 value capped by fixed rules, threshold `supervisor.min_confidence` in the manifest, default 0.6 (ADR-0020); `escalate_when` rules can read the envelope as `alert.*`, because severity isn't in the payload, so it-ops' guardrail is `alert.severity in [critical]`, not `payload.severity` (ADR-0021, amends ADR-0010). `ARCHITECTURE.md` §3/§4/§5/§6/§12 updated.
+- `RunAgentResponse.confidence = 8`: the final, capped value; 0 for "not evaluated", an unparseable answer, or no answer within the tool rounds.
+- `app/memory/client.py`: one `grpc.aio` channel per process (`MEMORY_STORE_TARGET`, Compose `memory-store:50051`; `MEMORY_STORE_TIMEOUT_S` 1s). Any error status or deadline → `ContextUnavailableError`; the run continues with `{"available": false}` in the prompt, a reason saying so, and confidence capped at 0.5. The channel reconnects by itself after `memory-store` restarts (checked by stopping and starting it).
+- Prompt: the alert and the memory context are two data blocks in the first message (every window printed, zeros included). The platform rules (every app) say the decision counts are context, never evidence, and the final answer must carry `confidence`; a missing, non-numeric, boolean or out-of-range confidence doesn't parse, and so escalates. The it-ops prompt says how to weigh recurrence, novelty and incident history.
+- `app/agent/supervisor.py` and `app/agent/guardrails.py` are pure functions; `loop.py`'s `respond()` applies them in order after the tool-failure check. Caps: no context 0.5; novel key and not ESCALATE 0.5; SUPPRESS with confirmed-incident history 0.3. Guardrail matching is type-strict (`true` ≠ `1`, `"5"` ≠ `5`, `3 == 3.0`), case-sensitive; a missing or non-scalar field, or any `context.*` rule without context, doesn't match. Every matching rule is named in `reasons[]`, also when the decision was already ESCALATE.
+- `registry`: accepts `alert.{source,severity,message,alert_key}` in `escalate_when` and an optional `supervisor: {min_confidence: 0–1}`; serves `supervisor` (null for manifests stored before today). The two `ENVELOPE_FIELDS` lists (`registry` validation, `orchestrator` guardrails) must stay in step.
+- `it-ops-triage` manifest: `escalate_when: [alert.severity in [critical]]`, `supervisor.min_confidence: 0.6`. Re-register after pulling.
+- Definition of done, verified on the Compose stack with the real LLM after `seed.py`: the same `healthcheck_flap` alert (warning, 1-minute flap, error rate unchanged) was **SUPPRESS** (confidence 0.93) on the seeded `lb-02` and **ESCALATE** on a never-seen host, where the agent also said SUPPRESS but the novel-key cap (0.5 < 0.6) escalated it. The same alert at `critical` severity on `lb-02`: the agent said SUPPRESS, the guardrail forced ESCALATE with `guardrail escalate_when[0] alert.severity = "critical" matched; SUPPRESS changed to ESCALATE.` The forced-SUPPRESS fixture version is `tests/test_decision_order.py`; `tests/integration/test_memory_store_live.py` runs it against the real `memory-store`.
+- Known limitation (§13 T3): even with the rule in the prompt, the agent still cited the key's past suppressions or recurrence as support for SUPPRESS in most live runs on `lb-02`, including after the wording was tightened. The decision there rested on the runbook, and nothing the agent writes can lift a cap or a guardrail, but prompt wording isn't a guarantee: Day 25's eval should score reasons that cite the platform's own counts as evidence.
 ---
 
 ### Day 8 — Second agent: `root-cause-summarizer` + `invoke_on` delegation
@@ -390,7 +401,7 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
   - Event schema: a SIEM/EDR alert (`rule_id`, `severity`, `host`, `src_ip`, `dst_ip`, `user`, `indicators[]` of IP/domain/file-hash).
   - App-owned tool `ioc-reputation-lookup(indicator) -> {verdict: known-bad|known-benign|unknown, source}`, backed by a static JSON fixture — no live threat-intel API calls.
   - Prompt: `ESCALATE` anything with a known-bad indicator or high severity, `SUPPRESS` recurring benign noise (e.g., an internal vulnerability scanner tripping the same rule, recognized via analyst-confirmed noise in `memory-store`), `AUTO_RESOLVE` only for known-benign indicators on low-severity rules.
-  - Guardrails (`escalate_when`): `payload.severity in [high, critical]` and `context.has_confirmed_incident_history in [true]` — security alerts are where payload text is attacker-chosen, so these are never left to the LLM alone (`docs/ARCHITECTURE.md` §13 T1/T3).
+  - Guardrails (`escalate_when`): `alert.severity in [high, critical]` (ADR-0021: severity is an envelope field) and `context.has_confirmed_incident_history in [true]` — security alerts are where payload text is attacker-chosen, so these are never left to the LLM alone (`docs/ARCHITECTURE.md` §13 T1/T3).
   - **First app shipped on Kubernetes**: `rollout_app.sh security-alert-triage` (Day 19). Rolling update of `ingestion`/`orchestrator`/`tool-gateway`, then registration, while `burst.py` keeps driving apps #1 and #2.
 - **Unit tests**: `ioc-reputation-lookup` against its fixture, `security-alert-triage` event-schema validation, guardrails fire on high/critical severity and on confirmed-incident history.
 
