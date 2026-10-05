@@ -341,8 +341,9 @@ Steps, app-agnostic:
    persisted into `cases` (app-scoped). An analyst reviews via REST and
    submits a verdict (optionally with `resolution_notes` — what actually
    fixed it, kept on the case, §6/§8), publishing `verdict.recorded`.
-5. `memory-store` consumes `verdict.recorded` and adjusts that app's
-   aggregates for that `alert_key`, closing the feedback loop.
+5. `memory-store` consumes `verdict.recorded` and records it as a verdict
+   event for that app's `alert_key` (ADR-0017), which shifts that key's
+   counts on the next `GetContext` — closing the feedback loop.
 
 Celery workers sit off to the side of this flow, with Redis as their
 broker. Two jobs, both scheduled by `celery-beat`, neither triggered by an
@@ -538,9 +539,10 @@ in Tempo/Mimir/Loki.
 the key decides the partition — so all events for one alert key (its
 alerts, its decisions, its verdicts) stay in order, while different keys
 spread across partitions and replicas. This matters because
-`memory-store`'s recurrence counts are read-then-updated per key: two
-replicas processing the same key concurrently would both read the old
-counts and undercount repeats. `app_id` is in the key because `alert_key`
+`memory-store` records events per key in arrival order: with one key's
+events on one partition, a decision and a later verdict for it are applied
+in the order they happened, and duplicates are caught by the event log's
+unique key (ADR-0017). `app_id` is in the key because `alert_key`
 alone can repeat across apps (§3).
 
 Holding that order end to end needs three more rules:

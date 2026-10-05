@@ -58,6 +58,8 @@ sequenceDiagram
 
     Orchestrator->>ReviewConsole: alert.decided (Kafka · RunAgentResponse)
     Note over ReviewConsole: decision ≠ ESCALATE →<br/>not persisted to `cases`, no analyst action
+    Orchestrator->>MemoryStore: alert.decided (Kafka · own consumer group)
+    Note over MemoryStore: one decision event in memory_events + Redis<br/>— the next GetContext for this alert_key counts it
 ```
 
 | Step | Services | Message | Transport |
@@ -68,6 +70,7 @@ sequenceDiagram
 | 4 | `orchestrator` → `memory-store` | `GetContext` | gRPC |
 | 5 | `orchestrator` → `tool-gateway` | tool-call / tool-result | MCP |
 | 6 | `orchestrator` → `review-console` | `alert.decided` (`RunAgentResponse`) | Kafka |
+| 7 | `orchestrator` → `memory-store` | `alert.decided`, same message, separate consumer group (ADR-0016) | Kafka |
 
 ---
 
@@ -113,6 +116,8 @@ sequenceDiagram
 
     Orchestrator->>ReviewConsole: alert.decided (Kafka · RunAgentResponse, decision=ESCALATE)
     Note over ReviewConsole: persists `cases` row (Postgres, app_id-scoped)
+    Orchestrator->>MemoryStore: alert.decided (Kafka · own consumer group)
+    Note over MemoryStore: records decision:ESCALATE for that alert_key
 
     Analyst->>ReviewConsole: GET case list/detail (REST)
     ReviewConsole-->>Analyst: case incl. reasons[] (explainability trace)
@@ -120,7 +125,7 @@ sequenceDiagram
     Note over ReviewConsole: resolution_notes stored on the case only —<br/>later surfaced via similar-past-case-lookup
 
     ReviewConsole->>MemoryStore: verdict.recorded (Kafka · {app_id, case_id, alert_key, verdict, verdict_by, recorded_at})
-    MemoryStore->>MemoryStore: update Redis ctx + Postgres memory_history<br/>for that alert_key (closes feedback loop)
+    MemoryStore->>MemoryStore: record a verdict event in memory_events + Redis<br/>for that alert_key (closes feedback loop)
 ```
 
 | Step | Services | Message | Transport |
@@ -133,8 +138,9 @@ sequenceDiagram
 | 6 | `orchestrator` → `orchestrator` | `RunAgent` self-call, `agent_id=root-cause-summarizer` | gRPC |
 | 7 | `orchestrator` → `tool-gateway` | tool-call / tool-result (summarizer) | MCP |
 | 8 | `orchestrator` → `review-console` | `alert.decided` (`RunAgentResponse`, ESCALATE) | Kafka |
-| 9 | analyst → `review-console` | case read / verdict submit | REST |
-| 10 | `review-console` → `memory-store` | `verdict.recorded` | Kafka |
+| 9 | `orchestrator` → `memory-store` | `alert.decided`, separate consumer group (ADR-0016) | Kafka |
+| 10 | analyst → `review-console` | case read / verdict submit | REST |
+| 11 | `review-console` → `memory-store` | `verdict.recorded` | Kafka |
 
 ---
 
@@ -200,9 +206,9 @@ sequenceDiagram
     ClientA->>Ingestion: POST /apps/it-ops-triage/events (REST)
     Ingestion->>Orchestrator: alert.received (Kafka · app_id=it-ops-triage)
     Orchestrator->>Registry: resolve app_id=it-ops-triage → manifest (REST)
-    Registry-->>Orchestrator: Manifest A — agent: triage-agent<br/>tools: lookup_runbook, similar-past-case-lookup<br/>memory_namespace="it-ops-triage:"
+    Registry-->>Orchestrator: Manifest A — agent: triage-agent<br/>tools: lookup_runbook, similar-past-case-lookup<br/>memory_namespace="it-ops-triage"
     Orchestrator->>MemoryStore: GetContext (gRPC · app_id=it-ops-triage)
-    Note over MemoryStore: key = ctx:it-ops-triage:{alert_key}:{window}
+    Note over MemoryStore: namespace from registry (ADR-0018)<br/>key = mem:it-ops-triage:{alert_key}:events
     MemoryStore-->>Orchestrator: GetContextResponse
     Orchestrator->>ToolGateway: tool-call (MCP · allowlist = lookup_runbook, similar-past-case-lookup)
     ToolGateway-->>Orchestrator: tool-result
@@ -212,9 +218,9 @@ sequenceDiagram
     ClientB->>Ingestion: POST /apps/cost-anomaly-triage/events (REST)
     Ingestion->>Orchestrator: alert.received (Kafka · app_id=cost-anomaly-triage)
     Orchestrator->>Registry: resolve app_id=cost-anomaly-triage → manifest (REST)
-    Registry-->>Orchestrator: Manifest B — agent: cost-triage-agent<br/>tools: billing-lookup, similar-past-case-lookup<br/>memory_namespace="cost-anomaly-triage:"
+    Registry-->>Orchestrator: Manifest B — agent: cost-triage-agent<br/>tools: billing-lookup, similar-past-case-lookup<br/>memory_namespace="cost-anomaly-triage"
     Orchestrator->>MemoryStore: GetContext (gRPC · app_id=cost-anomaly-triage)
-    Note over MemoryStore: key = ctx:cost-anomaly-triage:{alert_key}:{window}<br/>— same alert_key as app A's request, never collides
+    Note over MemoryStore: key = mem:cost-anomaly-triage:{alert_key}:events<br/>— same alert_key as app A's request, never collides
     MemoryStore-->>Orchestrator: GetContextResponse
     Orchestrator->>ToolGateway: tool-call (MCP · allowlist = billing-lookup, similar-past-case-lookup)
     Note over ToolGateway: cost-triage-agent cannot see or call<br/>lookup_runbook — app A's tool, not allowlisted here

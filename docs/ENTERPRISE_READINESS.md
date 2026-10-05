@@ -119,14 +119,15 @@ policies.
 | Data | Default retention | Notes |
 |---|---|---|
 | `cases` + `resolution_notes` | Long (e.g. 1–2 years) | The accuracy record and fix history |
-| `memory_history` | Matches longest memory window plus margin | Older history doesn't affect decisions |
+| `memory_events` | e.g. 90 days, keeping one row per all-time fact (`seen`, confirmed incident) per `alert_key` | Windows only read the last 7 days; older rows only feed `is_novel_alert` / `has_confirmed_incident_history` (ADR-0017). No pruning job in this build |
 | `outbox` (`SENT`) | Days | Already pruned (Day 15) |
 | Traces (full transcripts) | Short (e.g. 14–30 days) | Most sensitive, least needed long-term |
 | Audit log | Per compliance policy | Separate store |
 
 Deletion requests (e.g. a user's data) are honored by deleting or
-redacting matching `cases` and traces; aggregates in `memory-store` hold
-no personal data once usernames are hashed.
+redacting matching `cases` and traces; `memory-store` holds only
+`alert_key`, event kinds and ids, so it has no personal data once usernames
+in `alert_key_fields` are hashed.
 
 ### Changes to the platform
 
@@ -278,7 +279,7 @@ its memory and cases.
 
 - Add `org_id` alongside `app_id`: on `RunAgentRequest` and the response
   (new proto field numbers — additive), on every app-scoped row and Redis
-  key (`ctx:{memory_namespace}:{org_id}:{alert_key}:{window}`), in the
+  key (`mem:{memory_namespace}:{org_id}:{alert_key}:events`), in the
   Kafka message key (`{org_id}:{app_id}:{alert_key}`), budgets, rate
   limits, roles, and audit.
 - Apps stay shared definitions; an org may override a small, explicit set

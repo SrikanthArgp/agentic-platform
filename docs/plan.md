@@ -242,7 +242,7 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 **Goal**: analyst verdicts measurably change future agent behavior.
 
-- Extend `memory-store`'s Kafka consumer to handle `verdict.recorded` — increment `confirmed_noise_count` or `confirmed_incident_count` in each window for that `alert_key` (and set `has_confirmed_incident_history` on an incident). That's the mechanism: a confirmed-noise verdict lowers future escalation likelihood for that alert key; a confirmed-real-incident verdict raises it. Update each app's prompt to use these fields explicitly.
+- Extend `memory-store`'s Kafka consumer to handle `verdict.recorded` *(as built on Day 6, this means recording a `verdict:CONFIRMED_INCIDENT` / `verdict:CONFIRMED_NOISE` event in `memory_events` with `ref_id` = `case_id`; the window counts and the all-time flag then follow from `app/core/events.py` with no new counters, ADR-0017)* — increment `confirmed_noise_count` or `confirmed_incident_count` in each window for that `alert_key` (and set `has_confirmed_incident_history` on an incident). That's the mechanism: a confirmed-noise verdict lowers future escalation likelihood for that alert key; a confirmed-real-incident verdict raises it. Update each app's prompt to use these fields explicitly.
 - Remove the Day 4 throwaway debug endpoint on `ingestion` now that `review-console` is the real read path.
 - **Unit tests**: verdict-driven adjustment logic against a mocked/in-memory Redis (noise verdict → `confirmed_noise_count` up in all windows; incident verdict → `confirmed_incident_count` up and the all-time flag set; a verdict for app A never touches app B's key).
 

@@ -62,14 +62,16 @@ flowchart TB
     ORCH -->|"Kafka: alert.decided"| KAFKA
     ORCH <-.->|"budgets, dedupe"| REDIS
     TG -->|"REST GET /cases (similar-past-case-lookup)"| RC
+    TG -->|"REST agent's allowed tools (per-call check)"| REG
     KAFKA -->|consume| RC
     AN -->|"REST GET/POST cases, verdict"| RC
     RC -->|"Kafka: verdict.recorded"| KAFKA
-    KAFKA -->|consume| MS
+    KAFKA -->|"consume alert.decided, verdict.recorded"| MS
+    MS -->|"REST memory_namespace"| REG
 
-    MS <-->|"hot aggregates"| REDIS
-    MS <-->|"durable snapshot"| PG
-    REG <-->|"App Manifests"| PG
+    MS <-->|"last 7 days of events per alert_key"| REDIS
+    MS <-->|"memory_events (event log)"| PG
+    REG <-->|"App Manifests, tools"| PG
     RC <-->|"cases"| PG
 
     CEL -->|"relay: alert.received / alert.received.dlq"| KAFKA
@@ -162,12 +164,16 @@ the whole platform.
 
 ### `memory-store`
 The only service that reads/writes behavioral history. Serves `GetContext`
-over gRPC — rolling-window aggregates (1h/24h/7d) per `alert_key`, scoped
-by the calling app's `memory_namespace` so two apps' identical alert keys
-never collide. Redis is the hot path; Postgres (`memory_history`) is the
-durable source of truth Redis rebuilds from on a cache miss. Also consumes
-`verdict.recorded` from Kafka to adjust future aggregates — this is the
-platform's feedback loop closing.
+over gRPC — rolling-window counts (1h/24h/7d) of decisions (and, from
+Day 10, analyst verdicts) per `alert_key`, plus `is_novel_alert` and
+`has_confirmed_incident_history`. History is an event log (ADR-0017): it
+consumes `alert.decided` (ADR-0016) and, from Day 10, `verdict.recorded`,
+storing one Postgres `memory_events` row per event — the source of truth.
+Redis caches each key's last 7 days, prefixed by the app's
+`memory_namespace` (looked up from `registry`, ADR-0018) so two apps'
+identical alert keys never collide; a cache miss rebuilds from Postgres.
+Verdicts feeding back into these counts is the platform's feedback loop
+closing.
 
 ### `registry`
 The capability and app directory. Two things live here: (1) agent/tool
@@ -175,9 +181,12 @@ registrations with versions and schemas, and (2) **App Manifests** — one
 per configured use case, declaring that app's agents (incl. `invoke_on` for
 callables), tools, event schema, and memory namespace. A manifest's source
 of truth is `backend/apps/{app_id}/manifest.yaml`; `register_app.py`
-upserts it here, and `registry` validates it on the way in. `ingestion` and
-`orchestrator` resolve "what am I allowed to do for this `app_id`" by
-asking `registry`, never by hardcoding it. This is what makes adding app #2
+upserts it here, and `registry` validates it on the way in. It serves each
+app *resolved*: every agent carries the tools it may call right now
+(allowlisted, declared, enabled). `ingestion`, `orchestrator` and
+`tool-gateway` resolve "what am I allowed to do for this `app_id`" by
+asking `registry` (cached 30s), never by hardcoding it; `memory-store` reads
+only the app's `memory_namespace`. This is what makes adding app #2
 or #3 a registration plus an app folder, not a platform code change.
 
 ### `review-console`
@@ -207,7 +216,8 @@ being lost during a Kafka outage (`ARCHITECTURE.md` §10).
 
 ### Kafka
 The event backbone connecting `ingestion` (via the Celery outbox relay),
-`orchestrator`, `review-console`, and `memory-store`. Four topics:
+`orchestrator`, `review-console`, and `memory-store` (which reads
+`alert.decided` in its own consumer group). Four topics:
 `alert.received`, `alert.decided` (both protobuf-encoded
 `RunAgentRequest`/`Response` — the same contract used for the `orchestrator`
 gRPC entrypoint, so there's only one schema to maintain),
@@ -219,16 +229,17 @@ Kafka headers so a single event's journey is one connected trace, not five
 disjoint ones.
 
 ### Redis
-`memory-store`'s hot-path cache for context aggregates
-(`ctx:{memory_namespace}:{alert_key}:{window}`), `orchestrator`'s
+`memory-store`'s hot-path cache of each alert key's recent events
+(`mem:{memory_namespace}:{alert_key}:events`, a 7-day sorted set, plus
+`:facts`), `orchestrator`'s
 per-app/agent budget counters (`budget:{app_id}:{agent_id}:{date}`) and
 dedupe markers (`seen:{app_id}:{alert_id}`), `ingestion`'s rate-limit
 counters, and Celery's broker (task queue, in a separate Redis DB index).
 
 ### Postgres
-Single local instance, four concerns: `cases` (review-console, app-scoped),
-`memory_history` (memory-store's durable snapshot, app-scoped), `apps`
-(registry's App Manifest store), and `outbox` (ingestion's pending Kafka
+Single local instance, five concerns: `cases` (review-console, app-scoped),
+`memory_events` (memory-store's event log, app-scoped), `apps` and `tools`
+(registry's App Manifests and tool registrations), and `outbox` (ingestion's pending Kafka
 publishes, drained by the Celery relay).
 
 ---
