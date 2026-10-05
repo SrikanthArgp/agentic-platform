@@ -28,7 +28,14 @@ tools:
 # Prefix of every memory-store key for this app (§3, §6).
 memory_namespace: it-ops-triage
 
-# Deterministic guardrails (ADR-0010), applied from Day 7. Rules are
-# "payload.<path>" or "context.<GetContextResponse field>"; the envelope's
-# severity isn't addressable, so it-ops' rules are chosen with Day 7.
-escalate_when: []
+# Deterministic guardrails (ADR-0010, ADR-0021): any match forces ESCALATE,
+# whatever the agent decided. Rules read "alert.<envelope field>",
+# "payload.<path>" or "context.<GetContextResponse field>".
+escalate_when:
+  - field: alert.severity
+    in: [critical]
+
+# Supervisor (ADR-0020): below this confidence, the decision becomes
+# ESCALATE. Omit to use orchestrator's default (0.6).
+supervisor:
+  min_confidence: 0.6

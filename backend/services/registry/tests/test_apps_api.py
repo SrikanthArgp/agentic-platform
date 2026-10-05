@@ -168,7 +168,10 @@ def test_empty_alert_key_fields_is_rejected(registered):
 
 @pytest.mark.parametrize(
     "field",
-    ["context.no_such_field", "context.window_24h", "context.window_24h.nope", "severity", "payload."],
+    [
+        "context.no_such_field", "context.window_24h", "context.window_24h.nope", "severity", "payload.",
+        "alert.", "alert.alert_id", "alert.payload", "alert.severity.x", "headers.x",
+    ],
 )
 def test_bad_escalate_when_field_is_rejected(registered, field):
     m = manifest(escalate_when=[{"field": field, "in": [True]}])
@@ -176,7 +179,11 @@ def test_bad_escalate_when_field_is_rejected(registered, field):
 
 
 @pytest.mark.parametrize(
-    "field", ["context.is_novel_alert", "context.window_7d.confirmed_incident_count", "payload.labels.team"]
+    "field",
+    [
+        "context.is_novel_alert", "context.window_7d.confirmed_incident_count", "payload.labels.team",
+        "alert.severity", "alert.source", "alert.message", "alert.alert_key",
+    ],
 )
 def test_valid_escalate_when_fields_are_accepted(registered, field):
     m = manifest(escalate_when=[{"field": field, "in": [True, 3, "x"]}])
@@ -184,7 +191,7 @@ def test_valid_escalate_when_fields_are_accepted(registered, field):
 
 
 def test_escalate_when_needs_values(registered):
-    m = manifest(escalate_when=[{"field": "payload.severity", "in": []}])
+    m = manifest(escalate_when=[{"field": "alert.severity", "in": []}])
     assert registered.put(APP_URL, json=m).status_code == 422
 
 
@@ -208,3 +215,20 @@ def test_every_problem_is_reported_at_once(registered):
 def test_rejected_manifest_is_not_stored(registered):
     registered.put(APP_URL, json=manifest(alert_key_fields=[]))
     assert registered.get(APP_URL).status_code == 404
+
+
+def test_supervisor_min_confidence_is_stored_and_served(registered):
+    assert registered.put(APP_URL, json=manifest(supervisor={"min_confidence": 0.75})).status_code == 201
+    assert registered.get(APP_URL).json()["supervisor"] == {"min_confidence": 0.75}
+
+
+def test_supervisor_is_optional_and_served_as_null(registered):
+    m = manifest()
+    m.pop("supervisor", None)
+    assert registered.put(APP_URL, json=m).status_code == 201
+    assert registered.get(APP_URL).json()["supervisor"] is None
+
+
+@pytest.mark.parametrize("supervisor", [{"min_confidence": 1.5}, {"min_confidence": -0.1}, {"threshold": 0.5}])
+def test_bad_supervisor_is_rejected(registered, supervisor):
+    assert registered.put(APP_URL, json=manifest(supervisor=supervisor)).status_code == 422

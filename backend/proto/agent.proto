@@ -73,4 +73,9 @@ message RunAgentResponse {
   // (memory-store's decision counts, review-console's cases) don't parse it
   // out of the Kafka key. See docs/adr/0016.
   string alert_key = 7;
+  // The supervisor's confidence in `decision`, 0–1: the agent's own
+  // estimate, capped by fixed rules (novel alert, no memory context, ...).
+  // Below the app's threshold the decision was forced to ESCALATE. 0 when
+  // the run produced no answer of its own. See docs/adr/0020.
+  float confidence = 8;
 }

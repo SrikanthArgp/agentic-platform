@@ -1,6 +1,6 @@
 # registry — class diagram
 
-As built through Day 5 of `docs/plan.md`. `registry` stores two kinds of
+As built through Day 7 of `docs/plan.md`. `registry` stores two kinds of
 records: **tool registrations** (one per `tool_id` + `version`) and **App
 Manifests** (one per `app_id`). It validates a manifest when it is
 registered, and serves it back *resolved*: each agent carries the tools it
@@ -127,7 +127,12 @@ classDiagram
             +alert_key_fields: list~str~
             +memory_namespace: str
             +escalate_when: list~EscalateRuleIn~
+            +supervisor: SupervisorIn?
             +stored() dict
+        }
+        class SupervisorIn {
+            <<pydantic, extra=forbid>>
+            +min_confidence: float? 0-1
         }
         class AgentIn {
             <<pydantic, extra=forbid>>
@@ -189,6 +194,7 @@ classDiagram
             +alert_key_fields: list~str~
             +memory_namespace: str
             +escalate_when: list~dict~
+            +supervisor: dict?
             +updated_at: datetime?
         }
         class ResolvedAgent {
@@ -217,6 +223,7 @@ classDiagram
         class validation {
             <<module: app.core.validation>>
             +DECISIONS: frozenset
+            +ENVELOPE_FIELDS: tuple
             +validate_manifest(manifest, url_app_id, lookup_tool) list~FieldError~
             -_check_tools(manifest, lookup_tool)
             -_check_agents(manifest)
@@ -293,6 +300,7 @@ classDiagram
     ManifestIn *-- AgentIn
     ManifestIn *-- ToolRefIn
     ManifestIn *-- EscalateRuleIn
+    ManifestIn *-- SupervisorIn
 
     ResolvedApp *-- ResolvedAgent
     ResolvedApp *-- ResolvedToolRef
@@ -363,8 +371,10 @@ Three groups of pydantic models:
 
 - **Input** (`extra="forbid"`, so a typo'd field is a `422`, not silently
   dropped): `ToolIn`, `ToolEnabledIn`, `ManifestIn` with `AgentIn`,
-  `ToolRefIn`, `EscalateRuleIn`. `EscalateRuleIn.in_` is aliased to `in`
-  (a Python keyword) and must be non-empty. `ManifestIn.stored()` dumps the
+  `ToolRefIn`, `EscalateRuleIn`, `SupervisorIn`. `EscalateRuleIn.in_` is
+  aliased to `in` (a Python keyword) and must be non-empty.
+  `SupervisorIn.min_confidence` is optional, 0–1 (ADR-0020); the whole
+  `supervisor` block is optional. `ManifestIn.stored()` dumps the
   manifest as the JSON document kept in the `apps` row (with `in`, not
   `in_`).
 - **Stored**: `Tool` (a `tools` row; `definition()` is the subset `PUT`
@@ -372,6 +382,8 @@ Three groups of pydantic models:
   `AppRecord` (an `apps` row), `UpsertResult {created, changed}`.
 - **Served**: `ResolvedApp` → `ResolvedAgent` → `EffectiveTool`, plus
   `ResolvedToolRef` (each declared tool with its `enabled` flag).
+  `ResolvedApp.supervisor` is passed through as stored (`null` for
+  manifests registered before Day 7).
 
 Shared patterns: `SLUG` (`app_id`, `agent_id`, `memory_namespace`),
 `TOOL_ID`, `VERSION`.
@@ -395,7 +407,8 @@ field:
 | `agents[i].invoke_on` | set on the entry agent; empty on a callable agent |
 | `agents[i].invoke_on[j]` | not a `Decision` name (`DECISION_UNSPECIFIED` excluded) |
 | `alert_key_fields` | empty, or a field repeated |
-| `escalate_when[i].field` | not `payload.<path>`; or a `context.<path>` that isn't a scalar field of `GetContextResponse` (walked via the proto descriptor, e.g. `context.window_24h.escalation_count` is fine, `context.window_24h` is not) |
+| `escalate_when[i].field` | doesn't start with `alert.`, `payload.` or `context.`; an `alert.<name>` whose name isn't in `ENVELOPE_FIELDS` (`source`, `severity`, `message`, `alert_key`; ADR-0021 — `orchestrator`'s guardrails list the same); an invalid `payload.<path>`; or a `context.<path>` that isn't a scalar field of `GetContextResponse` (walked via the proto descriptor, e.g. `context.window_24h.escalation_count` is fine, `context.window_24h` is not) |
+| `supervisor.min_confidence` | outside 0–1 (a pydantic `422`, before these checks) |
 
 Not checked here (files in other images): `prompt_ref` (`orchestrator`),
 `event_schema_ref` and whether `alert_key_fields` are properties of it

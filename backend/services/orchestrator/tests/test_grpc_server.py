@@ -18,15 +18,6 @@ async def stub(apps_dir, unused_port):
     await server.stop(grace=None)
 
 
-@pytest.fixture
-def unused_port():
-    import socket
-
-    with socket.socket() as s:
-        s.bind(("localhost", 0))
-        return s.getsockname()[1]
-
-
 async def test_run_agent_returns_decision(stub):
     response = await stub.RunAgent(make_request())
     assert response.decision == agent_pb2.SUPPRESS

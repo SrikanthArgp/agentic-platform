@@ -10,6 +10,7 @@ from app.core.config import Settings
 from app.core.manifest import ManifestStore
 from app.grpc.server import start_grpc_server
 from app.kafka.alerts import AlertPipeline
+from app.memory.client import MemoryStoreClient
 from app.tools.gateway import MCPToolGateway
 from observability import setup_observability
 from registry_client import RegistryClient
@@ -32,12 +33,14 @@ def build_llm(settings: Settings) -> LLMClient:
     raise ValueError(f"Unsupported LLM_PROVIDER '{settings.llm_provider}'.")
 
 
-def build_runner(settings: Settings, registry: RegistryClient) -> AgentRunner:
+def build_runner(settings: Settings, registry: RegistryClient, memory: MemoryStoreClient) -> AgentRunner:
     return AgentRunner(
         manifests=ManifestStore(registry, settings.apps_dir),
         gateway=MCPToolGateway(settings.tool_gateway_url),
         llm=build_llm(settings),
+        memory=memory,
         max_tool_rounds=settings.max_tool_rounds,
+        min_confidence=settings.min_confidence,
     )
 
 
@@ -47,7 +50,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # import this module without one.
     settings = Settings.from_env()
     registry = RegistryClient(settings.registry_url, ttl_s=settings.manifest_ttl_s)
-    runner = build_runner(settings, registry)
+    # One channel for the process's lifetime, reused by every run (docs/adr/0019).
+    memory = MemoryStoreClient(settings.memory_store_target, settings.memory_store_timeout_s)
+    runner = build_runner(settings, registry, memory)
     grpc_server = await start_grpc_server(runner, settings.grpc_port)
     pipeline = AlertPipeline(runner, settings.kafka_bootstrap_servers) if settings.kafka_enabled else None
     if pipeline:
@@ -58,6 +63,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if pipeline:
             await pipeline.stop()
         await grpc_server.stop(grace=5)
+        await memory.aclose()
         await registry.aclose()
 
 

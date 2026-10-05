@@ -47,5 +47,7 @@ def resolve_app(record: AppRecord, tools: Mapping[tuple[str, str], Tool]) -> Res
         alert_key_fields=m["alert_key_fields"],
         memory_namespace=m["memory_namespace"],
         escalate_when=m["escalate_when"],
+        # Manifests stored before Day 7 have no supervisor key.
+        supervisor=m.get("supervisor"),
         updated_at=record.updated_at,
     )

@@ -24,6 +24,9 @@ from proto_gen import agent_pb2, memory_store_pb2
 # Every Decision except the proto3 zero value.
 DECISIONS = frozenset(n for n in agent_pb2.Decision.keys() if n != "DECISION_UNSPECIFIED")
 _PAYLOAD_PATH = re.compile(r"^payload(\.[A-Za-z0-9_-]+)+$")
+# The RunAgentRequest envelope fields a rule may read (ADR-0021); orchestrator's
+# guardrails.ENVELOPE_FIELDS must list the same.
+ENVELOPE_FIELDS = ("source", "severity", "message", "alert_key")
 
 
 @dataclass(frozen=True)
@@ -117,11 +120,16 @@ def _check_agents(manifest: ManifestIn) -> list[FieldError]:
 
 
 def _escalate_field_problem(field: str) -> str | None:
+    if field.startswith("alert."):
+        name = field.removeprefix("alert.")
+        return None if name in ENVELOPE_FIELDS else (
+            f"'{field}' is not an envelope field; use one of {[f'alert.{n}' for n in ENVELOPE_FIELDS]}."
+        )
     if field.startswith("payload."):
         return None if _PAYLOAD_PATH.match(field) else f"'{field}' is not a valid payload.<path>."
     if field.startswith("context."):
         return _context_path_problem(field.removeprefix("context."))
-    return f"'{field}' must start with 'payload.' or 'context.'."
+    return f"'{field}' must start with 'alert.', 'payload.' or 'context.'."
 
 
 def _context_path_problem(path: str) -> str | None:

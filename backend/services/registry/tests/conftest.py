@@ -48,7 +48,7 @@ MANIFEST: dict[str, Any] = {
     "alert_key_fields": ["alert_type", "host"],
     "memory_namespace": APP_ID,
     "escalate_when": [
-        {"field": "payload.severity", "in": ["critical"]},
+        {"field": "alert.severity", "in": ["critical"]},
         {"field": "context.has_confirmed_incident_history", "in": [True]},
     ],
 }

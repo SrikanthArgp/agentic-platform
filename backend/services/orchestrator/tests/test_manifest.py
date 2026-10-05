@@ -61,3 +61,27 @@ async def test_fields_added_by_registry_later_are_ignored(apps_dir):
     registry = FakeRegistry()
     registry.apps[APP_ID]["some_future_field"] = {"x": 1}
     assert (await ManifestStore(registry, apps_dir).get(APP_ID)).app_id == APP_ID
+
+
+async def test_escalate_when_and_supervisor_parse_from_registry(apps_dir):
+    registry = FakeRegistry()
+    registry.apps[APP_ID]["escalate_when"] = [
+        {"field": "alert.severity", "in": ["critical"]},
+        {"field": "context.has_confirmed_incident_history", "in": [True]},
+    ]
+    registry.apps[APP_ID]["supervisor"] = {"min_confidence": 0.8}
+    manifest = await ManifestStore(registry, apps_dir).get(APP_ID)
+
+    assert [(r.field, list(r.values)) for r in manifest.guardrails()] == [
+        ("alert.severity", ["critical"]),
+        ("context.has_confirmed_incident_history", [True]),
+    ]
+    assert manifest.min_confidence(default=0.6) == 0.8
+
+
+@pytest.mark.parametrize("supervisor", [None, {}, {"min_confidence": None}])
+async def test_min_confidence_falls_back_to_the_platform_default(apps_dir, supervisor):
+    registry = FakeRegistry()
+    registry.apps[APP_ID]["supervisor"] = supervisor
+    manifest = await ManifestStore(registry, apps_dir).get(APP_ID)
+    assert manifest.min_confidence(default=0.6) == 0.6

@@ -1,10 +1,11 @@
-"""Fakes for unit tests: a scripted LLM, an in-memory tool-gateway, and registry.
+"""Fakes for unit tests: a scripted LLM, an in-memory tool-gateway, registry, and memory-store.
 
 No test calls a real LLM or opens a network connection (docs/plan.md Day 3).
 """
 
 import copy
 import json
+import socket
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -17,9 +18,10 @@ from google.protobuf.struct_pb2 import Struct
 from app.agent.llm import LLMResponse, Message, ToolCallRequest, ToolDefinition, Usage
 from app.agent.loop import AgentRunner
 from app.core.manifest import ManifestStore
+from app.memory.client import ContextUnavailableError
 from app.tools.gateway import ToolResult
 from registry_client import AppNotFoundError
-from proto_gen import agent_pb2
+from proto_gen import agent_pb2, memory_store_pb2
 from run_context import RunContext
 
 APP_ID = "test-app"
@@ -73,6 +75,13 @@ def anyio_backend() -> str:
 
 
 @pytest.fixture
+def unused_port() -> int:
+    with socket.socket() as s:
+        s.bind(("localhost", 0))
+        return s.getsockname()[1]
+
+
+@pytest.fixture
 def apps_dir(tmp_path: Path) -> Path:
     app_dir = tmp_path / APP_ID
     (app_dir / "prompts").mkdir(parents=True)
@@ -101,8 +110,42 @@ def tool_call(name: str = "lookup_runbook", call_id: str = "call-1", **arguments
     return ToolCallRequest(id=call_id, name=name, arguments=args, raw_arguments=json.dumps(args))
 
 
-def final(decision: str = "AUTO_RESOLVE", *reasons: str) -> LLMResponse:
-    return LLMResponse(text=json.dumps({"decision": decision, "reasons": list(reasons) or ["RB-001 says so"]}))
+def final(decision: str = "AUTO_RESOLVE", *reasons: str, confidence: float = 0.9) -> LLMResponse:
+    return LLMResponse(text=json.dumps(
+        {"decision": decision, "confidence": confidence, "reasons": list(reasons) or ["RB-001 says so"]}
+    ))
+
+
+def context(
+    *, novel: bool = False, incident_history: bool = False, **windows: dict[str, int]
+) -> memory_store_pb2.GetContextResponse:
+    """A `GetContextResponse` for `make_request()`'s key. `windows`: e.g.
+    `window_24h={"alert_count": 3}`."""
+    ctx = memory_store_pb2.GetContextResponse(
+        app_id=APP_ID, alert_key="disk_full:web-01",
+        is_novel_alert=novel, has_confirmed_incident_history=incident_history,
+    )
+    for name, counts in windows.items():
+        getattr(ctx, name).CopyFrom(memory_store_pb2.ContextAggregate(**counts))
+    return ctx
+
+
+# A key seen before, nothing remarkable: no supervisor cap applies.
+KNOWN_CONTEXT = context(window_7d={"alert_count": 3, "suppression_count": 1})
+
+
+@dataclass
+class FakeMemory:
+    """`MemoryStoreClient.get_context`: `context`, or ContextUnavailableError when it's None."""
+
+    context: memory_store_pb2.GetContextResponse | None = field(default_factory=lambda: KNOWN_CONTEXT)
+    calls: list[tuple[str, str]] = field(default_factory=list)
+
+    async def get_context(self, app_id: str, alert_key: str) -> memory_store_pb2.GetContextResponse:
+        self.calls.append((app_id, alert_key))
+        if self.context is None:
+            raise ContextUnavailableError("UNAVAILABLE: connection refused")
+        return self.context
 
 
 @dataclass
@@ -158,6 +201,10 @@ def make_runner(
     gateway: FakeGateway | None = None,
     max_tool_rounds: int = 5,
     registry: FakeRegistry | None = None,
+    memory: FakeMemory | None = None,
+    min_confidence: float = 0.6,
 ):
     manifests = ManifestStore(registry or FakeRegistry(), apps_dir)
-    return AgentRunner(manifests, gateway or FakeGateway(), llm, max_tool_rounds)
+    return AgentRunner(
+        manifests, gateway or FakeGateway(), llm, memory or FakeMemory(), max_tool_rounds, min_confidence
+    )

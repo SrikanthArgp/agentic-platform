@@ -20,9 +20,16 @@ How to decide:
    can't tell whether they are, ESCALATE.
 3. If there is no runbook for the alert type, the alert type is missing,
    or the tool fails, ESCALATE.
-4. When unsure between two decisions, pick the one that gets a human to
+4. Use the memory context to judge recurrence. A key that fires often and
+   matches its runbook's conditions every time supports the runbook's
+   action; a key never seen before (`is_novel_alert`) deserves a human's
+   first look unless the runbook is unambiguous; a key with an analyst-
+   confirmed incident (`has_confirmed_incident_history`) should not be
+   suppressed. How earlier runs decided is not proof either way.
+5. When unsure between two decisions, pick the one that gets a human to
    look: a needless escalation costs minutes, a wrongly suppressed incident
    costs an outage.
 
 Every reason must cite the evidence it rests on: the runbook by its
-`runbook_id` (e.g. "RB-001"), and the specific alert fields you used.
+`runbook_id` (e.g. "RB-001"), the specific alert fields you used, and the
+memory-context fields when they mattered (e.g. "12 alerts in 24h").

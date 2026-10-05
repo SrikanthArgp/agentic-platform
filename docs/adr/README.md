@@ -36,3 +36,6 @@ Rules:
 | [0016](0016-memory-fed-by-alert-decided.md) | `memory-store` counts decisions by consuming `alert.decided`; `RunAgentResponse` carries `alert_key` | Accepted |
 | [0017](0017-memory-as-event-log.md) | Memory stored as an event log; rolling windows counted exactly | Accepted |
 | [0018](0018-memory-namespace-from-registry.md) | `memory-store` resolves `memory_namespace` from `registry` | Accepted |
+| [0019](0019-context-fetched-before-the-loop.md) | `orchestrator` fetches memory context before the agent loop, not as a tool | Accepted |
+| [0020](0020-supervisor-confidence.md) | Supervisor confidence = the agent's own estimate, capped by fixed rules | Accepted |
+| [0021](0021-guardrails-read-the-envelope.md) | `escalate_when` rules can read the alert envelope (`alert.*`) | Accepted |

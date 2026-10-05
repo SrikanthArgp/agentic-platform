@@ -201,6 +201,7 @@ services:
     environment:
       <<: *default-env
       TOOL_GATEWAY_URL: http://tool-gateway:8000/mcp
+      MEMORY_STORE_TARGET: memory-store:50051
       LLM_PROVIDER: openai
       LLM_MODEL: ${LLM_MODEL:-gpt-5.4-mini}
     # The LLM API key (OPENAI_API_KEY), only for orchestrator. Copy
@@ -215,6 +216,7 @@ services:
       redis: { condition: service_healthy }
       tool-gateway: { condition: service_healthy }
       registry: { condition: service_healthy }
+      memory-store: { condition: service_healthy }
 
   tool-gateway:
     <<: *service-defaults

@@ -10,7 +10,9 @@ files in this image (`prompt_ref` is resolved here, §12).
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.agent.guardrails import Rule
 
 from registry_client import AppNotFoundError, RegistryUnavailableError
 
@@ -46,6 +48,25 @@ class AgentSpec(BaseModel):
     tools: list[AgentTool] = []
 
 
+class EscalateRule(BaseModel):
+    """One `escalate_when` guardrail (ADR-0010, ADR-0021); registry validated its field."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    field: str
+    in_: list[str | bool | int | float] = Field(alias="in")
+
+    def rule(self) -> Rule:
+        return Rule(self.field, self.in_)
+
+
+class SupervisorSpec(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    # None: orchestrator's MIN_CONFIDENCE default (docs/adr/0020).
+    min_confidence: float | None = Field(default=None, ge=0, le=1)
+
+
 class AppManifest(BaseModel):
     # extra="ignore": fields registry adds later must not break an older
     # orchestrator.
@@ -55,7 +76,15 @@ class AppManifest(BaseModel):
     display_name: str
     agents: list[AgentSpec]
     memory_namespace: str = ""
-    escalate_when: list[dict[str, Any]] = []
+    escalate_when: list[EscalateRule] = []
+    supervisor: SupervisorSpec | None = None
+
+    def guardrails(self) -> list[Rule]:
+        return [r.rule() for r in self.escalate_when]
+
+    def min_confidence(self, default: float) -> float:
+        value = self.supervisor.min_confidence if self.supervisor else None
+        return default if value is None else value
 
     def agent(self, agent_id: str) -> AgentSpec:
         """The named agent, or the app's entry agent when `agent_id` is empty."""

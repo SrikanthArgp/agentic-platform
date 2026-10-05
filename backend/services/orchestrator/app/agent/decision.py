@@ -1,4 +1,4 @@
-"""Parse the agent's final answer into a decision and reasons.
+"""Parse the agent's final answer into a decision, confidence and reasons.
 
 Anything that doesn't parse cleanly is an error for the caller to turn into
 ESCALATE (fail toward escalation, docs/ARCHITECTURE.md §13.4); this module
@@ -28,12 +28,16 @@ class _FinalAnswer(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     decision: Literal["AUTO_RESOLVE", "ESCALATE", "SUPPRESS"]
+    # The agent's own estimate, 0-1; the supervisor caps it (docs/adr/0020).
+    # strict: `true` is not a confidence.
+    confidence: float = Field(ge=0, le=1, strict=True)
     reasons: list[str] = Field(min_length=1)
 
 
 @dataclass(frozen=True)
 class ParsedDecision:
     decision: agent_pb2.Decision
+    confidence: float
     reasons: list[str]
 
 
@@ -54,4 +58,6 @@ def parse_decision(text: str | None) -> ParsedDecision:
     reasons = [r.strip()[:MAX_REASON_CHARS] for r in answer.reasons if r.strip()][:MAX_REASONS]
     if not reasons:
         raise DecisionParseError("Agent's final answer has no non-empty reasons.")
-    return ParsedDecision(decision=agent_pb2.Decision.Value(answer.decision), reasons=reasons)
+    return ParsedDecision(
+        decision=agent_pb2.Decision.Value(answer.decision), confidence=answer.confidence, reasons=reasons
+    )

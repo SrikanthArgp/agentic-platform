@@ -50,7 +50,7 @@ class ToolCall(_message.Message):
     def __init__(self, tool_name: _Optional[str] = ..., result_summary: _Optional[str] = ...) -> None: ...
 
 class RunAgentResponse(_message.Message):
-    __slots__ = ("app_id", "agent_id", "alert_id", "decision", "reasons", "tool_calls", "alert_key")
+    __slots__ = ("app_id", "agent_id", "alert_id", "decision", "reasons", "tool_calls", "alert_key", "confidence")
     APP_ID_FIELD_NUMBER: _ClassVar[int]
     AGENT_ID_FIELD_NUMBER: _ClassVar[int]
     ALERT_ID_FIELD_NUMBER: _ClassVar[int]
@@ -58,6 +58,7 @@ class RunAgentResponse(_message.Message):
     REASONS_FIELD_NUMBER: _ClassVar[int]
     TOOL_CALLS_FIELD_NUMBER: _ClassVar[int]
     ALERT_KEY_FIELD_NUMBER: _ClassVar[int]
+    CONFIDENCE_FIELD_NUMBER: _ClassVar[int]
     app_id: str
     agent_id: str
     alert_id: str
@@ -65,4 +66,5 @@ class RunAgentResponse(_message.Message):
     reasons: _containers.RepeatedScalarFieldContainer[str]
     tool_calls: _containers.RepeatedCompositeFieldContainer[ToolCall]
     alert_key: str
-    def __init__(self, app_id: _Optional[str] = ..., agent_id: _Optional[str] = ..., alert_id: _Optional[str] = ..., decision: _Optional[_Union[Decision, str]] = ..., reasons: _Optional[_Iterable[str]] = ..., tool_calls: _Optional[_Iterable[_Union[ToolCall, _Mapping]]] = ..., alert_key: _Optional[str] = ...) -> None: ...
+    confidence: float
+    def __init__(self, app_id: _Optional[str] = ..., agent_id: _Optional[str] = ..., alert_id: _Optional[str] = ..., decision: _Optional[_Union[Decision, str]] = ..., reasons: _Optional[_Iterable[str]] = ..., tool_calls: _Optional[_Iterable[_Union[ToolCall, _Mapping]]] = ..., alert_key: _Optional[str] = ..., confidence: _Optional[float] = ...) -> None: ...

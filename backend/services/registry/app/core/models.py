@@ -89,9 +89,16 @@ class ToolRefIn(_Strict):
 class EscalateRuleIn(_Strict):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    # "payload.<path>" or "context.<GetContextResponse field path>".
+    # "alert.<envelope field>", "payload.<path>" or "context.<GetContextResponse
+    # field path>" (ADR-0010, ADR-0021).
     field: str
     in_: list[Scalar] = Field(alias="in", min_length=1)
+
+
+class SupervisorIn(_Strict):
+    # Below this, orchestrator's supervisor escalates; omitted -> its
+    # MIN_CONFIDENCE default (docs/adr/0020).
+    min_confidence: float | None = Field(default=None, ge=0, le=1)
 
 
 class ManifestIn(_Strict):
@@ -105,6 +112,7 @@ class ManifestIn(_Strict):
     alert_key_fields: list[str]
     memory_namespace: str = Field(pattern=SLUG)
     escalate_when: list[EscalateRuleIn] = []
+    supervisor: SupervisorIn | None = None
 
     def stored(self) -> dict[str, Any]:
         """The JSON document kept in the `apps` row."""
@@ -154,6 +162,7 @@ class ResolvedApp(BaseModel):
     alert_key_fields: list[str]
     memory_namespace: str
     escalate_when: list[dict[str, Any]]
+    supervisor: dict[str, Any] | None = None
     updated_at: datetime | None = None
 
 

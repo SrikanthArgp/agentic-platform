@@ -1,11 +1,13 @@
 # orchestrator — class diagram
 
-As built through Day 6 of `docs/plan.md`. `orchestrator` runs the agents.
+As built through Day 7 of `docs/plan.md`. `orchestrator` runs the agents.
 It takes a `RunAgentRequest` (from Kafka `alert.received`, or the gRPC
 `RunAgent` call), resolves the app's manifest from `registry` and the
-prompt from its image, runs an LLM tool-calling loop against
-`tool-gateway` over MCP, and returns a `RunAgentResponse` with a decision,
-`reasons[]` and the tool-call trace.
+prompt from its image, fetches the alert_key's history from `memory-store`
+over gRPC, runs an LLM tool-calling loop against `tool-gateway` over MCP,
+then applies the supervisor and the `escalate_when` guardrails, and returns
+a `RunAgentResponse` with a decision, a confidence, `reasons[]` and the
+tool-call trace.
 
 Python modules that are plain functions (no class) are drawn as
 `<<module>>` boxes. Third-party and cross-service types are in the
@@ -25,17 +27,20 @@ classDiagram
         <<layer>>
         AgentRunner
         prompt, decision
+        supervisor, guardrails
     }
     class Ports {
         <<layer: Protocols>>
         LLMClient
         ToolGateway / ToolSession
+        ContextSource
         AppSource (via ManifestStore)
     }
     class Adapters {
         <<layer>>
         OpenAIChatClient
         MCPToolGateway / MCPToolSession
+        MemoryStoreClient - gRPC
         RegistryClient (ap-shared) + prompt files
     }
     Transports --> AgentCore : run(request)
@@ -45,7 +50,8 @@ classDiagram
 
 Both transports call the same `AgentRunner.run()`. The runner talks only
 to provider-neutral interfaces, never to OpenAI or MCP directly. Adapters
-sit behind them and are chosen in `main.py`.
+sit behind them and are chosen in `main.py`. The supervisor and
+guardrails are pure functions the runner calls after the loop.
 
 ## Full class diagram
 
@@ -58,7 +64,7 @@ classDiagram
             <<module>>
             +SERVICE_NAME = "orchestrator"
             +build_llm(settings) LLMClient
-            +build_runner(settings, registry) AgentRunner
+            +build_runner(settings, registry, memory) AgentRunner
             -lifespan(app) AsyncIterator
             +healthz() HealthResponse
         }
@@ -67,6 +73,9 @@ classDiagram
             +apps_dir: Path
             +tool_gateway_url: str
             +registry_url: str
+            +memory_store_target: str
+            +memory_store_timeout_s: float
+            +min_confidence: float
             +manifest_ttl_s: float
             +kafka_bootstrap_servers: str
             +kafka_enabled: bool
@@ -111,9 +120,12 @@ classDiagram
             -_manifests: ManifestStore
             -_gateway: ToolGateway
             -_llm: LLMClient
+            -_memory: ContextSource
             -_max_tool_rounds: int
+            -_min_confidence: float
             +run(request) RunAgentResponse
-            -_run(request, manifest, agent, app_prompt, context, tools) RunAgentResponse
+            -_get_context(app_id, alert_key) tuple
+            -_run(request, manifest, agent, app_prompt, context, tools, memory_context, memory_error) RunAgentResponse
             -_call_tool(tools, call, allowed, context) ToolResult
         }
         class loop {
@@ -129,7 +141,8 @@ classDiagram
             +build_system_prompt(app_prompt, nonce) str
             +data_block(kind, content, nonce) str
             +alert_data(request) dict
-            +alert_message(request, nonce) str
+            +context_data(context) dict
+            +alert_message(request, context, nonce) str
             +tool_result_message(tool_name, result, nonce) str
         }
         class decision {
@@ -139,15 +152,68 @@ classDiagram
         class _FinalAnswer {
             <<pydantic>>
             +decision: str
+            +confidence: float 0-1, strict
             +reasons: list~str~
         }
         class ParsedDecision {
             <<frozen dataclass>>
             +decision: Decision
+            +confidence: float
             +reasons: list~str~
         }
         class DecisionParseError {
             <<exception: ValueError>>
+        }
+        class supervisor {
+            <<module: app.agent.supervisor>>
+            +NO_CONTEXT_CAP = 0.5
+            +NOVEL_ALERT_CAP = 0.5
+            +CONFIRMED_INCIDENT_SUPPRESS_CAP = 0.3
+            +caps(decision, context) list
+            +supervise(decision, agent_confidence, context, min_confidence) Supervised
+        }
+        class Supervised {
+            <<frozen dataclass>>
+            +decision: Decision
+            +confidence: float
+            +reason: str?
+        }
+        class guardrails {
+            <<module: app.agent.guardrails>>
+            +ENVELOPE_FIELDS
+            +MISSING
+            +evaluate(rules, request, context) list~Match~
+            +lookup(field, request, payload, context) value
+            +equal(value, allowed) bool
+        }
+        class Rule {
+            <<frozen dataclass>>
+            +field: str
+            +values: list
+        }
+        class Match {
+            <<frozen dataclass>>
+            +index: int
+            +rule: Rule
+            +value: scalar
+            +describe() str
+        }
+    }
+
+    namespace memory_port {
+        class ContextSource {
+            <<Protocol>>
+            +get_context(app_id, alert_key) GetContextResponse
+        }
+        class MemoryStoreClient {
+            -_channel: grpc.aio.Channel
+            -_stub: MemoryStoreStub
+            -_timeout_s: float
+            +get_context(app_id, alert_key) GetContextResponse
+            +aclose() None
+        }
+        class ContextUnavailableError {
+            <<exception: RuntimeError>>
         }
     }
 
@@ -267,8 +333,21 @@ classDiagram
             +display_name: str
             +agents: list~AgentSpec~
             +memory_namespace: str
-            +escalate_when: list~dict~
+            +escalate_when: list~EscalateRule~
+            +supervisor: SupervisorSpec?
             +agent(agent_id) AgentSpec
+            +guardrails() list~Rule~
+            +min_confidence(default) float
+        }
+        class EscalateRule {
+            <<pydantic, extra=ignore>>
+            +field: str
+            +in_: list alias "in"
+            +rule() Rule
+        }
+        class SupervisorSpec {
+            <<pydantic, extra=ignore>>
+            +min_confidence: float? 0-1
         }
         class AgentSpec {
             <<pydantic, extra=ignore>>
@@ -304,8 +383,15 @@ classDiagram
             <<proto: agent.proto>>
             +alert_key: str
             +decision: Decision
+            +confidence: float
             +reasons: list~str~
             +tool_calls: list~ToolCall~
+        }
+        class GetContextResponse {
+            <<proto: memory_store.proto>>
+            +window_1h/24h/7d: ContextAggregate
+            +is_novel_alert: bool
+            +has_confirmed_incident_history: bool
         }
         class RunContext {
             <<ap-shared run_context>>
@@ -340,6 +426,7 @@ classDiagram
     main ..> MCPToolGateway : build_runner
     main ..> ManifestStore : build_runner
     main ..> RegistryClient : lifespan, closes on shutdown
+    main ..> MemoryStoreClient : lifespan, one channel, closes on shutdown
     main *-- AlertPipeline : lifespan
     main ..> grpc_server : lifespan
 
@@ -354,10 +441,26 @@ classDiagram
     AgentServicer --> AgentRunner
     AgentServicer ..> loop : not_evaluated_response
 
+    %% memory port
+    MemoryStoreClient ..|> ContextSource
+    MemoryStoreClient ..> ContextUnavailableError : raises on any RPC error
+    MemoryStoreClient ..> GetContextResponse
+    AgentRunner ..> ContextUnavailableError : catches, runs without context
+
     %% agent core
     AgentRunner --> ManifestStore
     AgentRunner --> ToolGateway
     AgentRunner --> LLMClient
+    AgentRunner --> ContextSource : once per run, before the loop
+    AgentRunner ..> supervisor : step 2
+    AgentRunner ..> guardrails : step 3
+    supervisor ..> Supervised : returns
+    supervisor ..> GetContextResponse : reads flags
+    guardrails ..> Match : returns
+    guardrails ..> Rule : evaluates
+    guardrails ..> GetContextResponse : context.*
+    guardrails ..> RunAgentRequest : alert.*, payload.*
+    prompt ..> GetContextResponse : memory_context block
     AgentRunner ..> prompt : builds messages
     AgentRunner ..> decision : parse final answer
     AgentRunner ..> loop : summarize
@@ -400,6 +503,9 @@ classDiagram
     ManifestStore ..> AppNotFoundError : catches
     ManifestStore ..> RegistryUnavailableError : catches
     AppManifest *-- AgentSpec
+    AppManifest *-- EscalateRule
+    AppManifest *-- SupervisorSpec
+    EscalateRule ..> Rule : rule()
     AgentSpec *-- AgentTool
     AppManifest ..> ResolutionError : raises
     AgentRunner ..> AgentTool : ToolDefinitions
@@ -413,18 +519,24 @@ classDiagram
 - `build_llm()` picks the LLM adapter from `LLM_PROVIDER`. Only `openai`
   exists, imported lazily so tests never need the SDK configured.
 - `build_runner()` wires an `AgentRunner` from a `ManifestStore` (over the
-  `RegistryClient`), the MCP gateway client and the LLM.
+  `RegistryClient`), the MCP gateway client, the LLM, the
+  `MemoryStoreClient` and the default `MIN_CONFIDENCE`.
 - `lifespan()` builds everything at startup, not at import, because the
   OpenAI client needs `OPENAI_API_KEY` and tests import `main` without one.
-  It creates the `RegistryClient` (`REGISTRY_URL`, `MANIFEST_TTL_S`), then
+  It creates the `RegistryClient` (`REGISTRY_URL`, `MANIFEST_TTL_S`) and
+  the `MemoryStoreClient` (one channel for the process's lifetime), then
   starts the gRPC server and, if `KAFKA_ENABLED`, the `AlertPipeline`, and
-  stops all three on shutdown.
+  stops and closes them all on shutdown.
 - `/healthz` is the only HTTP route.
 
 **`Settings`**: frozen dataclass read from the environment:
 - `TOOL_GATEWAY_URL`, `KAFKA_BOOTSTRAP_SERVERS`, `GRPC_PORT`;
 - `REGISTRY_URL` (default `http://localhost:8005`), `MANIFEST_TTL_S`
   (default 30, the same as `ingestion` and `tool-gateway`);
+- `MEMORY_STORE_TARGET` (default `localhost:50053`; Compose sets
+  `memory-store:50051`), `MEMORY_STORE_TIMEOUT_S` (default 1);
+- `MIN_CONFIDENCE` (default 0.6): the supervisor threshold for apps whose
+  manifest sets none;
 - `APPS_DIR` (where prompt files are read from);
 - `LLM_PROVIDER`, `LLM_MODEL`;
 - `MAX_TOOL_ROUNDS` (default 5).
@@ -470,7 +582,7 @@ the generated `agent_pb2_grpc.AgentServicer`.
 **`start_grpc_server()`** registers the servicer on an insecure port
 (plaintext inside the platform network, ARCHITECTURE §13 T12).
 
-### Agent core — `app/agent/loop.py`, `prompt.py`, `decision.py`
+### Agent core — `app/agent/loop.py`, `prompt.py`, `decision.py`, `supervisor.py`, `guardrails.py`
 
 **`AgentRunner`**: the heart of the service. It is app-agnostic: the
 prompt and tools come from the manifest.
@@ -479,28 +591,39 @@ prompt and tools come from the manifest.
 1. Resolves (awaits) the `AppManifest` from `registry`, the `AgentSpec`
    (the entry agent when `agent_id` is empty) and the prompt text.
 2. Builds a `RunContext`.
-3. Opens an `agent.run` span and one MCP session for the whole run, then
-   delegates to `_run`.
+3. Opens an `agent.run` span, fetches the memory context
+   (`_get_context`, in a `memory.get_context` span; a
+   `ContextUnavailableError` becomes "no context" plus the error text),
+   opens one MCP session for the whole run, then delegates to `_run`.
 
 `_run(...)` is the tool-calling loop:
 1. Turns the agent's `tools` (resolved by `registry`: allowlisted,
    declared, enabled) into `ToolDefinition`s. It no longer calls
    `tools/list` on `tool-gateway`.
 2. Builds the system prompt (platform rules plus app prompt) and the first
-   user message (the alert as a data block), using a fresh nonce.
+   user message (the alert and the memory context as two data blocks),
+   using a fresh nonce.
 3. Runs up to `max_tool_rounds + 1` LLM calls:
    - **No tool calls**: the answer is final. `parse_decision()` it; a
-     parse failure becomes `ESCALATE` with a reason.
+     parse failure becomes `ESCALATE` with a reason and confidence 0.
    - **Tool calls**: run each through `_call_tool`, add a `ToolCall`
      (name plus a 300-char result summary) to the trace, and feed the
      result back as a data block.
 4. If the rounds run out, the decision is `ESCALATE`.
 
-The inner `respond()` closure builds the `RunAgentResponse`. If any tool
-failed for an infrastructure reason (`tool_failed`, `registry_unavailable`,
-`gateway_unreachable`),
-it forces `ESCALATE` and adds a reason: the agent decided without that
-evidence. It also logs token usage.
+The inner `respond()` closure applies the decision order
+(ARCHITECTURE §5) and builds the `RunAgentResponse`:
+1. If memory context was unavailable, it adds a reason saying so. If any
+   tool failed for an infrastructure reason (`tool_failed`,
+   `registry_unavailable`, `gateway_unreachable`), it forces `ESCALATE`
+   and adds a reason: the agent decided without that evidence.
+2. `supervise()` with the manifest's threshold (else the default); its
+   reason, if it escalated, is added.
+3. `guardrails.evaluate()` with the manifest's rules; each match adds a
+   reason naming the rule, and forces `ESCALATE` if the decision wasn't
+   already.
+
+It sets `confidence` to the supervised value and logs it with token usage.
 
 `_call_tool(...)` is the first allowlist check. A tool the agent wasn't
 offered returns `tool_not_allowed` without reaching `tool-gateway`, and
@@ -516,27 +639,68 @@ tool inside an `agent.tool_call` span, passing `RunContext`.
 
 **`prompt` (module)**: prompt assembly and the prompt-injection boundary.
 - `PLATFORM_RULES` is the platform's fixed instructions. They explain the
-  data blocks, say tools are read-only, and require the exact JSON
-  final-answer format.
+  data blocks and the memory context (the platform's own decision counts
+  are context, never evidence of noise; only analyst verdicts are, §13
+  T3), say tools are read-only, and require the exact JSON final-answer
+  format, including `confidence`.
 - `data_block()` wraps any outside content (the alert, tool results) as
   pretty-printed JSON between `<<<DATA {nonce} kind=...>>>` and
   `<<<END DATA {nonce}>>>`. The nonce is random per run
   (`new_nonce()`, 16 hex chars), so data can't forge the end marker.
 - `alert_data()` and `alert_message()` render the envelope and the
   decoded `payload` Struct.
+- `context_data()` renders a `GetContextResponse` with every window
+  (zeros included) and both flags, minus `app_id`; with no context it is
+  `{"available": false}`.
 - `tool_result_message()` wraps a tool's output.
 
 **`decision` (module)**: `parse_decision(text)` turns the final answer into
 a `ParsedDecision`.
 - It strips an optional ```` ```json ```` fence.
 - It validates against **`_FinalAnswer`**: `decision` is one of
-  `AUTO_RESOLVE`/`ESCALATE`/`SUPPRESS`, and `reasons` is non-empty.
+  `AUTO_RESOLVE`/`ESCALATE`/`SUPPRESS`, `confidence` is a number from 0
+  to 1 (strict: not a string, not a boolean), and `reasons` is non-empty.
 - It trims to at most 10 reasons of 500 chars each.
 - Anything else raises **`DecisionParseError`**. It never guesses a
   decision; the caller escalates.
 
-**`ParsedDecision`** holds the proto `Decision` enum value and the cleaned
-reasons.
+**`ParsedDecision`** holds the proto `Decision` enum value, the agent's
+confidence and the cleaned reasons.
+
+**`supervisor` (module, ADR-0020)**: code, not an agent or a tool.
+- `caps()` lists the fixed caps that apply: no context 0.5; a novel
+  `alert_key` 0.5 unless the decision is `ESCALATE`; `SUPPRESS` with
+  confirmed-incident history 0.3.
+- `supervise()` takes the minimum of the agent's confidence and those
+  caps. Below the threshold, a non-`ESCALATE` decision becomes
+  `ESCALATE`, and **`Supervised.reason`** gives the value, the threshold
+  and which cap (or "the agent's own estimate"). `ESCALATE` is never
+  changed.
+
+**`guardrails` (module, ADR-0010/0021)**: `evaluate()` returns a **`Match`**
+for every **`Rule`** that matches, in manifest order.
+- `lookup()` reads `alert.<envelope field>` (`ENVELOPE_FIELDS`: source,
+  severity, message, alert_key), `payload.<path>` (from the decoded
+  `Struct`) or `context.<path>` (walking the `GetContextResponse`
+  descriptor). Anything missing, non-scalar, or `context.*` with no
+  context is `MISSING`, which never matches.
+- `equal()` is type-strict: booleans only equal booleans, numbers compare
+  by value (`3 == 3.0`), strings exactly.
+- `Match.describe()` gives the reason text, e.g.
+  `escalate_when[0] alert.severity = "critical"`.
+
+### Memory port — `app/memory/client.py`
+
+**`ContextSource` (Protocol)**: `get_context(app_id, alert_key)`. Tests use
+a `FakeMemory`.
+
+**`MemoryStoreClient`** (ADR-0019): one `grpc.aio` insecure channel and
+`MemoryStoreStub`, opened at startup and reused for every call; gRPC
+reconnects it after `memory-store` restarts. Each call has a deadline
+(`MEMORY_STORE_TIMEOUT_S`). Any `AioRpcError` (unreachable, deadline,
+`NOT_FOUND`, `INVALID_ARGUMENT`, ...) is logged and raised as
+**`ContextUnavailableError`**, which the runner turns into "run without
+context".
 
 ### LLM port — `app/agent/llm.py`, `openai_llm.py`
 
@@ -607,10 +771,13 @@ property reads `content["error"]`.
   app folder (`ResolutionError`).
 
 **`AppManifest`**: the fields `orchestrator` uses (`app_id`,
-`display_name`, `agents`, plus `memory_namespace` and `escalate_when` for
-Days 6–7). `extra="ignore"`, so fields `registry` adds later don't break
-an older build. `agent(agent_id)` returns the named agent, or the `entry`
-agent when `agent_id` is empty.
+`display_name`, `agents`, `memory_namespace`, `escalate_when`,
+`supervisor`). `extra="ignore"`, so fields `registry` adds later don't
+break an older build. `agent(agent_id)` returns the named agent, or the
+`entry` agent when `agent_id` is empty. `guardrails()` turns the
+**`EscalateRule`**s (`field`, `in`) into `Rule`s; `min_confidence(default)`
+reads **`SupervisorSpec`**, falling back to the default when the manifest
+sets none.
 
 **`AgentSpec`**: one agent's `agent_id`, `version`, `role`
 (`entry`/`callable`), `prompt_ref`, `tool_allowlist`, `invoke_on` (used
@@ -631,7 +798,10 @@ unavailable".
 - **`RunAgentRequest` / `RunAgentResponse` / `Decision` / `ToolCall`**
   (`agent.proto`): one contract shared by gRPC and Kafka (ARCHITECTURE §5).
   Every response echoes the request's `alert_key` (ADR-0016), which
-  `memory-store` uses to count the decision.
+  `memory-store` uses to count the decision, and carries the supervised
+  `confidence` (ADR-0020).
+- **`GetContextResponse`** (`memory_store.proto`): the alert_key's 1h/24h/7d
+  counts and two flags (ARCHITECTURE §6).
 - **`RunContext`** (`ap-shared` `run_context`): `app_id`/`agent_id`/`alert_id`,
   serialized into MCP `_meta` by `to_meta()`. `tool-gateway` refuses any
   call without it.
@@ -646,16 +816,18 @@ unavailable".
    `RunAgentRequest` and calls `AgentRunner.run`.
 2. `ManifestStore.get` (`RegistryClient.get_app`, cached) →
    `AppManifest.agent` → `ManifestStore.prompt`.
-3. `MCPToolGateway.connect` opens the session; the agent's resolved
+3. `MemoryStoreClient.get_context` (gRPC `GetContext`, shared channel);
+   on failure the run continues with no context.
+4. `MCPToolGateway.connect` opens the session; the agent's resolved
    `tools` become the `ToolDefinition`s.
-4. `prompt.build_system_prompt` and `prompt.alert_message` build the
-   conversation.
-5. Loop: `LLMClient.complete` returns either tool calls (each goes through
+5. `prompt.build_system_prompt` and `prompt.alert_message` (alert +
+   memory context) build the conversation.
+6. Loop: `LLMClient.complete` returns either tool calls (each goes through
    `_call_tool` → `MCPToolSession.call_tool` →
    `prompt.tool_result_message`) or a final answer (`parse_decision`).
-6. `respond()` applies the infrastructure-failure override and builds
-   `RunAgentResponse`.
-7. The transport publishes it to `alert.decided` (keyed
+7. `respond()` applies the infrastructure-failure override, then
+   `supervise`, then `guardrails.evaluate`, and builds `RunAgentResponse`.
+8. The transport publishes it to `alert.decided` (keyed
    `{app_id}:{alert_key}`) and commits the offset, or returns it over gRPC.
 
 ## Design notes
@@ -665,9 +837,13 @@ unavailable".
   in-process MCP server with no network calls. `ManifestStore` is concrete
   but takes its `AppSource` as a Protocol, so tests use a fake registry.
 - **Fail toward `ESCALATE`**: every error path (bad final answer, too many
-  rounds, an infrastructure tool failure, LLM down, unknown app) ends with
-  a human looking at the alert, never a silent auto-resolve
-  (ARCHITECTURE §13.4).
+  rounds, an infrastructure tool failure, memory down, LLM down, unknown
+  app) ends with a human looking at the alert, never a silent
+  auto-resolve (ARCHITECTURE §13.4).
+- **Only toward `ESCALATE` after the LLM**: the supervisor and guardrails
+  are deterministic code over values the LLM can't raise (caps, manifest
+  rules, the validated envelope, memory). Every change they make is a
+  named `orchestrator:` reason.
 - **Defense in depth on tools**: the LLM is offered only the agent's
   resolved tools, `_call_tool` refuses anything else, and `tool-gateway`
   checks the same `registry` list a third time using the `RunContext` in
@@ -677,6 +853,5 @@ unavailable".
   plus `orchestrator:`-prefixed platform reasons. `tool_calls[]` is the
   real call trace, not the model's account of it.
 - **Next changes**:
-  - Day 7: memory context and `escalate_when` guardrails after the LLM.
   - Day 8: callable agents chosen by `invoke_on`.
   - Day 14: budgets.
