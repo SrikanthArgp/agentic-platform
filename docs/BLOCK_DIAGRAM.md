@@ -131,7 +131,8 @@ The agent runtime — the only service that runs LLM tool-calling loops. On
 consuming `alert.received`, it resolves the event's `app_id` against
 `registry` to get that app's agent config and tool allowlist, calls
 `memory-store` once for behavioral context (before the loop, over one
-shared gRPC channel, ADR-0019), runs the tool-calling loop against
+shared gRPC channel, ADR-0019), runs the agent's tool-calling loop
+(LangChain's prebuilt agent inside a LangGraph run graph, ADR-0022) against
 `tool-gateway` with that context in the prompt, applies the supervisor
 (the agent's confidence capped by fixed rules, against the manifest's
 threshold, ADR-0020) and the manifest's deterministic `escalate_when`
@@ -143,8 +144,9 @@ One service runs every app's agents: an agent is a manifest entry (prompt,
 tool allowlist, role), and each alert gets an ephemeral run of it — nothing
 is spawned per app or per alert.
 Also exposes `RunAgent` as a direct gRPC call (same contract, synchronous
-path) for testing without going through Kafka — and reuses that same call
-internally for agent delegation: once the entry decision is final, it runs
+path) for testing without going through Kafka (with a callable's
+`agent_id`, it runs just that callable). Agent delegation is in-process
+(ADR-0012): once the entry decision is final, the run graph fans out to
 every callable agent whose `invoke_on` matches, in parallel (e.g.
 `it-ops-triage`'s `root-cause-summarizer` on `ESCALATE`), folding their
 `reasons[]` into the entry agent's before publishing `alert.decided`

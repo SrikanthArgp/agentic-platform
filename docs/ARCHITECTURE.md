@@ -218,10 +218,12 @@ and any number of `callable` agents. `it-ops-triage`'s manifest declares
 *When* a callable runs is declared, not chosen by an LLM: after the entry
 agent's decision is final (including the supervisor/confidence override,
 Day 7), `orchestrator` looks up every callable in the manifest whose
-`invoke_on` contains that decision and calls them **in parallel**, each via
-a normal `RunAgent` gRPC call against `orchestrator`'s own `Agent` service
-with `agent_id` set (§5) — same service, same contract, dispatched
-internally by `agent_id`. No match → no callables run. Callables are not
+`invoke_on` contains that decision and runs them **in parallel**,
+in-process (ADR-0012): branches of the same LangGraph run graph
+(ADR-0022), one per callable, each running that agent's own tool loop with
+its own prompt and tools. The gRPC `RunAgent` with `agent_id` set runs one
+callable directly (tests, debugging) through the same code. No match → no
+callables run. Callables are not
 exposed to the entry agent as tools; the entry agent's LLM never decides
 whether to delegate. This keeps per-alert cost and latency predictable
 (bounded by the slowest matching callable) and testable from the manifest
@@ -340,8 +342,9 @@ Steps, app-agnostic:
    prompt, then applies the supervisor and the `escalate_when` guardrails
    (§5). Once the decision is
    final, it runs every callable agent whose `invoke_on` matches, in
-   parallel (§3/§5) — internal `RunAgent` gRPC calls, not a new hop in
-   this diagram. Each run is ephemeral: built from the cached manifest,
+   parallel (§3/§5) — in-process branches of its run graph (ADR-0012,
+   ADR-0022), not a new hop in this diagram. The run is a LangGraph graph
+   with LangChain's prebuilt agent for each agent's tool loop (ADR-0022). Each run is ephemeral: built from the cached manifest,
    discarded after publishing; anything that must outlive it lives in
    `memory-store`, `cases`, or traces.
 3. `orchestrator` publishes `alert.decided` (payload = `RunAgentResponse`,
@@ -432,8 +435,13 @@ nothing inside them is an instruction (§13 T1/T2). This reduces injection
 risk; step 3 is what bounds it.
 
 **Delegation calls** (§3): once the entry agent's decision is final,
-`orchestrator` calls every callable whose `invoke_on` matches it, in
-parallel, each with `agent_id` set. Each returns `reasons[]` (e.g.
+`orchestrator` runs every callable whose `invoke_on` matches it, in
+parallel and in-process (ADR-0012: LangGraph `Send` branches of the run
+graph, ADR-0022), each with its own prompt, tools and run context
+(`agent_id` = the callable's, so `tool-gateway` checks its allowlist). A
+callable sees the alert, the memory context, and the final decision with
+its reasons, all as data blocks, and answers `{"reasons": [...]}` only.
+Each returns `reasons[]` (e.g.
 `root-cause-summarizer`'s root-cause narrative); `orchestrator` folds them
 into the entry agent's final `reasons[]`, each prefixed with its agent
 (`"root-cause-summarizer: ..."`), in manifest order so output is
@@ -441,9 +449,12 @@ deterministic, before publishing `alert.decided`. A callable's own
 `RunAgentResponse` is never published directly; exactly one
 `alert.decided` event goes out per alert, from the entry agent.
 
-A callable that fails, times out, or is over budget (§10) doesn't block or
-change the decision: `alert.decided` is still published, with a reason
-noting which callable didn't contribute. Today the only callable,
+A callable that fails, times out (`CALLABLE_TIMEOUT_S`, default 30s), or
+is over budget (§10) doesn't block or change the decision:
+`alert.decided` is still published, with a reason noting which callable
+didn't contribute and why (`orchestrator: callable '<id>' didn't
+contribute (timed out after 30s).`). The response's `tool_calls[]` is the
+entry agent's trace; a callable's evidence is cited in its reasons. Today the only callable,
 `root-cause-summarizer`, uses `invoke_on: ["ESCALATE"]` — that's where a
 human actually reads the explanation (§4 step 4), so auto-resolved and
 suppressed alerts don't pay for the extra LLM call.
@@ -611,7 +622,7 @@ the broker default of 1.
 | `review-console` → `memory-store` | Kafka (`verdict.recorded`) | `{app_id, case_id, alert_key, verdict, verdict_by, recorded_at}` (JSON — no gRPC contract needed, one-directional feed) |
 | external client → `review-console` | REST | case list/detail, verdict submission |
 | `tool-gateway` → `review-console` | REST (`GET /cases`) | `similar-past-case-lookup` reads past cases (incl. `resolution_notes`), filtered by the calling agent's `app_id` + `alert_key` — read-only (§2, §6) |
-| entry agent → callable agent (within one app) | gRPC (`RunAgent`, self-call) | `RunAgentRequest`/`Response` (protobuf) — `orchestrator` re-entering its own `Agent` service with `agent_id` set (§5), not a distinct service link |
+| entry agent → callable agent (within one app) | In-process (ADR-0012) | Branches of `orchestrator`'s LangGraph run graph (ADR-0022), not a network call; the gRPC `RunAgent` with `agent_id` set runs one callable directly, for tests (§5) |
 
 No agent-to-agent link exists or is planned for this build (§11) — the row
 above is intra-app delegation inside a single `orchestrator` process, not a

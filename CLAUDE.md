@@ -30,8 +30,8 @@ truth for "what order do we build things in."
 Days 1–7 of `docs/plan.md` are done (infra, contracts, skeletons;
 `tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core;
 `ingestion` and the end-to-end hot path; `registry` + App Manifest;
-`memory-store`; context, supervisor and guardrails in `orchestrator`);
-Day 8 (callable agents) is next. As-built notes for each
+`memory-store`; context, supervisor and guardrails in `orchestrator`;
+callable agents); Day 9 (`review-console`) is next. As-built notes for each
 day are in `docs/plan.md`.
 
 - All 6 services have a FastAPI skeleton (`app/main.py`, `/healthz`),
@@ -68,9 +68,11 @@ day are in `docs/plan.md`.
   `tool_failed`. `uv run backend/scripts/mcp_call.py [tool_id] [json-args]`
   calls it from the host (`localhost:8003`) as `--app-id`/`--agent-id`
   (default it-ops-triage/triage-agent; the app must be registered).
-- `orchestrator` consumes `alert.received`, runs the entry agent's
-  tool-calling loop (OpenAI, ADR-0015, behind `app/agent/llm.py`), and
-  publishes `alert.decided`; the same run is exposed as gRPC `RunAgent`
+- `orchestrator` consumes `alert.received`, runs the app's agents, and
+  publishes `alert.decided`. The run is a LangGraph graph
+  (`app/agent/graph.py`, ADR-0022) and each agent's tool loop is
+  LangChain's `create_agent` with `ChatOpenAI` (ADR-0015 for the model);
+  tools are our own `StructuredTool`s over MCP (`app/agent/react.py`); the same run is exposed as gRPC `RunAgent`
   (`:50051`, host `:50052`). Before the loop it calls `memory-store`'s
   `GetContext` once (one shared channel, `MEMORY_STORE_TARGET`) and gives
   the agent the history as a data block (ADR-0019). After it, in order:
@@ -80,12 +82,17 @@ day are in `docs/plan.md`.
   `payload.*`, `context.*`; a match → `ESCALATE`, named in `reasons[]`,
   ADR-0010/0021). Both only ever move toward `ESCALATE`; memory down →
   the run continues without context and the supervisor escalates.
-  `RunAgentResponse.confidence` carries the final value. It resolves the app from `registry` and offers
+  `RunAgentResponse.confidence` carries the final value. Then every
+  callable agent whose `invoke_on` has the final decision runs in parallel,
+  in-process (ADR-0012), and its reasons are appended prefixed with its
+  `agent_id`; a failing or slow one (`CALLABLE_TIMEOUT_S`) only adds a
+  "didn't contribute" reason. `RunAgent` with a callable's `agent_id` runs
+  just that callable. It resolves the app from `registry` and offers
   the agent exactly its resolved `tools`; prompts are read from
   `backend/apps/{app_id}/prompts/` in its image. Needs
   `OPENAI_API_KEY` in `backend/local/.env` (see `.env.example`).
   `uv run backend/scripts/publish_alert.py` publishes straight to Kafka
-  (bypassing `ingestion`) and prints the decision. Unit tests use a scripted fake LLM; none call the
+  (bypassing `ingestion`) and prints the decision. Unit tests use a scripted LangChain fake chat model; none call the
   real one.
 - Run context (`app_id`/`agent_id`/`alert_id`) travels in MCP `_meta` via
   `ap-shared`'s `run_context` module, never as a tool argument.
@@ -104,8 +111,10 @@ day are in `docs/plan.md`.
 - Generated proto stubs in `backend/shared/proto_gen/` are committed; rerun
   `backend/scripts/gen_proto.sh` after editing any `.proto`.
 - `backend/apps/it-ops-triage/` has `tools/` (`lookup_runbook` +
-  `runbooks.json`), a complete `manifest.yaml` (guardrail `alert.severity in
-  [critical]`, `supervisor.min_confidence: 0.6`), `event_schema.json`, and `prompts/triage-agent.md`.
+  `runbooks.json`; `recent-changes-lookup` + `recent_changes.json`, with
+  absolute timestamps around 2026-10-05, so set an alert's `timestamp` near
+  one to see a change cited), a complete `manifest.yaml` (guardrail `alert.severity in
+  [critical]`, `supervisor.min_confidence: 0.6`), `event_schema.json`, `prompts/triage-agent.md` and `prompts/root-cause-summarizer.md` (callable, `invoke_on: [ESCALATE]`).
 
 ## Commands
 

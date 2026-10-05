@@ -107,11 +107,10 @@ sequenceDiagram
 
     Note over Orchestrator: LLM → supervisor → escalate_when guardrails<br/>(any can raise to ESCALATE) → final decision = ESCALATE
 
-    Note over Orchestrator: callables with invoke_on ∋ ESCALATE →<br/>root-cause-summarizer (run in parallel if several)
-    Orchestrator->>Orchestrator: RunAgent (gRPC, self-call · agent_id=root-cause-summarizer)
-    Orchestrator->>ToolGateway: tool-call, summarizer's allowlist:<br/>lookup_runbook, recent-changes-lookup (MCP)
+    Note over Orchestrator: callables with invoke_on ∋ ESCALATE →<br/>root-cause-summarizer (in-process graph branch,<br/>parallel if several · ADR-0012/0022)
+    Orchestrator->>ToolGateway: tool-call, summarizer's allowlist:<br/>recent-changes-lookup (2h before fired_at), lookup_runbook (MCP)
     ToolGateway-->>Orchestrator: tool-result
-    Orchestrator->>Orchestrator: reasons[] (probable-cause narrative) returned
+    Note over Orchestrator: summarizer answers {"reasons": [...]}:<br/>probable cause citing a change ref or runbook
     Note over Orchestrator: orchestrator folds summarizer's reasons[]<br/>into triage-agent's, prefixed "root-cause-summarizer: ..."
 
     Orchestrator->>ReviewConsole: alert.decided (Kafka · RunAgentResponse, decision=ESCALATE)
@@ -135,8 +134,8 @@ sequenceDiagram
 | 3 | `orchestrator` → `registry` | manifest read | REST |
 | 4 | `orchestrator` → `memory-store` | `GetContext` | gRPC |
 | 5 | `orchestrator` → `tool-gateway` | tool-call / tool-result (triage-agent) | MCP |
-| 6 | `orchestrator` → `orchestrator` | `RunAgent` self-call, `agent_id=root-cause-summarizer` | gRPC |
-| 7 | `orchestrator` → `tool-gateway` | tool-call / tool-result (summarizer) | MCP |
+| 6 | `orchestrator` (in-process) | callable `root-cause-summarizer` runs as a branch of the run graph | — |
+| 7 | `orchestrator` → `tool-gateway` | tool-call / tool-result (summarizer, its own `agent_id` in `_meta`) | MCP |
 | 8 | `orchestrator` → `review-console` | `alert.decided` (`RunAgentResponse`, ESCALATE) | Kafka |
 | 9 | `orchestrator` → `memory-store` | `alert.decided`, separate consumer group (ADR-0016) | Kafka |
 | 10 | analyst → `review-console` | case read / verdict submit | REST |
@@ -268,7 +267,7 @@ sequenceDiagram
         K8s->>New: start pod
         New-->>K8s: /readyz 200 (tool scan done / consumer joined / outbox reachable)
         K8s->>Old: SIGTERM
-        Note over Old: /readyz → 503, leave endpoints,<br/>finish in-flight requests, MCP calls,<br/>current Kafka message; commit offset
+        Note over Old: /readyz → 503, leave endpoints,<br/>finish in-flight requests, MCP calls,<br/>current Kafka message, commit offset
         Old-->>K8s: exit
     end
     Note over Old,New: apps #1/#2 served throughout —<br/>no non-202s, no tool-call failures
