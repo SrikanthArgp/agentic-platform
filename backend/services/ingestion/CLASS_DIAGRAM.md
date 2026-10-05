@@ -1,6 +1,6 @@
 # ingestion — class diagram
 
-As built through Day 6 of `docs/plan.md`. `ingestion` is the platform's
+As built through Day 8 of `docs/plan.md` (unchanged since Day 6). `ingestion` is the platform's
 REST front door: it accepts an alert at `POST /apps/{app_id}/events`,
 validates it against that app's rules (read from `registry`), turns it into
 a `RunAgentRequest`, and publishes it to `alert.received`. It never runs an agent and never decides anything.

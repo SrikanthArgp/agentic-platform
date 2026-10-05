@@ -193,9 +193,12 @@ general "fail toward escalation" rule.
 
 - Manifest agents gain `model_ref` and optional `fallback_model_refs` —
   additive.
-- Model gateway inside `orchestrator`: the provider-agnostic interface is
-  built on Day 3 (`plan.md`); per-agent `model_ref` and fallbacks are the
-  phase-two additions on top of it.
+- Model gateway inside `orchestrator`: since Day 7 the provider seam is
+  LangChain's chat-model interface (`BaseChatModel`, built in
+  `app/agent/llm.py`, ADR-0022), which replaced the Day 3 interface.
+  Per-agent `model_ref` means choosing the chat model per agent when the
+  run graph builds it, and fallbacks can use LangChain's model-fallback
+  middleware; both are the phase-two additions on top of it.
 
 **ADR to write**: model gateway and per-agent model selection.
 

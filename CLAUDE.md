@@ -27,7 +27,7 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Days 1–7 of `docs/plan.md` are done (infra, contracts, skeletons;
+Days 1–8 of `docs/plan.md` are done (infra, contracts, skeletons;
 `tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core;
 `ingestion` and the end-to-end hot path; `registry` + App Manifest;
 `memory-store`; context, supervisor and guardrails in `orchestrator`;

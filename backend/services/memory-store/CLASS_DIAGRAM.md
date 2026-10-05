@@ -1,6 +1,6 @@
 # memory-store — class diagram
 
-As built through Day 6 of `docs/plan.md`. `memory-store` answers one
+As built through Day 8 of `docs/plan.md` (unchanged since Day 6). `memory-store` answers one
 question for `orchestrator`: *what has this platform seen and decided for
 this `alert_key` lately?* It serves gRPC `GetContext` (1h/24h/7d decision
 counts, `is_novel_alert`, `has_confirmed_incident_history`), built from an
@@ -311,7 +311,7 @@ Kafka every 2 s while Kafka is down.
 
 ```mermaid
 sequenceDiagram
-    participant O as orchestrator (Day 7)
+    participant O as orchestrator (context node, once per run)
     participant S as MemoryService
     participant Reg as RegistryClient (30s cache)
     participant R as Redis
@@ -354,7 +354,11 @@ sequenceDiagram
   constraint and the sorted-set member, so they never double-count.
 - **Namespaced by app** (ADR-0018): the same `alert_key` in two apps never
   shares a Redis key; Postgres rows carry `app_id`.
-- **Next changes**: Day 7 `orchestrator` calls `GetContext` and its
-  `escalate_when` rules read `context.*`; Day 10 consumes
+- **Callers**: since Day 7 `orchestrator` calls `GetContext` once per run,
+  before the agent (ADR-0019); the response is the agent's
+  `memory_context` block, the supervisor's input, and what `context.*`
+  guardrails read. A failed call doesn't stop the run: the supervisor
+  caps confidence at 0.5 instead.
+- **Next changes**: Day 10 consumes
   `verdict.recorded` as `verdict:*` events; a retention job for old
   `memory_events` rows is not in this build (ADR-0017).
