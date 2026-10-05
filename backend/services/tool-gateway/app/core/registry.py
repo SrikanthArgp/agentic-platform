@@ -35,6 +35,7 @@ class ToolSpec:
     input_model: type[BaseModel]
     output_model: type[BaseModel]
     handler: Callable[[Any], BaseModel | Awaitable[BaseModel]]
+    read_only: bool = True
 
     def input_schema(self) -> dict[str, Any]:
         return self.input_model.model_json_schema()

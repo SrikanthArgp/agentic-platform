@@ -12,13 +12,16 @@ app's manifest, and everything the alert says stays inside data blocks
 - anything that stops the run (LLM down, unknown app) raises; callers turn
   that into `not_evaluated_response()`.
 
+The agent is offered exactly the tools `registry` resolved for it
+(`AgentSpec.tools`: allowlisted, declared, enabled); a call for anything
+else is refused here, and `tool-gateway` checks the same list again.
+
 Not yet: memory context (Day 7), supervisor + `escalate_when` guardrails
 (Day 7), callable agents (Day 8), budgets (Day 14).
 """
 
 import json
 import logging
-from collections.abc import Sequence
 
 from opentelemetry import trace
 
@@ -33,8 +36,8 @@ from app.agent.llm import (
     ToolResultMessage,
     UserMessage,
 )
-from app.core.manifest import AgentSpec, AppManifest, FileManifestStore
-from app.tools.gateway import GATEWAY_UNREACHABLE, GatewayTool, ToolGateway, ToolResult, ToolSession
+from app.core.manifest import AgentSpec, AppManifest, ManifestStore
+from app.tools.gateway import GATEWAY_UNREACHABLE, ToolGateway, ToolResult, ToolSession
 from proto_gen import agent_pb2
 from run_context import RunContext
 
@@ -43,7 +46,7 @@ tracer = trace.get_tracer(__name__)
 
 # Tool failures that mean "we couldn't look", not "the agent asked wrong":
 # the agent's decision can't be trusted, so the run escalates.
-INFRA_TOOL_ERRORS = frozenset({"tool_failed", GATEWAY_UNREACHABLE})
+INFRA_TOOL_ERRORS = frozenset({"tool_failed", "registry_unavailable", GATEWAY_UNREACHABLE})
 TOOL_NOT_ALLOWED = "tool_not_allowed"
 RESULT_SUMMARY_CHARS = 300
 REASON_PREFIX = "orchestrator: "
@@ -52,7 +55,7 @@ REASON_PREFIX = "orchestrator: "
 class AgentRunner:
     def __init__(
         self,
-        manifests: FileManifestStore,
+        manifests: ManifestStore,
         gateway: ToolGateway,
         llm: LLMClient,
         max_tool_rounds: int = 5,
@@ -63,7 +66,7 @@ class AgentRunner:
         self._max_tool_rounds = max_tool_rounds
 
     async def run(self, request: agent_pb2.RunAgentRequest) -> agent_pb2.RunAgentResponse:
-        manifest = self._manifests.get(request.app_id)
+        manifest = await self._manifests.get(request.app_id)
         agent = manifest.agent(request.agent_id)
         app_prompt = self._manifests.prompt(manifest, agent)
         context = RunContext(app_id=manifest.app_id, agent_id=agent.agent_id, alert_id=request.alert_id)
@@ -84,9 +87,8 @@ class AgentRunner:
         context: RunContext,
         tools: ToolSession,
     ) -> agent_pb2.RunAgentResponse:
-        offered = visible_tools(await tools.list_tools(), manifest.app_id, agent.tool_allowlist)
-        definitions = [ToolDefinition(t.name, t.description, t.input_schema) for t in offered]
-        allowed = {t.name for t in offered}
+        definitions = [ToolDefinition(t.tool_id, t.description, t.input_schema) for t in agent.tools]
+        allowed = {t.tool_id for t in agent.tools}
 
         nonce = prompt.new_nonce()
         system = prompt.build_system_prompt(app_prompt, nonce)
@@ -157,15 +159,6 @@ class AgentRunner:
             return ToolResult(True, {"error": "invalid_arguments", "message": "Arguments must be a JSON object."})
         with tracer.start_as_current_span("agent.tool_call", attributes={"tool_name": call.name}):
             return await tools.call_tool(call.name, call.arguments, context=context)
-
-
-def visible_tools(tools: Sequence[GatewayTool], app_id: str, allowlist: list[str]) -> list[GatewayTool]:
-    """Tools this agent may call: on its allowlist, and either global or owned by its app."""
-    wanted = set(allowlist)
-    visible = [t for t in tools if t.name in wanted and (t.scope == "global" or t.app_id == app_id)]
-    if missing := wanted - {t.name for t in visible}:
-        logger.warning("allowlisted tools not served by tool-gateway for %s: %s", app_id, sorted(missing))
-    return visible
 
 
 def summarize(result: ToolResult) -> str:

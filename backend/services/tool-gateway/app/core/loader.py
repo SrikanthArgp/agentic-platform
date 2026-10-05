@@ -4,7 +4,8 @@ App directories use the hyphenated `app_id` (`it-ops-triage`), which isn't a
 valid Python package name, so each tool module is imported by file path. A
 module is any `*.py` directly under `tools/` not starting with `_`; it must
 export `TOOLS: dict[tool_id, dict]` with exactly the keys in
-`_REQUIRED_KEYS`. App modules never import `tool-gateway` code: that dict is
+`_REQUIRED_KEYS`, including `read_only: True`: the author states it, and
+`registry` rejects a tool registered without it (ADR-0004, §13 T8). App modules never import `tool-gateway` code: that dict is
 the whole contract.
 
 Any problem (import error, bad `TOOLS`, duplicate `tool_id`) fails startup
@@ -26,7 +27,7 @@ from app.core.registry import DuplicateToolError, ToolRegistry, ToolSpec
 
 logger = logging.getLogger(__name__)
 
-_REQUIRED_KEYS = {"version", "description", "input_model", "output_model", "handler"}
+_REQUIRED_KEYS = {"version", "description", "input_model", "output_model", "handler", "read_only"}
 # The module namespace app tool modules are imported under; never a real package.
 _MODULE_NAMESPACE = "_apptools"
 
@@ -97,6 +98,8 @@ def _tool_spec(app_id: str, module_path: Path, tool_id: Any, definition: Any) ->
             raise ToolLoadError(f"{where}: {key} must be a pydantic BaseModel subclass")
     if not callable(definition["handler"]):
         raise ToolLoadError(f"{where}: handler must be callable")
+    if definition["read_only"] is not True:
+        raise ToolLoadError(f"{where}: read_only must be True; every tool is a read-only lookup (ADR-0004)")
     for key in ("version", "description"):
         if not isinstance(definition[key], str) or not definition[key]:
             raise ToolLoadError(f"{where}: {key} must be a non-empty string")
@@ -110,4 +113,5 @@ def _tool_spec(app_id: str, module_path: Path, tool_id: Any, definition: Any) ->
         input_model=definition["input_model"],
         output_model=definition["output_model"],
         handler=definition["handler"],
+        read_only=definition["read_only"],
     )

@@ -13,6 +13,9 @@ x-service-defaults: &service-defaults
     POSTGRES_DSN: postgresql://platform:platform@postgres:5432/platform
     REDIS_URL: redis://redis:6379/0
     KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    # App Manifests (docs/ARCHITECTURE.md §3): ingestion, orchestrator and
+    # tool-gateway read them with the same 30s cache TTL (MANIFEST_TTL_S).
+    REGISTRY_URL: http://registry:8000
     # No OTEL_EXPORTER_OTLP_ENDPOINT until Day 23: FastAPI >=0.142 auto-attaches
     # OTLP exporters when it's set, and Day 1 services must drop spans.
 
@@ -188,6 +191,7 @@ services:
       kafka-init: { condition: service_completed_successfully }
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
+      registry: { condition: service_healthy }
 
   orchestrator:
     <<: *service-defaults
@@ -210,6 +214,7 @@ services:
       kafka-init: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
       tool-gateway: { condition: service_healthy }
+      registry: { condition: service_healthy }
 
   tool-gateway:
     <<: *service-defaults
@@ -217,6 +222,8 @@ services:
     ports: ["8003:8000"]
     volumes:
       - ../apps:/repo/backend/apps:ro
+    depends_on:
+      registry: { condition: service_healthy }
 
   memory-store:
     <<: *service-defaults

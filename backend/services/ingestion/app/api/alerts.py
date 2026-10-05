@@ -1,7 +1,9 @@
-"""`POST /alerts` (intake) and the Day 4 debug `GET /alerts/{alert_id}`.
+"""`POST /apps/{app_id}/events` (intake) and the Day 4 debug `GET /alerts/{alert_id}`.
 
+The URL chooses the app; nothing infers it (docs/ARCHITECTURE.md §3).
 Validation happens entirely before anything touches Kafka: envelope
-(pydantic, 422), payload size (413), payload schema and `alert_key` (422).
+(pydantic, 422), payload size (413), unknown app (404), payload against
+that app's schema and `alert_key` (422).
 """
 
 import json
@@ -9,9 +11,9 @@ import logging
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Path, Request, status
 
-from app.core.apps import AppConfigError, FileAppStore
+from app.core.apps import AppConfigError, AppStore, AppUnavailableError, UnknownAppError
 from app.core.envelope import AlertKeyError, build_alert_key, build_request, message_key
 from app.kafka.decisions import DecisionTracker
 from app.kafka.publisher import ALERT_RECEIVED, PublishError, Publisher
@@ -22,11 +24,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/alerts", status_code=status.HTTP_202_ACCEPTED, response_model=AlertAccepted)
-async def post_alert(alert: AlertIn, request: Request) -> AlertAccepted:
+@router.post("/apps/{app_id}/events", status_code=status.HTTP_202_ACCEPTED, response_model=AlertAccepted)
+async def post_event(alert: AlertIn, request: Request, app_id: str = Path(max_length=63)) -> AlertAccepted:
     state = request.app.state
-    app_id: str = state.settings.default_app_id
-    apps: FileAppStore = state.apps
+    apps: AppStore = state.apps
     publisher: Publisher = state.publisher
 
     size = len(json.dumps(alert.payload, separators=(",", ":")).encode())
@@ -37,7 +38,15 @@ async def post_alert(alert: AlertIn, request: Request) -> AlertAccepted:
         )
 
     try:
-        spec = apps.get(app_id)
+        spec = await apps.get(app_id)
+    except UnknownAppError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from None
+    except AppUnavailableError as e:
+        logger.warning("app %s not resolvable: %s", app_id, e)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "App registry is temporarily unavailable; retry.",
+            headers={"Retry-After": "5"},
+        ) from None
     except AppConfigError:
         logger.exception("app %s is misconfigured", app_id)
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"App '{app_id}' is misconfigured.") from None

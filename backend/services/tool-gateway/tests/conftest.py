@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pytest
 
+from registry_client import AppNotFoundError, RegistryUnavailableError
+
 # The real backend/apps directory, for tests of app-owned tools.
 REPO_APPS_DIR = Path(__file__).resolve().parents[3] / "apps"
 
@@ -42,6 +44,7 @@ def _tool(handler):
         "input_model": EchoInput,
         "output_model": EchoOutput,
         "handler": handler,
+        "read_only": True,
     }
 
 
@@ -69,3 +72,24 @@ def echo_module(prefix: str = "") -> str:
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+class FakeApps:
+    """`RegistryClient.get_app` for the allowlist check: {app_id: {agent_id: [tool_id, ...]}}."""
+
+    def __init__(self, allowed: dict[str, dict[str, list[str]]], down: bool = False):
+        self.allowed = allowed
+        self.down = down
+
+    async def get_app(self, app_id: str) -> dict:
+        if self.down:
+            raise RegistryUnavailableError("connection refused")
+        if app_id not in self.allowed:
+            raise AppNotFoundError(app_id)
+        return {
+            "app_id": app_id,
+            "agents": [
+                {"agent_id": agent_id, "tools": [{"tool_id": t} for t in tools]}
+                for agent_id, tools in self.allowed[app_id].items()
+            ],
+        }

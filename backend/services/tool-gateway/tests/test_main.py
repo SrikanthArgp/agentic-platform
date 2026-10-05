@@ -8,6 +8,8 @@ from mcp.client.streamable_http import streamable_http_client
 from pydantic import ValidationError
 
 from app.main import MCP_PATH, HealthResponse, app, create_app
+from run_context import RunContext
+from tests.conftest import FakeApps
 
 client = TestClient(app)
 
@@ -30,7 +32,7 @@ HOST = "localhost:8003"
 
 @asynccontextmanager
 async def http_to_app():
-    app = create_app()
+    app = create_app(apps=FakeApps({"it-ops-triage": {"triage-agent": ["lookup_runbook"]}}))
     async with app.router.lifespan_context(app):
         transport = httpx2.ASGITransport(app=app)
         async with httpx2.AsyncClient(transport=transport, base_url=f"http://{HOST}") as http:
@@ -42,8 +44,9 @@ async def test_mcp_over_http_lists_and_calls_lookup_runbook():
     async with http_to_app() as http:
         async with Client(streamable_http_client(f"http://{HOST}{MCP_PATH}", http_client=http)) as mcp:
             names = [t.name for t in (await mcp.list_tools()).tools]
-            found = await mcp.call_tool("lookup_runbook", {"alert_type": "disk_full"})
-            missing = await mcp.call_tool("lookup_runbook", {"alert_type": "made_up_alert"})
+            meta = RunContext(app_id="it-ops-triage", agent_id="triage-agent").to_meta()
+            found = await mcp.call_tool("lookup_runbook", {"alert_type": "disk_full"}, meta=meta)
+            missing = await mcp.call_tool("lookup_runbook", {"alert_type": "made_up_alert"}, meta=meta)
 
     assert "lookup_runbook" in names
     assert found.structured_content["runbook"]["runbook_id"] == "RB-001"

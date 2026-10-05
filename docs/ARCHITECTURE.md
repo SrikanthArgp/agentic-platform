@@ -499,6 +499,7 @@ in Tempo/Mimir/Loki.
 | `cases` | `id`, `app_id`, `alert_id`, `alert_key`, `decision`, `reasons` (jsonb), `status` (`OPEN`\|`RESOLVED`), `verdict`, `verdict_by`, `resolution_notes` (text, nullable), `created_at`, `resolved_at` | Only `ESCALATE` decisions land here (§4 step 4). `app_id` filter on every read. Unique on `(app_id, alert_id)` so a duplicate `alert.decided` (§10) never creates a second case. `resolution_notes` is the analyst's account of the actual fix — the platform's only record of *how* an incident was resolved (§6). |
 | `memory_history` | `id`, `app_id`, `alert_key`, `window`, snapshot fields, `recorded_at` | Durable snapshot on every `memory-store` update; Redis's rebuild-from-source-of-truth path (§6). |
 | `apps` | `app_id` (PK), `display_name`, `manifest` (jsonb), `created_at`, `updated_at` | `registry`'s App Manifest store (§3) — one row per app, manifest kept as a single jsonb document rather than normalized, since it's read whole and written rarely. |
+| `tools` | (`tool_id`, `version`) (PK), `description`, `scope`, `app_id` (null for global), `input_schema`/`output_schema` (jsonb), `read_only` (`CHECK` true), `enabled`, `created_at`, `updated_at` | `registry`'s tool registrations (§3, §13 T8). A manifest may only declare registered tool versions. `enabled` is the runtime switch: a disabled tool stays registered but is offered to, and callable by, no agent. |
 | `outbox` | `id`, `app_id`, `alert_id`, `topic`, `kafka_key` (`{app_id}:{alert_key}`), `payload` (bytea, protobuf `RunAgentRequest`), `headers` (jsonb, incl. trace context), `status` (`PENDING`\|`SENT`\|`DEAD`), `attempts`, `last_error`, `created_at`, `sent_at` | `ingestion`'s Day 15 outbox (§10). Written by `ingestion`, drained by the Celery relay. `SENT` rows are pruned after a retention window; `DEAD` rows are kept for inspection. |
 
 **Redis** (`memory-store`, `orchestrator`, `ingestion`, Celery):
@@ -560,6 +561,7 @@ the broker default of 1.
 | `orchestrator` → `tool-gateway` | MCP | tool-call / tool-result |
 | `orchestrator` → `memory-store` | gRPC (`GetContext`) | `GetContextRequest`/`Response` (protobuf) |
 | `orchestrator` → `registry` | REST | App Manifest / tool schema reads |
+| `tool-gateway` → `registry` | REST | the calling agent's effective tools, re-checked on every tool call (§12) |
 | `orchestrator` → `review-console` | Kafka (`alert.decided`) | `RunAgentResponse` (protobuf) |
 | `review-console` → `memory-store` | Kafka (`verdict.recorded`) | `{app_id, case_id, alert_key, verdict, verdict_by, recorded_at}` (JSON — no gRPC contract needed, one-directional feed) |
 | external client → `review-console` | REST | case list/detail, verdict submission |
@@ -704,7 +706,8 @@ Two deployment targets built from the **same images** (ADR-0014):
 
 | App piece | Lives in | Consumed by | How a change takes effect |
 |---|---|---|---|
-| App Manifest | Postgres `apps` row (§8), written via `registry` REST | `orchestrator`, `ingestion` (via `registry`) | Next manifest fetch (≤30s TTL, §3) — no redeploy |
+| App Manifest | Postgres `apps` row (§8), written via `registry` REST | `orchestrator`, `ingestion`, `tool-gateway` (via `registry`) | Next manifest fetch (≤30s TTL, §3) — no redeploy |
+| Tool enabled/disabled | Postgres `tools` row (§8), `PATCH /tools/{tool_id}/versions/{version}` | same | Next manifest fetch (≤30s TTL) — no redeploy |
 | Event schema | `backend/apps/{app_id}/` | `ingestion` | Image rebuild + restart (rolling on Kubernetes) |
 | Prompt template(s) | `backend/apps/{app_id}/` | `orchestrator` | Image rebuild + restart (rolling on Kubernetes) |
 | App-owned tool code | `backend/apps/{app_id}/` | `tool-gateway` | Image rebuild + restart (rolling on Kubernetes) |
@@ -742,8 +745,12 @@ it's data. The flow:
    the event schema, prompts, and tools it references, so a manifest change
    is reviewed in the same commit as the code it points at. The Postgres
    `apps` row (§8) is the runtime copy, not the original.
-2. **Register**: `backend/scripts/register_app.py {app_id}` reads that file
-   and upserts it via `registry`'s REST API. Run by hand (§11 — no
+2. **Register**: `backend/scripts/register_app.py {app_id}` reads that file,
+   registers each tool it declares with the definition the running
+   `tool-gateway` serves (MCP `tools/list`: description, schemas,
+   `read_only`), failing if `tool-gateway` doesn't serve that tool version
+   (so code-first ordering is enforced, not just documented), then upserts
+   the manifest via `registry`'s REST API. Run by hand (§11 — no
    self-serve UI); re-running it with an unchanged file is a no-op.
 3. **Validate at registration**: `registry` rejects (`4xx`, naming the
    offending field) a manifest whose `tool_id`s/versions aren't registered
@@ -761,11 +768,19 @@ it's data. The flow:
    It cannot check `prompt_ref`/`event_schema_ref` — those are files in
    images it doesn't see — so a missing file surfaces at resolve time in
    `orchestrator`/`ingestion` as an explicit error for that app's events.
-4. **Resolve**: `ingestion` and `orchestrator` are the only manifest
-   readers. Both fetch by `app_id` from `registry` and cache in-memory with
-   the **same** TTL (default 30s, §3), so they never disagree about a
-   manifest for longer than one TTL. `tool-gateway`, `memory-store`, and
-   `review-console` never read manifests.
+4. **Resolve**: `ingestion`, `orchestrator`, and `tool-gateway` fetch
+   `GET /apps/{app_id}` from `registry` through `ap-shared`'s
+   `registry_client`, cached in-memory with the **same** TTL (default 30s,
+   §3), so they never disagree about a manifest for longer than one TTL.
+   `registry` serves the manifest *resolved*: each agent carries `tools`,
+   its `tool_allowlist` minus tools that are undeclared or disabled, so
+   `orchestrator` (what to offer the LLM) and `tool-gateway` (what to allow
+   per call, failing closed if `registry` is unreachable) read one answer.
+   `tool-gateway` reads only that list, for the allowlist re-check.
+   `memory-store` and `review-console` never read manifests. If `registry`
+   goes down, an expired cached copy keeps being served (logged); with no
+   copy, `ingestion` answers `503` and `orchestrator` escalates the alert
+   as not evaluated.
 
 **Rollout order for a new app or new app code**: code first, manifest
 second — rebuild/restart `ingestion`, `orchestrator`, `tool-gateway` with

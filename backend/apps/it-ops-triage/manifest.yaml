@@ -1,10 +1,9 @@
 # App Manifest for it-ops-triage (docs/ARCHITECTURE.md §3, ADR-0006).
 #
-# Partial: only the fields services read today. orchestrator (agents,
-# tools) and ingestion (event_schema_ref, alert_key_fields) read this file
-# directly until Day 5, when registry serves it (registered via
-# backend/scripts/register_app.py) and the remaining fields
-# (memory_namespace, escalate_when) are added.
+# Source of truth; registry holds the runtime copy. After editing, register
+# it (code first, manifest second, §12):
+#
+#   uv run backend/scripts/register_app.py it-ops-triage
 
 app_id: it-ops-triage
 display_name: IT-ops alert triage
@@ -25,3 +24,11 @@ tools:
   - tool_id: lookup_runbook
     version: 1.0.0
     scope: app
+
+# Prefix of every memory-store key for this app (§3, §6).
+memory_namespace: it-ops-triage
+
+# Deterministic guardrails (ADR-0010), applied from Day 7. Rules are
+# "payload.<path>" or "context.<GetContextResponse field>"; the envelope's
+# severity isn't addressable, so it-ops' rules are chosen with Day 7.
+escalate_when: []

@@ -5,8 +5,9 @@ Which app and agent a tool call is made for travels in the MCP request's
 expose `app_id`, so text injected into a prompt can't make the LLM call a
 tool on another app's behalf (docs/ARCHITECTURE.md §3, §13 T4).
 
-`tool-gateway` reads it back with `from_meta()`. Day 3 only logs it; Day 13
-uses it to enforce the agent's `tool_allowlist` and to scope global tools.
+`tool-gateway` reads it back with `from_meta()` and refuses any call without
+it, or for a tool the agent may not call (Day 5); Day 13 also uses it to
+scope global tools.
 """
 
 from __future__ import annotations

@@ -14,9 +14,9 @@ class Settings:
     apps_dir: Path = DEFAULT_APPS_DIR
     kafka_bootstrap_servers: str = "localhost:29092"
     kafka_enabled: bool = True
-    # Day 4 only: every alert belongs to this app. Day 5 routes by
-    # POST /apps/{app_id}/events instead.
-    default_app_id: str = "it-ops-triage"
+    registry_url: str = "http://localhost:8005"
+    # Same default as orchestrator and tool-gateway (docs/ARCHITECTURE.md §3).
+    manifest_ttl_s: float = 30.0
     # Serialized payload limit: everything in it ends up in an LLM prompt.
     max_payload_bytes: int = 32 * 1024
 
@@ -27,6 +27,7 @@ class Settings:
             apps_dir=Path(env.get("APPS_DIR", DEFAULT_APPS_DIR)),
             kafka_bootstrap_servers=env.get("KAFKA_BOOTSTRAP_SERVERS", cls.kafka_bootstrap_servers),
             kafka_enabled=env.get("KAFKA_ENABLED", "true").lower() == "true",
-            default_app_id=env.get("DEFAULT_APP_ID", cls.default_app_id),
+            registry_url=env.get("REGISTRY_URL", cls.registry_url),
+            manifest_ttl_s=float(env.get("MANIFEST_TTL_S", cls.manifest_ttl_s)),
             max_payload_bytes=int(env.get("MAX_PAYLOAD_BYTES", cls.max_payload_bytes)),
         )

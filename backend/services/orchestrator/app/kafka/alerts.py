@@ -20,7 +20,7 @@ from google.protobuf.message import DecodeError
 
 from app.agent.loop import AgentRunner, not_evaluated_response
 from app.agent.llm import LLMError
-from app.core.manifest import ResolutionError
+from app.core.manifest import ManifestUnavailableError, ResolutionError
 from proto_gen import agent_pb2
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,8 @@ async def handle_alert(raw: bytes, runner: AgentRunner) -> tuple[bytes, agent_pb
         why = str(e)
     except LLMError as e:
         why = f"LLM unavailable ({e})"
+    except ManifestUnavailableError as e:
+        why = str(e)
     except Exception:
         logger.exception("agent run failed for %s/%s", request.app_id, request.alert_id)
         why = "agent run failed"

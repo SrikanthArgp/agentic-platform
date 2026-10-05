@@ -48,8 +48,6 @@ class ToolResult:
 
 
 class ToolSession(Protocol):
-    async def list_tools(self) -> Sequence[GatewayTool]: ...
-
     async def call_tool(self, name: str, arguments: dict[str, Any], *, context: RunContext) -> ToolResult: ...
 
 

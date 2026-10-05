@@ -1,5 +1,6 @@
-"""The Day 4 hot path end to end, against the running Compose stack:
-POST /alerts -> Kafka -> orchestrator -> tool-gateway -> alert.decided ->
+"""The hot path end to end, against the running Compose stack with
+it-ops-triage registered (`register_app.py`):
+POST /apps/it-ops-triage/events -> Kafka -> orchestrator -> tool-gateway -> alert.decided ->
 GET /alerts/{id}.
 
 Calls the real LLM (a few cents per run). Run with
@@ -18,8 +19,8 @@ BASE_URL = os.environ.get("INGESTION_URL", "http://localhost:8001")
 DECISION_TIMEOUT_S = 90
 
 
-def _post(body: dict) -> httpx.Response:
-    return httpx.post(f"{BASE_URL}/alerts", json=body, timeout=10)
+def _post(body: dict, app_id: str = "it-ops-triage") -> httpx.Response:
+    return httpx.post(f"{BASE_URL}/apps/{app_id}/events", json=body, timeout=10)
 
 
 def _wait_decided(alert_id: str) -> dict:
@@ -62,3 +63,8 @@ def test_invalid_payload_is_rejected_by_the_running_service():
     )
     assert response.status_code == 422
     assert response.json()["detail"]["errors"][0]["message"] == "'host' is a required property"
+
+
+def test_made_up_app_is_rejected():
+    response = _post({"source": "x", "severity": "warning", "message": "x", "payload": {}}, app_id="made-up-app")
+    assert response.status_code == 404

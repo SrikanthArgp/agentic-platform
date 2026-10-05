@@ -1,5 +1,8 @@
 """The agent loop against a scripted LLM and a fake tool-gateway."""
 
+import copy
+import shutil
+
 import pytest
 
 from app.agent.llm import LLMResponse, ToolCallRequest, ToolResultMessage
@@ -8,7 +11,18 @@ from app.core.manifest import ResolutionError
 from app.tools.gateway import ToolResult
 from proto_gen import agent_pb2
 from run_context import RunContext
-from tests.conftest import APP_ID, FakeGateway, FakeLLM, final, make_request, make_runner, tool_call
+from tests.conftest import (
+    APP_ID,
+    RESOLVED_APP,
+    RUNBOOK_TOOL,
+    FakeGateway,
+    FakeLLM,
+    FakeRegistry,
+    final,
+    make_request,
+    make_runner,
+    tool_call,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -41,11 +55,47 @@ async def test_tool_calls_carry_app_id_in_context_never_in_arguments(apps_dir):
     assert arguments == {"alert_type": "disk_full"}
 
 
-async def test_only_allowlisted_tools_of_this_app_are_offered(apps_dir):
+async def test_agent_is_offered_the_tools_registry_resolved_for_it(apps_dir):
     llm = FakeLLM([final()])
     await make_runner(apps_dir, llm).run(make_request())
 
-    assert [t.name for t in llm.calls[0]["tools"]] == ["lookup_runbook"]
+    [definition] = llm.calls[0]["tools"]
+    assert (definition.name, definition.description) == ("lookup_runbook", "Look up a runbook.")
+    assert definition.input_schema == {"type": "object"}
+
+
+async def test_tool_set_differs_per_app_id(apps_dir):
+    """A second, throwaway app with its own tool: each app's agent sees only its own."""
+    other = copy.deepcopy(RESOLVED_APP)
+    other["app_id"] = "other-app"
+    billing = {**RUNBOOK_TOOL, "tool_id": "billing_lookup", "description": "Cost breakdown."}
+    other["agents"][0].update(tool_allowlist=["billing_lookup"], tools=[billing])
+    shutil.copytree(apps_dir / APP_ID, apps_dir / "other-app")  # same prompt files
+    registry = FakeRegistry({APP_ID: RESOLVED_APP, "other-app": other})
+
+    offered = {}
+    for app_id in (APP_ID, "other-app"):
+        llm = FakeLLM([final()])
+        request = make_request()
+        request.app_id = app_id
+        await make_runner(apps_dir, llm, registry=registry).run(request)
+        offered[app_id] = [t.name for t in llm.calls[0]["tools"]]
+
+    assert offered == {APP_ID: ["lookup_runbook"], "other-app": ["billing_lookup"]}
+
+
+async def test_disabled_tool_is_not_offered_or_called(apps_dir):
+    """registry leaves a disabled tool out of the agent's tools; the allowlist alone isn't enough."""
+    registry = FakeRegistry()
+    registry.apps[APP_ID]["agents"][0]["tools"] = []
+    llm = FakeLLM([LLMResponse(None, (tool_call(),)), final("ESCALATE", "no runbook available")])
+    gateway = FakeGateway()
+
+    response = await make_runner(apps_dir, llm, gateway, registry=registry).run(make_request())
+
+    assert llm.calls[0]["tools"] == []
+    assert gateway.calls == []
+    assert response.tool_calls[0].result_summary == "error: tool_not_allowed"
 
 
 async def test_tool_not_on_allowlist_is_refused_without_calling_gateway(apps_dir):

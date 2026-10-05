@@ -1,9 +1,10 @@
-"""The `POST /alerts` request and responses.
+"""The `POST /apps/{app_id}/events` request and responses.
 
 The request is the platform-generic envelope (the named `RunAgentRequest`
 fields) plus `payload`, the app-specific event validated against the app's
-`event_schema_ref` (ADR-0007). `alert_id`, `alert_key`, and `app_id` are
-set by ingestion, never by the caller.
+`event_schema_ref` (ADR-0007). `app_id` comes from the URL; `alert_id` and
+`alert_key` are set by ingestion. A body that tries to set any of them is a
+`422`.
 """
 
 from datetime import datetime

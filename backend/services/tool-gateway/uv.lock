@@ -39,6 +39,7 @@ version = "0.1.0"
 source = { editable = "../../shared" }
 dependencies = [
     { name = "grpcio" },
+    { name = "httpx" },
     { name = "opentelemetry-exporter-otlp" },
     { name = "opentelemetry-sdk" },
     { name = "protobuf" },
@@ -47,6 +48,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "grpcio", specifier = ">=1.66" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.27" },
     { name = "opentelemetry-sdk", specifier = ">=1.27" },
     { name = "protobuf", specifier = ">=5.28" },
@@ -54,6 +56,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "anyio", specifier = ">=4" },
     { name = "grpcio-tools", specifier = ">=1.66" },
     { name = "pytest", specifier = ">=8.3" },
 ]

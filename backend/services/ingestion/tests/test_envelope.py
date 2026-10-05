@@ -5,11 +5,11 @@ from datetime import UTC, datetime
 import pytest
 from google.protobuf.json_format import MessageToDict
 
-from app.core.apps import AppConfigError, FileAppStore, UnknownAppError
+from app.core.apps import AppConfigError, AppStore, UnknownAppError
 from app.core.envelope import AlertKeyError, build_alert_key, build_request, message_key
 from app.models.alerts import AlertIn
 from proto_gen import agent_pb2
-from tests.conftest import APP_ID
+from tests.conftest import APP_ID, FakeRegistry, resolved_app
 
 
 def test_alert_key_joins_fields_in_manifest_order():
@@ -57,14 +57,23 @@ def test_request_round_trips_through_kafka_bytes_with_nested_payload():
     assert isinstance(back["value"], float)
 
 
-def test_app_store_loads_spec_and_rejects_unknown_or_bad_apps(apps_dir):
-    store = FileAppStore(apps_dir)
-    assert store.get(APP_ID).alert_key_fields == ("alert_type", "host")
-    for bad in ("no-such-app", "../etc", "Bad"):
-        with pytest.raises(UnknownAppError):
-            store.get(bad)
+@pytest.mark.anyio
+async def test_app_store_builds_spec_and_rejects_unknown_or_bad_apps(apps_dir):
+    registry = FakeRegistry()
+    store = AppStore(registry, apps_dir)
+    assert (await store.get(APP_ID)).alert_key_fields == ("alert_type", "host")
+    with pytest.raises(UnknownAppError):
+        await store.get("no-such-app")
 
-    (apps_dir / "broken").mkdir()
-    (apps_dir / "broken" / "manifest.yaml").write_text("app_id: broken\nevent_schema_ref: ../x.json\nalert_key_fields: [a]\n")
+    registry.apps["broken"] = resolved_app("broken", event_schema_ref="../x.json")
     with pytest.raises(AppConfigError, match="event_schema_ref"):
-        store.get("broken")
+        await store.get("broken")
+
+
+@pytest.mark.anyio
+async def test_app_store_follows_manifest_changes(apps_dir):
+    registry = FakeRegistry()
+    store = AppStore(registry, apps_dir)
+    await store.get(APP_ID)
+    registry.apps[APP_ID] = resolved_app(alert_key_fields=["host", "alert_type"])
+    assert (await store.get(APP_ID)).alert_key_fields == ("host", "alert_type")

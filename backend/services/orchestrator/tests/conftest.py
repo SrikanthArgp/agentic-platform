@@ -1,10 +1,10 @@
-"""Fakes for unit tests: a scripted LLM and an in-memory tool-gateway.
+"""Fakes for unit tests: a scripted LLM, an in-memory tool-gateway, and registry.
 
 No test calls a real LLM or opens a network connection (docs/plan.md Day 3).
 """
 
+import copy
 import json
-import textwrap
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -16,33 +16,53 @@ from google.protobuf.struct_pb2 import Struct
 
 from app.agent.llm import LLMResponse, Message, ToolCallRequest, ToolDefinition, Usage
 from app.agent.loop import AgentRunner
-from app.core.manifest import FileManifestStore
-from app.tools.gateway import GatewayTool, ToolResult
+from app.core.manifest import ManifestStore
+from app.tools.gateway import ToolResult
+from registry_client import AppNotFoundError
 from proto_gen import agent_pb2
 from run_context import RunContext
 
 APP_ID = "test-app"
 
-MANIFEST = f"""
-app_id: {APP_ID}
-display_name: Test app
-agents:
-  - agent_id: triage-agent
-    version: 0.1.0
-    role: entry
-    prompt_ref: prompts/triage-agent.md
-    tool_allowlist: [lookup_runbook]
-  - agent_id: summarizer
-    version: 0.1.0
-    role: callable
-    prompt_ref: prompts/summarizer.md
-    tool_allowlist: []
-    invoke_on: [ESCALATE]
-tools:
-  - tool_id: lookup_runbook
-    version: 1.0.0
-    scope: app
-"""
+RUNBOOK_TOOL = {
+    "tool_id": "lookup_runbook",
+    "version": "1.0.0",
+    "scope": "app",
+    "description": "Look up a runbook.",
+    "input_schema": {"type": "object"},
+}
+
+# `GET /apps/{APP_ID}` as registry serves it: each agent's `tools` already
+# resolved (allowlisted, declared, enabled).
+RESOLVED_APP: dict[str, Any] = {
+    "app_id": APP_ID,
+    "display_name": "Test app",
+    "agents": [
+        {
+            "agent_id": "triage-agent",
+            "version": "0.1.0",
+            "role": "entry",
+            "prompt_ref": "prompts/triage-agent.md",
+            "tool_allowlist": ["lookup_runbook"],
+            "invoke_on": [],
+            "tools": [RUNBOOK_TOOL],
+        },
+        {
+            "agent_id": "summarizer",
+            "version": "0.1.0",
+            "role": "callable",
+            "prompt_ref": "prompts/summarizer.md",
+            "tool_allowlist": [],
+            "invoke_on": ["ESCALATE"],
+            "tools": [],
+        },
+    ],
+    "tools": [{"tool_id": "lookup_runbook", "version": "1.0.0", "scope": "app", "enabled": True}],
+    "event_schema_ref": "event_schema.json",
+    "alert_key_fields": ["alert_type", "host"],
+    "memory_namespace": APP_ID,
+    "escalate_when": [],
+}
 
 APP_PROMPT = "Call lookup_runbook with payload.alert_type, then decide."
 
@@ -56,7 +76,6 @@ def anyio_backend() -> str:
 def apps_dir(tmp_path: Path) -> Path:
     app_dir = tmp_path / APP_ID
     (app_dir / "prompts").mkdir(parents=True)
-    (app_dir / "manifest.yaml").write_text(textwrap.dedent(MANIFEST))
     (app_dir / "prompts" / "triage-agent.md").write_text(APP_PROMPT)
     (app_dir / "prompts" / "summarizer.md").write_text("Summarize.")
     return tmp_path
@@ -105,14 +124,20 @@ class FakeLLM:
 RUNBOOK_RESULT = {"found": True, "alert_type": "disk_full", "runbook": {"runbook_id": "RB-001"}}
 
 
+class FakeRegistry:
+    """`RegistryClient.get_app` over a dict of resolved apps."""
+
+    def __init__(self, apps: dict[str, dict[str, Any]] | None = None):
+        self.apps = apps if apps is not None else {APP_ID: copy.deepcopy(RESOLVED_APP)}
+
+    async def get_app(self, app_id: str) -> dict[str, Any]:
+        if app_id not in self.apps:
+            raise AppNotFoundError(f"No app '{app_id}' is registered.")
+        return self.apps[app_id]
+
+
 @dataclass
 class FakeGateway:
-    tools: list[GatewayTool] = field(
-        default_factory=lambda: [
-            GatewayTool("lookup_runbook", "Look up a runbook.", {"type": "object"}, "1.0.0", "app", APP_ID),
-            GatewayTool("other_app_tool", "Not ours.", {"type": "object"}, "1.0.0", "app", "other-app"),
-        ]
-    )
     results: dict[str, ToolResult] = field(
         default_factory=lambda: {"lookup_runbook": ToolResult(False, RUNBOOK_RESULT)}
     )
@@ -122,13 +147,17 @@ class FakeGateway:
     async def connect(self) -> AsyncIterator["FakeGateway"]:
         yield self
 
-    async def list_tools(self) -> list[GatewayTool]:
-        return self.tools
-
     async def call_tool(self, name: str, arguments: dict[str, Any], *, context: RunContext) -> ToolResult:
         self.calls.append((name, arguments, context))
         return self.results[name]
 
 
-def make_runner(apps_dir: Path, llm: FakeLLM, gateway: FakeGateway | None = None, max_tool_rounds: int = 5):
-    return AgentRunner(FileManifestStore(apps_dir), gateway or FakeGateway(), llm, max_tool_rounds)
+def make_runner(
+    apps_dir: Path,
+    llm: FakeLLM,
+    gateway: FakeGateway | None = None,
+    max_tool_rounds: int = 5,
+    registry: FakeRegistry | None = None,
+):
+    manifests = ManifestStore(registry or FakeRegistry(), apps_dir)
+    return AgentRunner(manifests, gateway or FakeGateway(), llm, max_tool_rounds)

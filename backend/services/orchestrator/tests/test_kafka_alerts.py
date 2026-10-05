@@ -5,6 +5,7 @@ import pytest
 from app.agent.llm import LLMError
 from app.kafka.alerts import handle_alert, message_key
 from proto_gen import agent_pb2
+from registry_client import RegistryUnavailableError
 from tests.conftest import FakeLLM, final, make_request, make_runner
 
 pytestmark = pytest.mark.anyio
@@ -51,7 +52,19 @@ async def test_unknown_app_publishes_escalate(apps_dir):
     _, response = await handle_alert(request.SerializeToString(), make_runner(apps_dir, FakeLLM([])))
 
     assert response.decision == agent_pb2.ESCALATE
-    assert "No manifest for app_id 'no-such-app'" in response.reasons[0]
+    assert "No app 'no-such-app' is registered" in response.reasons[0]
+
+
+async def test_registry_down_publishes_escalate(apps_dir):
+    class Down:
+        async def get_app(self, app_id):
+            raise RegistryUnavailableError("connection refused")
+
+    runner = make_runner(apps_dir, FakeLLM([]), registry=Down())
+    _, response = await handle_alert(make_request().SerializeToString(), runner)
+
+    assert response.decision == agent_pb2.ESCALATE
+    assert "not evaluated: registry unavailable" in response.reasons[0]
 
 
 @pytest.mark.parametrize("raw", [b"\xff\xff\xff", agent_pb2.RunAgentRequest(app_id="a").SerializeToString()])

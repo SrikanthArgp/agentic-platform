@@ -7,11 +7,12 @@ from pydantic import BaseModel
 from app.agent.llm import LLMClient
 from app.agent.loop import AgentRunner
 from app.core.config import Settings
-from app.core.manifest import FileManifestStore
+from app.core.manifest import ManifestStore
 from app.grpc.server import start_grpc_server
 from app.kafka.alerts import AlertPipeline
 from app.tools.gateway import MCPToolGateway
 from observability import setup_observability
+from registry_client import RegistryClient
 
 SERVICE_NAME = "orchestrator"
 
@@ -31,9 +32,9 @@ def build_llm(settings: Settings) -> LLMClient:
     raise ValueError(f"Unsupported LLM_PROVIDER '{settings.llm_provider}'.")
 
 
-def build_runner(settings: Settings) -> AgentRunner:
+def build_runner(settings: Settings, registry: RegistryClient) -> AgentRunner:
     return AgentRunner(
-        manifests=FileManifestStore(settings.apps_dir),
+        manifests=ManifestStore(registry, settings.apps_dir),
         gateway=MCPToolGateway(settings.tool_gateway_url),
         llm=build_llm(settings),
         max_tool_rounds=settings.max_tool_rounds,
@@ -45,7 +46,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Built here, not at import: the LLM client needs its API key, and tests
     # import this module without one.
     settings = Settings.from_env()
-    runner = build_runner(settings)
+    registry = RegistryClient(settings.registry_url, ttl_s=settings.manifest_ttl_s)
+    runner = build_runner(settings, registry)
     grpc_server = await start_grpc_server(runner, settings.grpc_port)
     pipeline = AlertPipeline(runner, settings.kafka_bootstrap_servers) if settings.kafka_enabled else None
     if pipeline:
@@ -56,6 +58,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if pipeline:
             await pipeline.stop()
         await grpc_server.stop(grace=5)
+        await registry.aclose()
 
 
 app = FastAPI(title=SERVICE_NAME, lifespan=lifespan)

@@ -91,7 +91,7 @@ def test_module_without_tools_dict_fails(tmp_path):
         ('TOOLS = {"t": {"version": "1"}}', "missing keys"),
         (
             'TOOLS = {"t": {"version": "1", "description": "d", "input_model": dict, '
-            '"output_model": dict, "handler": print}}',
+            '"output_model": dict, "handler": print, "read_only": True}}',
             "input_model must be a pydantic BaseModel subclass",
         ),
     ],
@@ -100,6 +100,14 @@ def test_malformed_tool_definition_fails(tmp_path, tools_source, error):
     write_tool_module(tmp_path, "app-one", "bad", tools_source)
 
     with pytest.raises(ToolLoadError, match=error):
+        load(tmp_path)
+
+
+def test_tool_not_declared_read_only_fails(tmp_path):
+    source = echo_module().replace('"read_only": True,', '"read_only": False,')
+    write_tool_module(tmp_path, "app-one", "echo_tools", source)
+
+    with pytest.raises(ToolLoadError, match="read_only must be True"):
         load(tmp_path)
 
 

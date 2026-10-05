@@ -1,24 +1,36 @@
 """App Manifest resolution: `app_id` -> manifest, agent, prompt.
 
-Day 3 interim: reads `backend/apps/{app_id}/manifest.yaml` from disk. Day 5
-replaces `FileManifestStore` with a `registry` client (REST, 30s TTL cache,
-docs/ARCHITECTURE.md §3); prompts stay files in this image either way
-(`prompt_ref` is resolved here, §12).
+The manifest comes from `registry` (`GET /apps/{app_id}`, via `ap-shared`'s
+`RegistryClient` and its 30s TTL cache, docs/ARCHITECTURE.md §3), already
+resolved: each agent carries the tools it may call right now (allowlisted,
+declared, enabled), which is exactly what the agent is offered. Prompts stay
+files in this image (`prompt_ref` is resolved here, §12).
 """
 
-import re
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, Protocol
 
-import yaml
 from pydantic import BaseModel, ConfigDict
 
-# app_id arrives in Kafka messages; it becomes a path segment, so only slugs.
-_APP_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
+from registry_client import AppNotFoundError, RegistryUnavailableError
 
 
 class ResolutionError(LookupError):
-    """The run names an app or agent that doesn't exist."""
+    """The run names an app or agent that doesn't exist, or the app is broken."""
+
+
+class ManifestUnavailableError(RuntimeError):
+    """`registry` couldn't be reached and there is no cached copy of the app."""
+
+
+class AgentTool(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    tool_id: str
+    version: str
+    scope: Literal["app", "global"]
+    description: str
+    input_schema: dict[str, Any]
 
 
 class AgentSpec(BaseModel):
@@ -30,25 +42,20 @@ class AgentSpec(BaseModel):
     prompt_ref: str
     tool_allowlist: list[str] = []
     invoke_on: list[str] = []
-
-
-class ToolRef(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    tool_id: str
-    version: str
-    scope: Literal["app", "global"]
+    # The tools this agent is offered: computed by registry (§3).
+    tools: list[AgentTool] = []
 
 
 class AppManifest(BaseModel):
-    # extra="ignore": fields added on later days (escalate_when, ...) must not
-    # break an older orchestrator.
+    # extra="ignore": fields registry adds later must not break an older
+    # orchestrator.
     model_config = ConfigDict(extra="ignore")
 
     app_id: str
     display_name: str
     agents: list[AgentSpec]
-    tools: list[ToolRef] = []
+    memory_namespace: str = ""
+    escalate_when: list[dict[str, Any]] = []
 
     def agent(self, agent_id: str) -> AgentSpec:
         """The named agent, or the app's entry agent when `agent_id` is empty."""
@@ -59,19 +66,27 @@ class AppManifest(BaseModel):
         raise ResolutionError(f"App '{self.app_id}' has no agent {wanted}.")
 
 
-class FileManifestStore:
-    def __init__(self, apps_dir: Path):
+class AppSource(Protocol):
+    """`registry_client.RegistryClient`, or a fake in tests."""
+
+    async def get_app(self, app_id: str) -> dict[str, Any]: ...
+
+
+class ManifestStore:
+    def __init__(self, registry: AppSource, apps_dir: Path):
+        self._registry = registry
         self._apps_dir = apps_dir.resolve()
 
-    def get(self, app_id: str) -> AppManifest:
-        if not _APP_ID_RE.match(app_id):
-            raise ResolutionError(f"Invalid app_id {app_id!r}.")
-        path = self._apps_dir / app_id / "manifest.yaml"
-        if not path.is_file():
-            raise ResolutionError(f"No manifest for app_id '{app_id}'.")
-        manifest = AppManifest.model_validate(yaml.safe_load(path.read_text()))
+    async def get(self, app_id: str) -> AppManifest:
+        try:
+            app = await self._registry.get_app(app_id)
+        except AppNotFoundError as e:
+            raise ResolutionError(str(e)) from None
+        except RegistryUnavailableError as e:
+            raise ManifestUnavailableError(f"registry unavailable ({e})") from None
+        manifest = AppManifest.model_validate(app)
         if manifest.app_id != app_id:
-            raise ResolutionError(f"{path} declares app_id '{manifest.app_id}', expected '{app_id}'.")
+            raise ResolutionError(f"registry returned app_id '{manifest.app_id}' for '{app_id}'.")
         return manifest
 
     def prompt(self, manifest: AppManifest, agent: AgentSpec) -> str:

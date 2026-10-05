@@ -91,5 +91,6 @@ TOOLS = {
         "input_model": LookupRunbookInput,
         "output_model": LookupRunbookOutput,
         "handler": lookup_runbook,
+        "read_only": True,
     },
 }

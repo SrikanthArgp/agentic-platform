@@ -9,7 +9,6 @@ dependencies = [
     "aiokafka>=0.12",
     "ap-shared",
     "jsonschema>=4.23",
-    "pyyaml>=6",
 ]
 
 [tool.uv.sources]
@@ -20,6 +19,7 @@ dev = [
     "pytest>=8.3",
     "httpx>=0.27",
     "anyio>=4",
+    "pyyaml>=6",
 ]
 
 [tool.pytest.ini_options]
