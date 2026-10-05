@@ -228,11 +228,14 @@ services:
   memory-store:
     <<: *service-defaults
     build: { context: .., dockerfile: services/memory-store/Dockerfile }
-    ports: ["8004:8000"]
+    # gRPC MemoryStore service on 50051 (published as 50053 for host testing:
+    # backend/scripts/get_context.py).
+    ports: ["8004:8000", "50053:50051"]
     depends_on:
-      kafka: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
+      registry: { condition: service_healthy }
 
   registry:
     <<: *service-defaults

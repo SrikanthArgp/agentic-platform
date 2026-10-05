@@ -36,6 +36,7 @@ async def test_tool_call_then_decision(apps_dir):
     assert response.app_id == APP_ID
     assert response.agent_id == "triage-agent"
     assert response.alert_id == "alert-1"
+    assert response.alert_key == "disk_full:web-01"
     assert response.decision == agent_pb2.AUTO_RESOLVE
     assert list(response.reasons) == ["RB-001: transient spike"]
     assert [(c.tool_name, c.result_summary[:13]) for c in response.tool_calls] == [
@@ -194,4 +195,5 @@ def test_not_evaluated_response_escalates_with_reason():
     response = not_evaluated_response(make_request(), "LLM unavailable")
     assert response.decision == agent_pb2.ESCALATE
     assert response.alert_id == "alert-1"
+    assert response.alert_key == "disk_full:web-01"
     assert "not evaluated: LLM unavailable" in response.reasons[0]

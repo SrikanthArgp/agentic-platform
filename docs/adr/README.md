@@ -33,3 +33,6 @@ Rules:
 | [0013](0013-tool-gateway-hot-reload.md) | Hot-reload app-scoped tools in `tool-gateway` via explicit, atomic reload | Rejected (see 0014) |
 | [0014](0014-kubernetes-rolling-rollouts.md) | Local Kubernetes from app #3 on; new apps ship by rolling update | Accepted |
 | [0015](0015-llm-provider-openai.md) | OpenAI (`gpt-5.4-mini` default) behind a provider-agnostic LLM interface | Accepted |
+| [0016](0016-memory-fed-by-alert-decided.md) | `memory-store` counts decisions by consuming `alert.decided`; `RunAgentResponse` carries `alert_key` | Accepted |
+| [0017](0017-memory-as-event-log.md) | Memory stored as an event log; rolling windows counted exactly | Accepted |
+| [0018](0018-memory-namespace-from-registry.md) | `memory-store` resolves `memory_namespace` from `registry` | Accepted |

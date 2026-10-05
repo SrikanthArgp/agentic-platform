@@ -41,7 +41,7 @@ class DecisionTracker:
             AlertStatus(
                 alert_id=response.alert_id,
                 app_id=response.app_id,
-                alert_key=known.alert_key if known else "",
+                alert_key=known.alert_key if known else response.alert_key,
                 status="decided",
                 accepted_at=accepted_at,
                 decided_at=at,

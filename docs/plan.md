@@ -1,6 +1,6 @@
 # Build Plan: 27-Day Sequence
 
-Status: Days 1–5 done; Day 6 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
+Status: Days 1–6 done; Day 7 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
 
 Service map this plan assumes (see `docs/ARCHITECTURE.md` for full rationale): `ingestion`, `orchestrator`, `memory-store`, `review-console`, `registry`, `tool-gateway`, plus Celery workers. The platform is multi-app: three configurable use cases (products) run on the same shared core, each registered as an **App Manifest** in `registry` (introduced Day 5) rather than hardcoded. App #1 / reference domain adapter: IT ops alert triage (`it-ops-triage`; `ingestion` accepts alerts; `orchestrator`'s agent decides auto-resolve / escalate / suppress-as-noise). App #2 is **cloud cost-anomaly triage** (`cost-anomaly-triage`): a spend-spike alert from a cloud billing/cost tool. App #3 is **security alert triage** (`security-alert-triage`): SIEM/EDR alerts. All three use the same `AUTO_RESOLVE` / `ESCALATE` / `SUPPRESS` decision enum from `agent.proto` — apps that need a different decision vocabulary would require a proto change and are out of scope. App #2 gets a first cut on Day 13 and is finished Day 17; a local Kubernetes cluster is stood up on Days 18–19 (ADR-0014), and app #3 is built Day 20 and shipped to it by rolling update. Agent-to-agent (A2A) communication between apps is explicitly out of scope — apps are isolated tenants sharing infrastructure (Kafka/gRPC/REST/MCP transports), not a mesh. A "tenant" is an app; there is no per-customer tenancy in this build.
 
@@ -167,17 +167,28 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 ## Week 2 — Context, guardrails, delegation, human feedback
 
-### Day 6 — `memory-store`: real context, not a stub
+### Day 6 — `memory-store`: real context, not a stub ✅
 
 **Goal**: a working gRPC service serving real behavioral context out of Redis, backed durably by Postgres.
 
 - Redis schema: keys prefixed by `app_id`/`memory_namespace` (from the App Manifest), then per alert-source/type, recurrence counts and recent-alert aggregates over rolling windows (1h/24h/7d, matching `GetContextResponse` in `memory_store.proto`) — decision counts now; the `confirmed_incident_count`/`confirmed_noise_count` fields exist from today but stay `0` until Day 10 feeds verdicts in — the alert-triage analogue of Sentinel's velocity aggregates. Namespacing by app now avoids a data migration when apps #2/#3 land.
-- Postgres `memory_history` table: durable snapshot on every update (rebuild-from-source-of-truth path), also keyed by `app_id`.
+- Postgres `memory_history` table: durable snapshot on every update (rebuild-from-source-of-truth path), also keyed by `app_id`. *Changed (ADR-0017): an event log, `memory_events`, one row per decision/verdict, since a per-window snapshot can't rebuild a sliding window. Decisions arrive by consuming `alert.decided` (ADR-0016); the namespace comes from `registry` (ADR-0018).*
 - `GetContext` gRPC handler: takes `app_id` in the request, reads Redis, falls back to computing from Postgres on a cache miss and repopulates Redis.
 - `backend/scripts/seed.py`: populate Redis + Postgres with synthetic historical alerts.
 - **Unit tests**: aggregate window boundary math (edge-of-window cases, empty-history alert types), the cache-miss-falls-back-and-repopulates path.
 
 **Definition of done**: a gRPC test client against `memory-store` returns real, correct aggregates for seeded alert types; `GetContext` latency measured (should be low-single-digit ms).
+
+**As built** (notes for later days):
+- Three decisions, each an ADR: decisions reach `memory-store` by consuming `alert.decided` in its own group, and `RunAgentResponse` gained `alert_key = 7` (ADR-0016); memory is an event log, `memory_events`, replacing the `memory_history` snapshot table (ADR-0017); the Redis prefix `memory_namespace` is looked up from `registry` (ADR-0018). `ARCHITECTURE.md` §4/§6/§8/§12 updated.
+- `memory_events`: one row per event, `kind` `decision:<Decision>` (verdicts from Day 10), `ref_id` = `alert_id`, unique per (`app_id`, family, `ref_id`), so a redelivered `alert.decided` is counted once. A decision's time is the Kafka message timestamp. On an existing volume `memory_history` was dropped by hand (it was empty) and `init.sql` re-applied.
+- Redis: `mem:{ns}:{alert_key}:events` (sorted set, 7 days, trimmed on read and write) and `:facts` (`seen`, `confirmed_incident`, `loaded`), both TTL 8 days. A key without `loaded` is a miss → rebuilt from Postgres. Writers and rebuilds only add (ZADD, true-only HSET), so a rebuild racing a write keeps the write. Redis down → answered from Postgres; a failed cache write invalidates the key.
+- Window maths is one pure function (`app/core/events.py`) used for both paths: windows `(now − w, now]`; an event exactly `w` old is out; future-stamped events (clock skew) count. AUTO_RESOLVE and "not evaluated" decisions count as alerts only. `is_novel_alert` = no decision ever; `has_confirmed_incident_history` is all-time.
+- gRPC on `:50051` (host `:50053`). `INVALID_ARGUMENT` (missing field), `NOT_FOUND` (unknown app), `UNAVAILABLE` (registry down with nothing cached, or Postgres down). The consumer retries on registry/Postgres errors without committing; it skips (and commits) messages without `alert_key` — which is every `alert.decided` published before this change.
+- `orchestrator` sets `alert_key` on every response; `ingestion`'s debug view now keeps it after a restart.
+- `seed.py` writes synthetic decisions for five it-ops keys at fixed offsets before now, deletes their Redis keys, and prints the expected counts; re-running replaces its own rows (`ref_id` `seed:…`). `get_context.py` is the gRPC test client (`--repeat N` for latency).
+- Definition of done, verified on the Compose stack: every seeded key's `GetContext` matched the printed expectation (e.g. `healthcheck_flap:lb-02` 5/12/17 suppressions over 1h/24h/7d; `cert_expiring:api-gw` 0 in every window but not novel). Latency, client-side over one channel: warm (Redis) p50 0.54 ms, p99 0.82 ms over 1000 calls; cold miss (Postgres rebuild + refill) p50 2.3 ms. A real alert through `ingestion` → `orchestrator` turned a novel key into 1 alert / 1 escalation within a second.
+- Not used yet: `orchestrator` doesn't call `GetContext` until Day 7.
 
 ---
 

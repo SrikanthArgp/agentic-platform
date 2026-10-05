@@ -299,7 +299,7 @@ scope (§11). `similar-past-case-lookup` reads the platform's own `cases`.
                           MCP (tools)│        │ gRPC (GetContext)
                                      ▼        ▼
                               tool-gateway  memory-store ◀──── Postgres
-                                     │        ▲                 (memory_history)
+                                     │        ▲                 (memory_events)
                                      │        │ Kafka
                                      │        │ verdict.recorded
                                      │        │
@@ -313,7 +313,9 @@ scope (§11). `similar-past-case-lookup` reads the platform's own `cases`.
 
 (The diagram shows the logical flow. From Day 15, `ingestion` → Kafka goes
 through the Postgres outbox and a Celery relay (§10); the global
-`similar-past-case-lookup` tool also reads `review-console` over REST (§9).)
+`similar-past-case-lookup` tool also reads `review-console` over REST (§9).
+`memory-store` also consumes `alert.decided`, for its decision counts
+(ADR-0016), and reads its `memory_namespace` from `registry` (ADR-0018).)
 
 Steps, app-agnostic:
 
@@ -331,7 +333,10 @@ Steps, app-agnostic:
    this diagram. Each run is ephemeral: built from the cached manifest,
    discarded after publishing; anything that must outlive it lives in
    `memory-store`, `cases`, or traces.
-3. `orchestrator` publishes `alert.decided` (payload = `RunAgentResponse`).
+3. `orchestrator` publishes `alert.decided` (payload = `RunAgentResponse`,
+   carrying `alert_key`). `memory-store` consumes it too, in its own
+   consumer group, and records the decision for that `alert_key`
+   (ADR-0016) — what `GetContext`'s decision counts are built from.
 4. `review-console` consumes `alert.decided`; only `ESCALATE` decisions are
    persisted into `cases` (app-scoped). An analyst reviews via REST and
    submits a verdict (optionally with `resolution_notes` — what actually
@@ -440,9 +445,15 @@ The verdict counts are what make the feedback loop concrete: repeated
 confirmed-noise verdicts push an `alert_key` toward `SUPPRESS`; any
 confirmed incident pushes it toward `ESCALATE`.
 
-Backed by Redis (hot path, keyed by `{memory_namespace}:{alert_key}:{window}`)
-with Postgres `memory_history` as the durable source of truth — a Redis miss
-recomputes from Postgres and repopulates Redis (§8).
+Stored as an event log (ADR-0017): every decision (from `alert.decided`,
+ADR-0016) and, from Day 10, every verdict is one row in Postgres
+`memory_events`, the source of truth. Redis caches each
+`{memory_namespace}:{alert_key}` as a sorted set of its last 7 days of
+events plus a hash of all-time facts; window counts are computed by one
+function over those events, windows `(now − w, now]`, so they slide
+exactly. A Redis miss recomputes from Postgres and repopulates Redis (§8).
+`memory-store` resolves `memory_namespace` from `app_id` through
+`registry` (ADR-0018).
 
 (`plan.md` Day 7 still owes one decision here: whether `orchestrator` calls
 `GetContext` directly before the tool-calling loop, or exposes it to the
@@ -497,7 +508,7 @@ in Tempo/Mimir/Loki.
 | Table | Key columns | Notes |
 |---|---|---|
 | `cases` | `id`, `app_id`, `alert_id`, `alert_key`, `decision`, `reasons` (jsonb), `status` (`OPEN`\|`RESOLVED`), `verdict`, `verdict_by`, `resolution_notes` (text, nullable), `created_at`, `resolved_at` | Only `ESCALATE` decisions land here (§4 step 4). `app_id` filter on every read. Unique on `(app_id, alert_id)` so a duplicate `alert.decided` (§10) never creates a second case. `resolution_notes` is the analyst's account of the actual fix — the platform's only record of *how* an incident was resolved (§6). |
-| `memory_history` | `id`, `app_id`, `alert_key`, `window`, snapshot fields, `recorded_at` | Durable snapshot on every `memory-store` update; Redis's rebuild-from-source-of-truth path (§6). |
+| `memory_events` | `id`, `app_id`, `alert_key`, `kind` (`decision:<Decision>`, from Day 10 `verdict:<verdict>`), `ref_id` (`alert_id` / `case_id`), `occurred_at`, `recorded_at` | `memory-store`'s source of truth (§6, ADR-0017): one row per event, unique per (`app_id`, kind family, `ref_id`) so a redelivered event counts once. Redis is rebuilt from it on a miss. Replaces the earlier per-window `memory_history` snapshot design, which couldn't rebuild a sliding window. |
 | `apps` | `app_id` (PK), `display_name`, `manifest` (jsonb), `created_at`, `updated_at` | `registry`'s App Manifest store (§3) — one row per app, manifest kept as a single jsonb document rather than normalized, since it's read whole and written rarely. |
 | `tools` | (`tool_id`, `version`) (PK), `description`, `scope`, `app_id` (null for global), `input_schema`/`output_schema` (jsonb), `read_only` (`CHECK` true), `enabled`, `created_at`, `updated_at` | `registry`'s tool registrations (§3, §13 T8). A manifest may only declare registered tool versions. `enabled` is the runtime switch: a disabled tool stays registered but is offered to, and callable by, no agent. |
 | `outbox` | `id`, `app_id`, `alert_id`, `topic`, `kafka_key` (`{app_id}:{alert_key}`), `payload` (bytea, protobuf `RunAgentRequest`), `headers` (jsonb, incl. trace context), `status` (`PENDING`\|`SENT`\|`DEAD`), `attempts`, `last_error`, `created_at`, `sent_at` | `ingestion`'s Day 15 outbox (§10). Written by `ingestion`, drained by the Celery relay. `SENT` rows are pruned after a retention window; `DEAD` rows are kept for inspection. |
@@ -506,7 +517,8 @@ in Tempo/Mimir/Loki.
 
 | Key pattern | Purpose |
 |---|---|
-| `ctx:{memory_namespace}:{alert_key}:{window}` | Rolling aggregate counts (§6), TTL'd per window. |
+| `mem:{memory_namespace}:{alert_key}:events` | Sorted set of the key's last 7 days of events (member `{kind}|{ref_id}`, score = event time in ms), trimmed on write and read (§6, ADR-0017). |
+| `mem:{memory_namespace}:{alert_key}:facts` | Hash of all-time facts (`seen`, `confirmed_incident`) plus the `loaded` marker that says the sorted set is complete; TTL'd, rebuilt from Postgres when absent. |
 | `budget:{app_id}:{agent_id}:{date}` | Per-agent token/cost counters (Day 14, §10). |
 | `ratelimit:{app_id}` / `ratelimit:{app_id}:{source}` | `ingestion` rate-limit counters, per app and per alert source within an app (Day 14, §10). |
 | `seen:{app_id}:{alert_id}` | `orchestrator`'s dedupe marker for at-least-once delivery (§10), TTL'd (e.g. 24h). Shared across replicas, so any replica skips a duplicate. |
@@ -517,7 +529,7 @@ in Tempo/Mimir/Loki.
 | Topic | Producer → consumer | Message key | Payload |
 |---|---|---|---|
 | `alert.received` | Celery outbox relay (on behalf of `ingestion`) → `orchestrator` | `{app_id}:{alert_key}` | `RunAgentRequest` (protobuf) |
-| `alert.decided` | `orchestrator` → `review-console` | `{app_id}:{alert_key}` | `RunAgentResponse` (protobuf) |
+| `alert.decided` | `orchestrator` → `review-console`, `memory-store` (separate consumer groups) | `{app_id}:{alert_key}` | `RunAgentResponse` (protobuf) |
 | `verdict.recorded` | `review-console` → `memory-store` | `{app_id}:{alert_key}` | JSON (§9) |
 | `alert.received.dlq` | Celery outbox relay → (human inspection; no automatic consumer) | `{app_id}:{alert_key}` | Same as `alert.received`, plus `last_error`/`attempts` headers (§10) |
 
@@ -562,7 +574,8 @@ the broker default of 1.
 | `orchestrator` → `memory-store` | gRPC (`GetContext`) | `GetContextRequest`/`Response` (protobuf) |
 | `orchestrator` → `registry` | REST | App Manifest / tool schema reads |
 | `tool-gateway` → `registry` | REST | the calling agent's effective tools, re-checked on every tool call (§12) |
-| `orchestrator` → `review-console` | Kafka (`alert.decided`) | `RunAgentResponse` (protobuf) |
+| `orchestrator` → `review-console`, `memory-store` | Kafka (`alert.decided`) | `RunAgentResponse` (protobuf) |
+| `memory-store` → `registry` | REST | the app's `memory_namespace` (ADR-0018) |
 | `review-console` → `memory-store` | Kafka (`verdict.recorded`) | `{app_id, case_id, alert_key, verdict, verdict_by, recorded_at}` (JSON — no gRPC contract needed, one-directional feed) |
 | external client → `review-console` | REST | case list/detail, verdict submission |
 | `tool-gateway` → `review-console` | REST (`GET /cases`) | `similar-past-case-lookup` reads past cases (incl. `resolution_notes`), filtered by the calling agent's `app_id` + `alert_key` — read-only (§2, §6) |
@@ -777,7 +790,8 @@ it's data. The flow:
    `orchestrator` (what to offer the LLM) and `tool-gateway` (what to allow
    per call, failing closed if `registry` is unreachable) read one answer.
    `tool-gateway` reads only that list, for the allowlist re-check.
-   `memory-store` and `review-console` never read manifests. If `registry`
+   `memory-store` reads only `memory_namespace`, to name its Redis keys
+   (ADR-0018). `review-console` never reads manifests. If `registry`
    goes down, an expired cached copy keeps being served (logged); with no
    copy, `ingestion` answers `503` and `orchestrator` escalates the alert
    as not evaluated.

@@ -113,6 +113,7 @@ class AgentRunner:
                 app_id=context.app_id,
                 agent_id=context.agent_id,
                 alert_id=context.alert_id,
+                alert_key=request.alert_key,
                 decision=decision,
                 reasons=[*reasons, *extra],
                 tool_calls=trace_calls,
@@ -174,6 +175,7 @@ def not_evaluated_response(request: agent_pb2.RunAgentRequest, why: str) -> agen
         app_id=request.app_id,
         agent_id=request.agent_id,
         alert_id=request.alert_id,
+        alert_key=request.alert_key,
         decision=agent_pb2.ESCALATE,
         reasons=[REASON_PREFIX + f"not evaluated: {why}. Escalated for human review."],
     )

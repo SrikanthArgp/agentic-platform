@@ -1,6 +1,6 @@
 # review-console — class diagram
 
-**Status: skeleton only.** Through Day 5 of `docs/plan.md`,
+**Status: skeleton only.** Through Day 6 of `docs/plan.md`,
 `review-console` has a FastAPI app with `/healthz` and nothing else. The
 `api/`, `core/`, `db/` and `kafka/` packages are empty `__init__.py`
 stubs. It is built on Day 9.

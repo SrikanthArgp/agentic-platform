@@ -27,16 +27,24 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Days 1–5 of `docs/plan.md` are done (infra, contracts, skeletons;
+Days 1–6 of `docs/plan.md` are done (infra, contracts, skeletons;
 `tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core;
-`ingestion` and the end-to-end hot path; `registry` + App Manifest); Day 6
-(`memory-store`) is next. As-built notes for each
+`ingestion` and the end-to-end hot path; `registry` + App Manifest;
+`memory-store`); Day 7 (`orchestrator` uses context, guardrails) is next. As-built notes for each
 day are in `docs/plan.md`.
 
 - All 6 services have a FastAPI skeleton (`app/main.py`, `/healthz`),
   a `pyproject.toml`, a committed `uv.lock`, a `Dockerfile`, and passing
-  health-check tests. `memory-store` and `review-console` package
-  subdirectories are still empty `__init__.py` stubs.
+  health-check tests. `review-console`'s package subdirectories are still
+  empty `__init__.py` stubs.
+- `memory-store` serves gRPC `GetContext` (`:50051`, host `:50053`): 1h/24h/7d
+  decision counts plus `is_novel_alert`/`has_confirmed_incident_history` per
+  `app_id` + `alert_key`. It consumes `alert.decided` (own group) into
+  Postgres `memory_events` (an event log, ADR-0017) and caches the last 7
+  days per key in Redis (`mem:{memory_namespace}:{alert_key}:*`); a miss
+  rebuilds from Postgres. `uv run backend/scripts/seed.py` seeds synthetic
+  it-ops history; `uv run backend/scripts/get_context.py KEY [--repeat N]`
+  queries it.
 - `registry` (Postgres `tools`/`apps`, asyncpg) stores tool registrations
   and App Manifests, validates manifests on `PUT /apps/{app_id}`, and
   serves `GET /apps/{app_id}` resolved: each agent's `tools` = allowlisted,
@@ -75,7 +83,7 @@ day are in `docs/plan.md`.
   Redis, Postgres, OTel Collector, Loki, Mimir, Tempo, Grafana, and the 6
   services — all with health checks. The one-shot `kafka-init` service
   creates the four topics with 12 partitions (broker auto-create is off).
-  `backend/local/postgres/init.sql` creates `cases`, `memory_history`,
+  `backend/local/postgres/init.sql` creates `cases`, `memory_events`,
   `tools`, `apps`; it's idempotent, so on an existing volume pipe it into
   `docker compose exec -T postgres psql -U platform -d platform`.
   After `down -v`, re-run `register_app.py it-ops-triage`.
@@ -88,7 +96,6 @@ day are in `docs/plan.md`.
 - `backend/apps/it-ops-triage/` has `tools/` (`lookup_runbook` +
   `runbooks.json`), a complete `manifest.yaml` (`escalate_when: []` until
   Day 7), `event_schema.json`, and `prompts/triage-agent.md`.
-- `backend/scripts/seed.py` is a stub docstring, no implementation.
 
 ## Commands
 
@@ -103,7 +110,7 @@ uv sync                          # install deps (incl. editable ap-shared)
 uv run pytest                    # run that service's tests
 uv run pytest tests/test_main.py::test_healthz_returns_200_with_expected_shape  # single test
 uv run uvicorn app.main:app --reload --port 8000   # run locally
-uv run pytest -m integration     # integration tests (orchestrator, ingestion, registry): need the Compose stack up
+uv run pytest -m integration     # integration tests (orchestrator, ingestion, registry, memory-store): need the Compose stack up
 ```
 
 `backend/shared` (the `ap-shared` package: proto stubs + `observability`

@@ -1,6 +1,6 @@
 # ingestion — class diagram
 
-As built through Day 5 of `docs/plan.md`. `ingestion` is the platform's
+As built through Day 6 of `docs/plan.md`. `ingestion` is the platform's
 REST front door: it accepts an alert at `POST /apps/{app_id}/events`,
 validates it against that app's rules (read from `registry`), turns it into
 a `RunAgentRequest`, and publishes it to `alert.received`. It never runs an agent and never decides anything.
@@ -381,7 +381,9 @@ An alert therefore gets a `202` only once Kafka has stored it.
 `OrderedDict` of `alert_id → AlertStatus`, used as an LRU capped at 10,000
 entries.
 - `accepted()` records the alert as pending.
-- `decided()` merges the `RunAgentResponse` and computes latency.
+- `decided()` merges the `RunAgentResponse` and computes latency. For an
+  alert this replica never accepted (e.g. after a restart) it takes
+  `alert_key` from the response itself (ADR-0016).
 - `handle_message()` decodes raw Kafka bytes and skips anything that isn't
   valid protobuf.
 

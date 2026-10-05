@@ -1,6 +1,6 @@
 # orchestrator — class diagram
 
-As built through Day 5 of `docs/plan.md`. `orchestrator` runs the agents.
+As built through Day 6 of `docs/plan.md`. `orchestrator` runs the agents.
 It takes a `RunAgentRequest` (from Kafka `alert.received`, or the gRPC
 `RunAgent` call), resolves the app's manifest from `registry` and the
 prompt from its image, runs an LLM tool-calling loop against
@@ -302,6 +302,7 @@ classDiagram
         }
         class RunAgentResponse {
             <<proto: agent.proto>>
+            +alert_key: str
             +decision: Decision
             +reasons: list~str~
             +tool_calls: list~ToolCall~
@@ -629,6 +630,8 @@ unavailable".
 
 - **`RunAgentRequest` / `RunAgentResponse` / `Decision` / `ToolCall`**
   (`agent.proto`): one contract shared by gRPC and Kafka (ARCHITECTURE §5).
+  Every response echoes the request's `alert_key` (ADR-0016), which
+  `memory-store` uses to count the decision.
 - **`RunContext`** (`ap-shared` `run_context`): `app_id`/`agent_id`/`alert_id`,
   serialized into MCP `_meta` by `to_meta()`. `tool-gateway` refuses any
   call without it.

@@ -1,6 +1,7 @@
 -- Day 1 schema (docs/plan.md Day 1, docs/ARCHITECTURE.md §8).
 -- Runs once, on first start of an empty Postgres volume. Tables are added by
--- the day that introduces them (`tools`/`apps`: Day 5, `outbox`: Day 15); on
+-- the day that introduces them (`tools`/`apps`: Day 5, `memory_events`: Day 6,
+-- `outbox`: Day 15); on
 -- an existing volume, apply a new table's block by hand or `down -v`.
 -- Every statement is idempotent, so re-running this file is safe.
 
@@ -27,25 +28,25 @@ CREATE TABLE IF NOT EXISTS cases (
 CREATE INDEX IF NOT EXISTS cases_app_key_idx ON cases (app_id, alert_key);
 CREATE INDEX IF NOT EXISTS cases_app_status_idx ON cases (app_id, status);
 
--- Durable snapshot on every memory-store update; Redis's
--- rebuild-from-source-of-truth path (§6). Snapshot fields mirror
--- memory_store.proto ContextAggregate.
-CREATE TABLE IF NOT EXISTS memory_history (
-    id                       BIGSERIAL PRIMARY KEY,
-    app_id                   TEXT        NOT NULL,
-    alert_key                TEXT        NOT NULL,
-    "window"                 TEXT        NOT NULL
-                             CHECK ("window" IN ('1h', '24h', '7d')),
-    alert_count              INTEGER     NOT NULL DEFAULT 0,
-    escalation_count         INTEGER     NOT NULL DEFAULT 0,
-    suppression_count        INTEGER     NOT NULL DEFAULT 0,
-    confirmed_incident_count INTEGER     NOT NULL DEFAULT 0,
-    confirmed_noise_count    INTEGER     NOT NULL DEFAULT 0,
-    recorded_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+-- memory-store's source of truth (ADR-0017, §6, §8): one row per event.
+-- kind: "decision:<Decision>" (from alert.decided, ADR-0016) or, from Day 10,
+-- "verdict:<verdict>". ref_id: the alert_id (decision) or case_id (verdict).
+-- Unique per (app_id, family, ref_id): a redelivered event is stored once.
+-- Redis caches the last 7 days per alert_key and is rebuilt from here.
+CREATE TABLE IF NOT EXISTS memory_events (
+    id          BIGSERIAL PRIMARY KEY,
+    app_id      TEXT        NOT NULL,
+    alert_key   TEXT        NOT NULL,
+    kind        TEXT        NOT NULL CHECK (kind ~ '^(decision|verdict):[A-Z_]+$'),
+    family      TEXT        GENERATED ALWAYS AS (split_part(kind, ':', 1)) STORED,
+    ref_id      TEXT        NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (app_id, family, ref_id)
 );
 
-CREATE INDEX IF NOT EXISTS memory_history_lookup_idx
-    ON memory_history (app_id, alert_key, "window", recorded_at DESC);
+CREATE INDEX IF NOT EXISTS memory_events_lookup_idx
+    ON memory_events (app_id, alert_key, occurred_at DESC);
 
 -- registry's tool registrations (Day 5). One row per tool version.
 -- read_only must be true: no tool may change external state (ADR-0004, §13 T8).

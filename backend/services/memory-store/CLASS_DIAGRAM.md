@@ -1,120 +1,360 @@
 # memory-store — class diagram
 
-**Status: skeleton only.** Through Day 5 of `docs/plan.md`, `memory-store`
-has a FastAPI app with `/healthz` and nothing else. The `core/`, `db/`,
-`grpc/`, `kafka/` and `redis/` packages are empty `__init__.py` stubs. It
-is built on Day 6, and Day 10 adds the verdict feedback loop.
+As built through Day 6 of `docs/plan.md`. `memory-store` answers one
+question for `orchestrator`: *what has this platform seen and decided for
+this `alert_key` lately?* It serves gRPC `GetContext` (1h/24h/7d decision
+counts, `is_novel_alert`, `has_confirmed_incident_history`), built from an
+event log it fills by consuming `alert.decided` (ADR-0016, ADR-0017). Day 10
+adds analyst verdicts as a second kind of event.
 
-## As built today
+Python modules that are plain functions (no class) are drawn as
+`<<module>>` boxes. Third-party and cross-service types are in the
+`external` group.
+
+## Overview: layers
+
+```mermaid
+classDiagram
+    direction TB
+    class Transports {
+        <<layer>>
+        MemoryStoreServicer - gRPC GetContext
+        DecisionConsumer - Kafka alert.decided
+    }
+    class Core {
+        <<layer>>
+        MemoryService
+        events: Event, Facts, window maths
+    }
+    class Stores {
+        <<layer>>
+        PostgresEventStore - source of truth
+        MemoryCache - Redis, last 7 days
+        RegistryClient - memory_namespace
+    }
+    Transports --> Core : get_context / record
+    Core --> Stores : load, insert / read, fill, add
+```
+
+Both transports go through `MemoryService`. Window counts are computed in
+one pure function from a list of events, whether those came from Redis or
+Postgres, so the cache and a rebuild always agree.
+
+## Full class diagram
 
 ```mermaid
 classDiagram
     direction LR
-    class main {
-        <<module: app.main>>
-        +SERVICE_NAME = "memory-store"
-        +app: FastAPI
-        +healthz() HealthResponse
-    }
-    class HealthResponse {
-        <<pydantic>>
-        +status: str
-        +service: str
-    }
-    class observability {
-        <<ap-shared>>
-        +setup_observability(service_name) Tracer
-    }
-    class core { <<empty package>> }
-    class db { <<empty package>> }
-    class grpc { <<empty package>> }
-    class kafka { <<empty package>> }
-    class redis { <<empty package>> }
 
-    main ..> HealthResponse : /healthz
-    main ..> observability : at import
+    namespace entrypoint {
+        class main {
+            <<module: app.main>>
+            +SERVICE_NAME = "memory-store"
+            -lifespan(app) AsyncIterator
+            +healthz() HealthResponse
+        }
+        class Settings {
+            <<frozen dataclass>>
+            +postgres_dsn: str
+            +redis_url: str
+            +kafka_bootstrap_servers: str
+            +kafka_enabled: bool
+            +registry_url: str
+            +manifest_ttl_s: float
+            +grpc_port: int
+            +from_env()$ Settings
+        }
+        class HealthResponse {
+            <<pydantic>>
+            +status: str
+            +service: str
+        }
+    }
+
+    namespace transports {
+        class MemoryStoreServicer {
+            <<grpc servicer>>
+            -_service: MemoryService
+            +GetContext(request, context) GetContextResponse
+        }
+        class grpc_server {
+            <<module: app.grpc.server>>
+            +start_grpc_server(service, port) grpc.aio.Server
+        }
+        class DecisionConsumer {
+            -_service: MemoryService
+            -_topic = "alert.decided"
+            -_group_id = "memory-store"
+            -_task: Task?
+            +start() None
+            +stop() None
+            -_run_forever() None
+            -_consume() None
+            -_handle_with_retry(raw, timestamp_ms) None
+        }
+        class kafka_decisions {
+            <<module: app.kafka.decisions>>
+            +handle_decided(raw, timestamp_ms, service) bool
+            +RETRY_DELAYS_S
+        }
+    }
+
+    namespace core {
+        class MemoryService {
+            -_store: EventStore
+            -_cache: MemoryCache
+            -_apps: AppSource
+            -_clock: () -> int
+            +namespace(app_id) str
+            +get_context(app_id, alert_key) GetContextResponse
+            +record(app_id, alert_key, event) bool
+        }
+        class AppSource {
+            <<Protocol>>
+            +get_app(app_id) dict
+        }
+        class Event {
+            <<frozen dataclass>>
+            +kind: str
+            +ref_id: str
+            +at_ms: int
+            +family: str
+        }
+        class Facts {
+            <<frozen dataclass>>
+            +seen: bool
+            +confirmed_incident: bool
+            +from_events(events)$ Facts
+        }
+        class events {
+            <<module: app.core.events>>
+            +WINDOWS_MS: 1h, 24h, 7d
+            +RETENTION_MS = 7d
+            +decision_event(response, at_ms) Event
+            +aggregate(events, now_ms, window_ms) ContextAggregate
+            +build_context(app_id, alert_key, events, facts, now_ms) GetContextResponse
+        }
+    }
+
+    namespace stores {
+        class EventStore {
+            <<Protocol>>
+            +insert(app_id, alert_key, event) bool
+            +load(app_id, alert_key, since_ms) tuple
+        }
+        class PostgresEventStore {
+            -_pool: asyncpg.Pool
+        }
+        class MemoryCache {
+            -_redis: Redis
+            -_ttl_s: int = 8 days
+            +read(namespace, alert_key, now_ms) tuple?
+            +fill(namespace, alert_key, events, facts) None
+            +add(namespace, alert_key, event, now_ms) None
+            +invalidate(namespace, alert_key) None
+        }
+    }
+
+    namespace external {
+        class GetContextRequest { <<proto: memory_store.proto>> }
+        class GetContextResponse {
+            <<proto: memory_store.proto>>
+            +window_1h, window_24h, window_7d: ContextAggregate
+            +is_novel_alert: bool
+            +has_confirmed_incident_history: bool
+        }
+        class ContextAggregate { <<proto: memory_store.proto>> }
+        class RunAgentResponse {
+            <<proto: agent.proto>>
+            +alert_key: str
+        }
+        class RegistryClient { <<ap-shared registry_client>> }
+        class asyncpg_Pool { <<asyncpg>> }
+        class Redis { <<redis.asyncio>> }
+        class AIOKafkaConsumer { <<aiokafka>> }
+    }
+
+    main ..> Settings : from_env
+    main ..> MemoryService : builds in lifespan
+    main ..> grpc_server : start
+    main *-- DecisionConsumer : if KAFKA_ENABLED
+    main ..> HealthResponse
+
+    grpc_server *-- MemoryStoreServicer
+    MemoryStoreServicer --> MemoryService : get_context
+    MemoryStoreServicer ..> GetContextRequest
+    DecisionConsumer ..> kafka_decisions : handle_decided
+    DecisionConsumer *-- AIOKafkaConsumer
+    kafka_decisions ..> RunAgentResponse : decodes
+    kafka_decisions ..> MemoryService : record
+    kafka_decisions ..> events : decision_event
+
+    MemoryService --> EventStore
+    MemoryService --> MemoryCache
+    MemoryService --> AppSource : memory_namespace
+    MemoryService ..> events : build_context
+    RegistryClient ..|> AppSource
+    PostgresEventStore ..|> EventStore
+    PostgresEventStore --> asyncpg_Pool
+    MemoryCache --> Redis
+
+    events ..> Event
+    events ..> Facts
+    events ..> GetContextResponse : builds
+    GetContextResponse *-- ContextAggregate
 ```
 
-- **`main`**: creates the FastAPI app at import time, calls
-  `setup_observability("memory-store")`, and serves `GET /healthz`.
-- **`HealthResponse`**: the `{status, service}` body that Compose health
-  checks poll.
+## Classes and modules
 
-## Contracts already in the repo (implementation pending)
+### Entry point — `app/main.py`, `app/core/config.py`
 
-Two contracts this service must serve are already committed.
+**`lifespan()`** builds everything at startup: an asyncpg pool
+(`POSTGRES_DSN`), a Redis client (`REDIS_URL`, `decode_responses=True`), a
+`RegistryClient` (`REGISTRY_URL`, `MANIFEST_TTL_S`), then the
+`MemoryService`. It starts the gRPC server on `GRPC_PORT` (50051; Compose
+publishes it as 50053) and, unless `KAFKA_ENABLED=false`, the
+`DecisionConsumer`. On shutdown it stops all of them in reverse. HTTP serves
+only `/healthz`.
 
-The **gRPC API** is in `backend/proto/memory_store.proto`, and its stubs
-are generated in `ap-shared` (`proto_gen.memory_store_pb2*`).
+**`Settings`**: frozen dataclass from the environment, with defaults that
+point at the Compose stack from the host.
 
-The **durable table** is `memory_history`, in
-`backend/local/postgres/init.sql`.
+### Core — `app/core/events.py`
+
+**`Event`**: one thing that happened to an `alert_key`.
+- `kind`: `decision:<Decision>` (e.g. `decision:SUPPRESS`), or from Day 10
+  `verdict:CONFIRMED_INCIDENT` / `verdict:CONFIRMED_NOISE`.
+- `ref_id`: what it's about (the `alert_id` for a decision). `family` is
+  the part of `kind` before `:`; (`app_id`, family, `ref_id`) is unique.
+- `at_ms`: when it happened (a decision's Kafka message timestamp).
+
+**`Facts`**: the two all-time facts that outlive the 7-day window: `seen`
+(any decision ever) and `confirmed_incident` (any confirmed-incident
+verdict ever).
+
+**Window maths** (module functions):
+- `aggregate(events, now_ms, window_ms)` counts one window, `(now − w,
+  now]`. An event exactly `w` old is out; an event stamped after `now`
+  (clock skew) counts. Every decision is an alert; ESCALATE and SUPPRESS
+  also count in their own fields; AUTO_RESOLVE and "not evaluated"
+  (`DECISION_UNSPECIFIED`) count as alerts only.
+- `build_context(...)` builds the full `GetContextResponse`: the three
+  windows, `is_novel_alert = not facts.seen`,
+  `has_confirmed_incident_history = facts.confirmed_incident`.
+- `decision_event(response, at_ms)` turns an `alert.decided` message into
+  an `Event`.
+
+### Core — `app/core/service.py`
+
+**`MemoryService`**: the two operations.
+- `namespace(app_id)`: `memory_namespace` from `registry` through the
+  shared cached client (ADR-0018). Raises `AppNotFoundError` /
+  `RegistryUnavailableError`.
+- `get_context(app_id, alert_key)`: Redis `read`; on a miss, Postgres
+  `load` (last 7 days + facts), then Redis `fill`. If Redis raises, it
+  answers from Postgres without caching.
+- `record(app_id, alert_key, event)`: Postgres `insert` first (returns
+  False for a duplicate), then Redis `add`. If the add fails, the key is
+  invalidated so the next read rebuilds it. An app missing from `registry`
+  is stored but not cached; `registry` being down propagates so the
+  consumer retries.
+
+`AppSource` is the Protocol `RegistryClient` satisfies; tests use a fake.
+`clock` is injectable so tests can move time.
+
+### Stores — `app/db/postgres.py`, `app/redis/cache.py`
+
+**`PostgresEventStore`** (the `EventStore` Protocol) over `memory_events`
+(`backend/local/postgres/init.sql`):
+- `insert`: `INSERT … ON CONFLICT (app_id, family, ref_id) DO NOTHING`.
+- `load`: events with `occurred_at > since`, plus the two facts as
+  `EXISTS` queries, in one read-only repeatable-read transaction.
+
+**`MemoryCache`**: two Redis keys per `{memory_namespace}:{alert_key}`.
+
+| Key | Type | Content |
+|---|---|---|
+| `mem:{ns}:{key}:events` | sorted set | member `{kind}\|{ref_id}`, score = `at_ms`; last 7 days |
+| `mem:{ns}:{key}:facts` | hash | `seen`, `confirmed_incident` (present only when true), `loaded` |
+
+- `read` trims events older than 7 days, then returns events + facts, or
+  `None` when `loaded` is absent (a miss).
+- `fill` stores a Postgres rebuild and sets `loaded`.
+- `add` adds one event, trims, and sets any fact it makes true.
+- `invalidate` deletes both keys.
+
+Every write only adds, so a rebuild racing a new event ends with the union
+rather than losing the event. Both keys get an 8-day TTL on every touch;
+idle keys expire and are rebuilt on demand.
+
+### Transports — `app/grpc/server.py`, `app/kafka/decisions.py`
+
+**`MemoryStoreServicer.GetContext`**: missing `app_id`/`alert_key` →
+`INVALID_ARGUMENT`; unknown app → `NOT_FOUND`; `registry` down with
+nothing cached, or Postgres down → `UNAVAILABLE`. Redis being down is not
+an error.
+
+**`handle_decided(raw, timestamp_ms, service)`**: decodes a
+`RunAgentResponse` and records `decision_event(response, timestamp)`.
+Undecodable messages, or ones missing `app_id`/`alert_id`/`alert_key`
+(every message from before ADR-0016), are logged and skipped.
+
+**`DecisionConsumer`**: consumer group `memory-store` on `alert.decided`,
+from the earliest offset, one message at a time, offset committed after
+the event is stored. A failed `handle_decided` (registry or Postgres down)
+is retried with backoff (0.5 s → 10 s) and never skipped. It reconnects to
+Kafka every 2 s while Kafka is down.
+
+## Flows
+
+**`GetContext`**
 
 ```mermaid
-classDiagram
-    direction LR
-    class MemoryStore {
-        <<gRPC service: memory_store.proto>>
-        +GetContext(GetContextRequest) GetContextResponse
-    }
-    class GetContextRequest {
-        <<proto>>
-        +app_id: str
-        +alert_key: str
-    }
-    class GetContextResponse {
-        <<proto>>
-        +app_id: str
-        +alert_key: str
-        +window_1h: ContextAggregate
-        +window_24h: ContextAggregate
-        +window_7d: ContextAggregate
-        +is_novel_alert: bool
-        +has_confirmed_incident_history: bool
-    }
-    class ContextAggregate {
-        <<proto>>
-        +alert_count: uint32
-        +escalation_count: uint32
-        +suppression_count: uint32
-        +confirmed_incident_count: uint32
-        +confirmed_noise_count: uint32
-    }
-    class memory_history {
-        <<Postgres table>>
-        +id: bigserial
-        +app_id: text
-        +alert_key: text
-        +window: 1h or 24h or 7d
-        +alert_count ... confirmed_noise_count: int
-        +recorded_at: timestamptz
-    }
-    MemoryStore ..> GetContextRequest
-    MemoryStore ..> GetContextResponse
-    GetContextResponse *-- "3" ContextAggregate : 1h / 24h / 7d
-    memory_history ..> ContextAggregate : snapshot mirrors fields
+sequenceDiagram
+    participant O as orchestrator (Day 7)
+    participant S as MemoryService
+    participant Reg as RegistryClient (30s cache)
+    participant R as Redis
+    participant P as Postgres
+    O->>S: GetContext(app_id, alert_key)
+    S->>Reg: get_app(app_id) → memory_namespace
+    S->>R: trim, ZRANGEBYSCORE events, HGETALL facts
+    alt loaded
+        R-->>S: events, facts
+    else miss
+        S->>P: events since now−7d, EXISTS facts
+        S->>R: ZADD events, HSET facts + loaded, EXPIRE
+    end
+    S-->>O: build_context(...) → GetContextResponse
 ```
 
-- **`GetContextRequest`**: looks up one `alert_key` within one app.
-  `app_id` scopes it, so the same key in two apps never collides.
-- **`ContextAggregate`**: counts over one rolling window.
-  - The platform's own decisions: alerts, escalations, suppressions.
-  - Analyst verdicts fed back from `verdict.recorded` (Day 10): confirmed
-    incidents and confirmed noise.
-- **`GetContextResponse`**: three windows, plus `is_novel_alert` and the
-  window-independent `has_confirmed_incident_history`. From Day 7,
-  `escalate_when` guardrails can reference these fields.
-- **`memory_history`**: a durable snapshot written on every update, so
-  Redis can be rebuilt from it on a cache miss.
+**Recording a decision**
 
-### Planned design (from `docs/plan.md` Days 6 and 10)
+```mermaid
+sequenceDiagram
+    participant K as Kafka alert.decided
+    participant C as DecisionConsumer
+    participant S as MemoryService
+    participant P as Postgres
+    participant R as Redis
+    K->>C: RunAgentResponse (alert_key, decision), timestamp
+    C->>S: record(app_id, alert_key, Event)
+    S->>P: INSERT ... ON CONFLICT DO NOTHING
+    S->>R: ZADD, trim, HSET seen, EXPIRE
+    C->>K: commit offset
+```
 
-- `GetContext` reads Redis (keys prefixed by `app_id`/`memory_namespace`).
-  On a miss it computes from Postgres and repopulates Redis.
-- The Kafka consumer reads `alert.decided`, updating decision counts, and
-  from Day 10 `verdict.recorded`, updating the confirmed counts and the
-  incident-history flag.
-- `orchestrator` calls `GetContext` synchronously over gRPC before the
-  agent runs (Day 7).
+## Design notes
 
-Update this file with the real classes when Day 6 lands.
+- **Event log, not snapshots** (ADR-0017): a sliding window can be
+  recomputed from events at any moment; a snapshot of a window can't.
+- **Postgres is the truth, Redis a cache of it**: a lost Redis only costs
+  latency (cold miss ~2 ms vs ~0.5 ms warm, Day 6 measurement).
+- **Idempotent by design**: duplicate Kafka deliveries hit the unique
+  constraint and the sorted-set member, so they never double-count.
+- **Namespaced by app** (ADR-0018): the same `alert_key` in two apps never
+  shares a Redis key; Postgres rows carry `app_id`.
+- **Next changes**: Day 7 `orchestrator` calls `GetContext` and its
+  `escalate_when` rules read `context.*`; Day 10 consumes
+  `verdict.recorded` as `verdict:*` events; a retention job for old
+  `memory_events` rows is not in this build (ADR-0017).
