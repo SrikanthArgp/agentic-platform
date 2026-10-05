@@ -12,7 +12,7 @@ import pytest
 
 from app.memory.client import MemoryStoreClient
 from proto_gen import agent_pb2
-from tests.conftest import FakeLLM, FakeRegistry, final, make_request, make_runner
+from tests.conftest import FakeChatModel, FakeRegistry, final, make_request, make_runner
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -47,7 +47,7 @@ async def test_same_agent_answer_decides_differently_on_real_history(apps_dir, m
     for host in ("lb-02", f"it-{uuid.uuid4().hex[:8]}"):
         request = make_request(alert_type="healthcheck_flap", host=host)
         request.app_id, request.alert_key = APP_ID, f"healthcheck_flap:{host}"
-        runner = make_runner(apps_dir, FakeLLM([final("SUPPRESS", "RB-006: flap")]), registry=registry, memory=memory)
+        runner = make_runner(apps_dir, FakeChatModel(responses=[final("SUPPRESS", "RB-006: flap")]), registry=registry, memory=memory)
         decisions[host == "lb-02"] = (await runner.run(request)).decision
 
     assert decisions == {True: agent_pb2.SUPPRESS, False: agent_pb2.ESCALATE}

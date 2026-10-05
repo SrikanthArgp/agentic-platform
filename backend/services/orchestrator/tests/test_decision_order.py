@@ -6,18 +6,18 @@ follow the agent's own, in that order; steps 2-3 only move toward ESCALATE.
 
 import pytest
 
-from app.agent.llm import LLMResponse
 from proto_gen import agent_pb2
 from tests.conftest import (
     APP_ID,
     KNOWN_CONTEXT,
-    FakeLLM,
+    FakeChatModel,
     FakeMemory,
     FakeRegistry,
     context,
     final,
     make_request,
     make_runner,
+    text,
     tool_call,
 )
 
@@ -42,7 +42,7 @@ def request(severity="warning"):
 
 
 async def run(apps_dir, answer, *, req=None, memory=None, reg=None, **kwargs):
-    llm = FakeLLM([answer])
+    llm = FakeChatModel(responses=[answer])
     response = await make_runner(apps_dir, llm, memory=memory, registry=reg, **kwargs).run(req or request())
     return response, llm
 
@@ -159,7 +159,7 @@ async def test_memory_down_runs_without_context_and_escalates(apps_dir):
 
 
 async def test_unparseable_answer_has_zero_confidence_and_guardrails_still_name_matches(apps_dir):
-    response, _ = await run(apps_dir, LLMResponse("suppress it"), req=request("critical"), reg=registry(CRITICAL))
+    response, _ = await run(apps_dir, text("suppress it"), req=request("critical"), reg=registry(CRITICAL))
     assert response.decision == agent_pb2.ESCALATE
     assert response.confidence == 0.0
     assert "not JSON" in response.reasons[0]
@@ -167,7 +167,7 @@ async def test_unparseable_answer_has_zero_confidence_and_guardrails_still_name_
 
 
 async def test_guardrails_apply_after_tool_calls_too(apps_dir):
-    llm = FakeLLM([LLMResponse(None, (tool_call(),)), final("AUTO_RESOLVE", "RB-001", confidence=0.9)])
+    llm = FakeChatModel(responses=[tool_call(), final("AUTO_RESOLVE", "RB-001", confidence=0.9)])
     response = await make_runner(apps_dir, llm, registry=registry(CRITICAL)).run(request("critical"))
     assert response.decision == agent_pb2.ESCALATE
     assert [c.tool_name for c in response.tool_calls] == ["lookup_runbook"]

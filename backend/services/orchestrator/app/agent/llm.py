@@ -1,72 +1,47 @@
-"""The provider-agnostic LLM interface the agent loop talks to.
+"""The agent's chat model (ADR-0022, provider choice ADR-0015).
 
-The loop never imports a provider SDK: it builds these messages and tool
-definitions and gets back an `LLMResponse`. One adapter per provider
-(`openai_llm.py` today, ADR-0015) translates. This is also the seam for a
-per-agent `model_ref` later (docs/ENTERPRISE_READINESS.md §3).
+The agent talks to a LangChain chat model, so the provider is a
+constructor swap here, never a change to the loop. Provider SDKs read
+their own API key (`OPENAI_API_KEY`); it never passes through platform
+code.
+
+`LLMError` is the one error callers see for any model-call failure
+(network, auth, rate limit, bad response): `ModelErrors` middleware
+turns whatever the provider raised into it.
 """
 
-from collections.abc import Sequence
-from dataclasses import dataclass, field
-from typing import Any, Protocol
+import logging
+
+from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
+from langchain_core.language_models import BaseChatModel
+
+logger = logging.getLogger(__name__)
+
+MODEL_TIMEOUT_S = 60.0
+MODEL_RETRIES = 2
 
 
 class LLMError(Exception):
     """The provider call failed (network, auth, rate limit, bad response)."""
 
 
-@dataclass(frozen=True)
-class ToolDefinition:
-    name: str
-    description: str
-    input_schema: dict[str, Any]
+def build_chat_model(provider: str, model: str) -> BaseChatModel:
+    if provider == "openai":
+        # Imported here so tests never need the provider configured.
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(model=model, timeout=MODEL_TIMEOUT_S, max_retries=MODEL_RETRIES)
+    raise ValueError(f"Unsupported LLM_PROVIDER '{provider}'.")
 
 
-@dataclass(frozen=True)
-class ToolCallRequest:
-    id: str
-    name: str
-    # None when the model produced arguments that aren't a JSON object.
-    arguments: dict[str, Any] | None
-    raw_arguments: str = ""
+class ModelErrors(AgentMiddleware):
+    """Any exception from the model call -> `LLMError`."""
 
-
-@dataclass(frozen=True)
-class UserMessage:
-    content: str
-
-
-@dataclass(frozen=True)
-class AssistantMessage:
-    content: str | None
-    tool_calls: tuple[ToolCallRequest, ...] = ()
-
-
-@dataclass(frozen=True)
-class ToolResultMessage:
-    tool_call_id: str
-    content: str
-
-
-Message = UserMessage | AssistantMessage | ToolResultMessage
-
-
-@dataclass(frozen=True)
-class Usage:
-    input_tokens: int = 0
-    output_tokens: int = 0
-
-
-@dataclass(frozen=True)
-class LLMResponse:
-    text: str | None
-    tool_calls: tuple[ToolCallRequest, ...] = ()
-    usage: Usage = field(default_factory=Usage)
-
-
-class LLMClient(Protocol):
-    model: str
-
-    async def complete(
-        self, *, system: str, messages: Sequence[Message], tools: Sequence[ToolDefinition]
-    ) -> LLMResponse: ...
+    async def awrap_model_call(self, request: ModelRequest, handler) -> ModelResponse:
+        try:
+            return await handler(request)
+        except LLMError:
+            raise
+        except Exception as e:
+            logger.warning("LLM call failed: %s: %s", type(e).__name__, e)
+            raise LLMError(f"{type(e).__name__}: {e}") from e

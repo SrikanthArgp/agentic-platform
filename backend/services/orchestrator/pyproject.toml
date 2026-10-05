@@ -11,6 +11,10 @@ dependencies = [
     "ap-shared",
     "openai>=3.24,<4",
     "mcp>=2.2,<3",
+    "langgraph>=1.2.12",
+    "langchain-core>=1.6.6",
+    "langchain-openai>=1.6.7",
+    "langchain>=1.4.3",
 ]
 
 [tool.uv.sources]

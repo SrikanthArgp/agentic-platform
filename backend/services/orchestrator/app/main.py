@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from app.agent.llm import LLMClient
+from app.agent.llm import build_chat_model
 from app.agent.loop import AgentRunner
 from app.core.config import Settings
 from app.core.manifest import ManifestStore
@@ -25,19 +25,11 @@ class HealthResponse(BaseModel):
     service: str
 
 
-def build_llm(settings: Settings) -> LLMClient:
-    if settings.llm_provider == "openai":
-        from app.agent.openai_llm import OpenAIChatClient
-
-        return OpenAIChatClient(settings.llm_model)
-    raise ValueError(f"Unsupported LLM_PROVIDER '{settings.llm_provider}'.")
-
-
 def build_runner(settings: Settings, registry: RegistryClient, memory: MemoryStoreClient) -> AgentRunner:
     return AgentRunner(
         manifests=ManifestStore(registry, settings.apps_dir),
         gateway=MCPToolGateway(settings.tool_gateway_url),
-        llm=build_llm(settings),
+        model=build_chat_model(settings.llm_provider, settings.llm_model),
         memory=memory,
         max_tool_rounds=settings.max_tool_rounds,
         min_confidence=settings.min_confidence,

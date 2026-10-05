@@ -14,10 +14,9 @@ import pytest
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 
-from app.agent.llm import LLMError
 from app.kafka.alerts import AlertPipeline, message_key
 from proto_gen import agent_pb2
-from tests.conftest import FakeLLM, final, make_request, make_runner
+from tests.conftest import FakeChatModel, final, make_request, make_runner
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -94,7 +93,7 @@ async def _run_pipeline(pipeline: AlertPipeline, until):
 async def test_decides_publishes_keyed_in_order_and_commits(apps_dir, topics):
     received, decided, group, admin = topics
     requests = _requests(3)  # same app_id:alert_key -> same partition, in order
-    llm = FakeLLM([final("AUTO_RESOLVE", f"reason {i}") for i in range(3)])
+    llm = FakeChatModel(responses=[final("AUTO_RESOLVE", f"reason {i}") for i in range(3)])
     pipeline = AlertPipeline(
         make_runner(apps_dir, llm), BOOTSTRAP, received_topic=received, decided_topic=decided, group_id=group
     )
@@ -113,17 +112,10 @@ async def test_decides_publishes_keyed_in_order_and_commits(apps_dir, topics):
     assert [list(r.reasons) for r in responses] == [["reason 0"], ["reason 1"], ["reason 2"]]
 
 
-class _DownLLM:
-    model = "down"
-
-    async def complete(self, **_):
-        raise LLMError("connection refused")
-
-
 async def test_llm_down_still_publishes_escalate(apps_dir, topics):
     received, decided, group, _ = topics
     pipeline = AlertPipeline(
-        make_runner(apps_dir, _DownLLM()), BOOTSTRAP, received_topic=received, decided_topic=decided, group_id=group
+        make_runner(apps_dir, FakeChatModel(responses=[ConnectionError("connection refused")])), BOOTSTRAP, received_topic=received, decided_topic=decided, group_id=group
     )
 
     await _publish(received, _requests(1))
@@ -143,7 +135,7 @@ async def test_undecodable_message_is_skipped_and_committed(apps_dir, topics):
     # Same partition, after the junk: deciding it proves the pipeline moved past.
     await _publish(received, _requests(1), partition=0)
     pipeline = AlertPipeline(
-        make_runner(apps_dir, FakeLLM([final()])), BOOTSTRAP,
+        make_runner(apps_dir, FakeChatModel(responses=[final()])), BOOTSTRAP,
         received_topic=received, decided_topic=decided, group_id=group,
     )
 

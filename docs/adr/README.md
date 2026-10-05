@@ -39,3 +39,4 @@ Rules:
 | [0019](0019-context-fetched-before-the-loop.md) | `orchestrator` fetches memory context before the agent loop, not as a tool | Accepted |
 | [0020](0020-supervisor-confidence.md) | Supervisor confidence = the agent's own estimate, capped by fixed rules | Accepted |
 | [0021](0021-guardrails-read-the-envelope.md) | `escalate_when` rules can read the alert envelope (`alert.*`) | Accepted |
+| [0022](0022-langgraph-agent-framework.md) | LangGraph for `orchestrator`'s control flow; LangChain's agent inside it | Accepted |

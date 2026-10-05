@@ -5,14 +5,14 @@ import pytest
 
 from app.grpc.server import start_grpc_server
 from proto_gen import agent_pb2, agent_pb2_grpc
-from tests.conftest import FakeLLM, final, make_request, make_runner
+from tests.conftest import FakeChatModel, final, make_request, make_runner
 
 pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture
 async def stub(apps_dir, unused_port):
-    server = await start_grpc_server(make_runner(apps_dir, FakeLLM([final("SUPPRESS", "flap")])), unused_port)
+    server = await start_grpc_server(make_runner(apps_dir, FakeChatModel(responses=[final("SUPPRESS", "flap")])), unused_port)
     async with grpc.aio.insecure_channel(f"localhost:{unused_port}") as channel:
         yield agent_pb2_grpc.AgentStub(channel)
     await server.stop(grace=None)

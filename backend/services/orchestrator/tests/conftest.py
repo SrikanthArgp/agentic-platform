@@ -1,4 +1,4 @@
-"""Fakes for unit tests: a scripted LLM, an in-memory tool-gateway, registry, and memory-store.
+"""Fakes for unit tests: a scripted chat model, an in-memory tool-gateway, registry, and memory-store.
 
 No test calls a real LLM or opens a network connection (docs/plan.md Day 3).
 """
@@ -6,7 +6,7 @@ No test calls a real LLM or opens a network connection (docs/plan.md Day 3).
 import copy
 import json
 import socket
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,7 +15,11 @@ from typing import Any
 import pytest
 from google.protobuf.struct_pb2 import Struct
 
-from app.agent.llm import LLMResponse, Message, ToolCallRequest, ToolDefinition, Usage
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.tools import BaseTool
+
 from app.agent.loop import AgentRunner
 from app.core.manifest import ManifestStore
 from app.memory.client import ContextUnavailableError
@@ -105,13 +109,28 @@ def make_request(**payload: Any) -> agent_pb2.RunAgentRequest:
     )
 
 
-def tool_call(name: str = "lookup_runbook", call_id: str = "call-1", **arguments: Any) -> ToolCallRequest:
-    args = arguments or {"alert_type": "disk_full"}
-    return ToolCallRequest(id=call_id, name=name, arguments=args, raw_arguments=json.dumps(args))
+USAGE = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
 
 
-def final(decision: str = "AUTO_RESOLVE", *reasons: str, confidence: float = 0.9) -> LLMResponse:
-    return LLMResponse(text=json.dumps(
+def tool_call(name: str = "lookup_runbook", call_id: str = "call-1", **arguments: Any) -> AIMessage:
+    """A model reply asking for one tool call."""
+    return tool_calls((name, call_id, arguments or {"alert_type": "disk_full"}))
+
+
+def tool_calls(*calls: tuple[str, str, dict[str, Any]]) -> AIMessage:
+    """A model reply asking for several tool calls: (name, id, args) each."""
+    return AIMessage(
+        content="", tool_calls=[{"name": n, "id": i, "args": a} for n, i, a in calls], usage_metadata=USAGE
+    )
+
+
+def text(content: str) -> AIMessage:
+    """A final reply with arbitrary text."""
+    return AIMessage(content=content, usage_metadata=USAGE)
+
+
+def final(decision: str = "AUTO_RESOLVE", *reasons: str, confidence: float = 0.9) -> AIMessage:
+    return text(json.dumps(
         {"decision": decision, "confidence": confidence, "reasons": list(reasons) or ["RB-001 says so"]}
     ))
 
@@ -148,20 +167,34 @@ class FakeMemory:
         return self.context
 
 
-@dataclass
-class FakeLLM:
-    """Returns the scripted responses in order and records what it was sent."""
+class FakeChatModel(BaseChatModel):
+    """A LangChain chat model that returns scripted replies in order (an
+    Exception in the script is raised instead) and records every call: the
+    system prompt, the other messages, and the tools bound at the time."""
 
-    responses: list[LLMResponse]
-    model: str = "fake-model"
-    calls: list[dict[str, Any]] = field(default_factory=list)
+    responses: list[Any]  # AIMessage, or an Exception to raise
+    calls: list[dict[str, Any]] = []
+    bound: list[BaseTool] = []
 
-    async def complete(
-        self, *, system: str, messages: Sequence[Message], tools: Sequence[ToolDefinition]
-    ) -> LLMResponse:
-        self.calls.append({"system": system, "messages": list(messages), "tools": list(tools)})
+    @property
+    def _llm_type(self) -> str:
+        return "fake-chat-model"
+
+    def bind_tools(self, tools: list[BaseTool], **kwargs: Any) -> "FakeChatModel":
+        self.bound = list(tools)
+        return self
+
+    def _generate(self, messages: list[BaseMessage], stop=None, run_manager=None, **kwargs: Any) -> ChatResult:
+        system = [m.content for m in messages if isinstance(m, SystemMessage)]
+        self.calls.append({
+            "system": system[0] if system else "",
+            "messages": [m for m in messages if not isinstance(m, SystemMessage)],
+            "tools": list(self.bound),
+        })
         response = self.responses.pop(0)
-        return LLMResponse(response.text, response.tool_calls, Usage(10, 5))
+        if isinstance(response, Exception):
+            raise response
+        return ChatResult(generations=[ChatGeneration(message=response)])
 
 
 RUNBOOK_RESULT = {"found": True, "alert_type": "disk_full", "runbook": {"runbook_id": "RB-001"}}
@@ -197,7 +230,7 @@ class FakeGateway:
 
 def make_runner(
     apps_dir: Path,
-    llm: FakeLLM,
+    llm: FakeChatModel,
     gateway: FakeGateway | None = None,
     max_tool_rounds: int = 5,
     registry: FakeRegistry | None = None,
