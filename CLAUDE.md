@@ -27,32 +27,44 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Days 1–4 of `docs/plan.md` are done (infra, contracts, skeletons;
+Days 1–5 of `docs/plan.md` are done (infra, contracts, skeletons;
 `tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core;
-`ingestion` and the end-to-end hot path); Day 5 (`registry` + App
-Manifest) is next. As-built notes for each
+`ingestion` and the end-to-end hot path; `registry` + App Manifest); Day 6
+(`memory-store`) is next. As-built notes for each
 day are in `docs/plan.md`.
 
 - All 6 services have a FastAPI skeleton (`app/main.py`, `/healthz`),
   a `pyproject.toml`, a committed `uv.lock`, a `Dockerfile`, and passing
-  health-check tests. `memory-store`, `registry`, and `review-console`
-  package subdirectories are still empty `__init__.py` stubs.
-- `ingestion`: `POST /alerts` (envelope + `payload`) validates the payload
-  against the app's `event_schema.json`, builds `alert_key` from the
-  manifest's `alert_key_fields`, publishes `alert.received`, returns `202`.
-  `app_id` is fixed to `it-ops-triage` until Day 5. `GET /alerts/{id}` is a
-  throwaway debug view of the decision (until Day 9's `review-console`).
+  health-check tests. `memory-store` and `review-console` package
+  subdirectories are still empty `__init__.py` stubs.
+- `registry` (Postgres `tools`/`apps`, asyncpg) stores tool registrations
+  and App Manifests, validates manifests on `PUT /apps/{app_id}`, and
+  serves `GET /apps/{app_id}` resolved: each agent's `tools` = allowlisted,
+  declared, enabled. `PATCH /tools/{id}/versions/{v} {"enabled": false}`
+  turns a tool off for every agent within one TTL. Register an app with
+  `uv run backend/scripts/register_app.py {app_id}` (needs the stack up;
+  idempotent). `ingestion`, `orchestrator`, `tool-gateway` read it through
+  `ap-shared`'s `registry_client` (30s TTL, `MANIFEST_TTL_S`, 404s cached).
+- `ingestion`: `POST /apps/{app_id}/events` (envelope + `payload`)
+  validates the payload against that app's `event_schema_ref`, builds
+  `alert_key` from its `alert_key_fields`, publishes `alert.received`,
+  returns `202`; unknown app `404`. `GET /alerts/{id}` is a throwaway debug
+  view of the decision (until Day 9's `review-console`).
 - `tool-gateway` serves MCP (stateless Streamable HTTP) at `POST /mcp`. At
   startup it loads app tools from `backend/apps/*/tools/` (`app/core/loader.py`;
-  the `TOOLS` dict contract is in its docstring). Tool failures are
-  `is_error` results with a `tool_not_found`/`invalid_arguments`/`tool_failed`
-  code. `uv run backend/scripts/mcp_call.py [tool_id] [json-args]` calls it
-  from the host (`localhost:8003`).
+  the `TOOLS` dict contract, incl. required `read_only: True`, is in its
+  docstring). Every call must carry a run context and be in that agent's
+  `registry`-resolved tools, else `tool_not_allowed` (`registry_unavailable`
+  if it can't check). Other failures: `tool_not_found`/`invalid_arguments`/
+  `tool_failed`. `uv run backend/scripts/mcp_call.py [tool_id] [json-args]`
+  calls it from the host (`localhost:8003`) as `--app-id`/`--agent-id`
+  (default it-ops-triage/triage-agent; the app must be registered).
 - `orchestrator` consumes `alert.received`, runs the entry agent's
   tool-calling loop (OpenAI, ADR-0015, behind `app/agent/llm.py`), and
   publishes `alert.decided`; the same run is exposed as gRPC `RunAgent`
-  (`:50051`, host `:50052`). It reads the app manifest from
-  `backend/apps/{app_id}/manifest.yaml` until Day 5's `registry`. Needs
+  (`:50051`, host `:50052`). It resolves the app from `registry` and offers
+  the agent exactly its resolved `tools`; prompts are read from
+  `backend/apps/{app_id}/prompts/` in its image. Needs
   `OPENAI_API_KEY` in `backend/local/.env` (see `.env.example`).
   `uv run backend/scripts/publish_alert.py` publishes straight to Kafka
   (bypassing `ingestion`) and prints the decision. Unit tests use a scripted fake LLM; none call the
@@ -63,7 +75,10 @@ day are in `docs/plan.md`.
   Redis, Postgres, OTel Collector, Loki, Mimir, Tempo, Grafana, and the 6
   services — all with health checks. The one-shot `kafka-init` service
   creates the four topics with 12 partitions (broker auto-create is off).
-  `backend/local/postgres/init.sql` creates `cases` and `memory_history`.
+  `backend/local/postgres/init.sql` creates `cases`, `memory_history`,
+  `tools`, `apps`; it's idempotent, so on an existing volume pipe it into
+  `docker compose exec -T postgres psql -U platform -d platform`.
+  After `down -v`, re-run `register_app.py it-ops-triage`.
 - Services log JSON to stdout and drop spans; nothing exports to the
   collector until Day 23. Don't set `OTEL_EXPORTER_OTLP_ENDPOINT` on a
   service before then — FastAPI >=0.142 auto-attaches OTLP exporters when
@@ -71,9 +86,8 @@ day are in `docs/plan.md`.
 - Generated proto stubs in `backend/shared/proto_gen/` are committed; rerun
   `backend/scripts/gen_proto.sh` after editing any `.proto`.
 - `backend/apps/it-ops-triage/` has `tools/` (`lookup_runbook` +
-  `runbooks.json`), a partial `manifest.yaml` (agents, tools,
-  `event_schema_ref`, `alert_key_fields`), `event_schema.json`, and
-  `prompts/triage-agent.md`.
+  `runbooks.json`), a complete `manifest.yaml` (`escalate_when: []` until
+  Day 7), `event_schema.json`, and `prompts/triage-agent.md`.
 - `backend/scripts/seed.py` is a stub docstring, no implementation.
 
 ## Commands
@@ -89,7 +103,7 @@ uv sync                          # install deps (incl. editable ap-shared)
 uv run pytest                    # run that service's tests
 uv run pytest tests/test_main.py::test_healthz_returns_200_with_expected_shape  # single test
 uv run uvicorn app.main:app --reload --port 8000   # run locally
-uv run pytest -m integration     # integration tests (orchestrator, ingestion): need the Compose stack up
+uv run pytest -m integration     # integration tests (orchestrator, ingestion, registry): need the Compose stack up
 ```
 
 `backend/shared` (the `ap-shared` package: proto stubs + `observability`
