@@ -199,10 +199,12 @@ or #3 a registration plus an app folder, not a platform code change.
 The human-in-the-loop surface. Consumes `alert.decided` and persists only
 `ESCALATE` decisions into `cases` (auto-resolve/suppress are high-volume
 and need no human, so they're never stored here; duplicates are ignored).
-Exposes `GET /cases` (filterable by `app_id`, `alert_key`, …), `GET
-/cases/{id}` (reasoning and tool-call summary), and `POST
-/cases/{id}/verdict` — verdict, `verdict_by`, and optional
-`resolution_notes` (what actually fixed it) — which publishes
+Exposes `GET /cases` (`app_id` required; filterable by `alert_key`,
+`status`), `GET /cases/{id}` (the alert as it fired, the reasoning,
+confidence, and every agent's tool calls — ADR-0023), and `POST
+/cases/{id}/verdict` — `CONFIRMED_INCIDENT` / `CONFIRMED_NOISE`,
+`verdict_by`, and optional `resolution_notes` (what actually fixed it) —
+which moves the case `OPEN` → `RESOLVED` once and publishes
 `verdict.recorded` back onto Kafka. `resolution_notes` stays on the case;
 it reaches future agents via `similar-past-case-lookup`.
 

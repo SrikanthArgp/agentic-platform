@@ -46,8 +46,8 @@ confident") it can be talked upward.
 ## Alternatives considered
 
 - **Token logprobs of the decision** — tied to one provider's API and to
-  the decision being one token; breaks the provider-agnostic interface
-  (ADR-0015).
+  the decision being one token; ties the supervisor to one provider
+  (ADR-0022).
 - **Self-consistency (N samples, agreement rate)** — best calibrated, but
   N× the LLM cost and latency on the hot path.
 - **A second "supervisor" LLM** — injectable by the same payload, and

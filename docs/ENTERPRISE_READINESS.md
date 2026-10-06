@@ -118,14 +118,14 @@ policies.
 
 | Data | Default retention | Notes |
 |---|---|---|
-| `cases` + `resolution_notes` | Long (e.g. 1–2 years) | The accuracy record and fix history |
+| `cases` + `resolution_notes` | Long (e.g. 1–2 years) | The accuracy record and fix history. Each case also stores the full alert payload (ADR-0023), so it carries whatever personal data the payload does |
 | `memory_events` | e.g. 90 days, keeping one row per all-time fact (`seen`, confirmed incident) per `alert_key` | Windows only read the last 7 days; older rows only feed `is_novel_alert` / `has_confirmed_incident_history` (ADR-0017). No pruning job in this build |
 | `outbox` (`SENT`) | Days | Already pruned (Day 15) |
 | Traces (full transcripts) | Short (e.g. 14–30 days) | Most sensitive, least needed long-term |
 | Audit log | Per compliance policy | Separate store |
 
 Deletion requests (e.g. a user's data) are honored by deleting or
-redacting matching `cases` and traces; `memory-store` holds only
+redacting matching `cases` (including their stored `alert` payload) and traces; `memory-store` holds only
 `alert_key`, event kinds and ids, so it has no personal data once usernames
 in `alert_key_fields` are hashed.
 

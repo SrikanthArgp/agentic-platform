@@ -118,10 +118,12 @@ produces per `app_id`:
 | Is it fast enough? | p95 time from `202` to `alert.decided` | Load test (Day 26) |
 | Can we add a use case safely? | Interruptions to existing apps during a new app's rollout | Rollout check (Days 19–20) |
 
-**Known gap**: `review-console` only receives `ESCALATE` decisions
+**Known gap**: `review-console` only keeps `ESCALATE` decisions as cases
 (`BLOCK_DIAGRAM.md`), so analysts never review an `AUTO_RESOLVE`d or
 `SUPPRESS`ed alert. In the live system, nobody finds out when one of those
 was wrong; their accuracy is measured only against the synthetic eval set.
 The candidate fix is audit sampling: send a small random share of
 non-escalated decisions per app to `review-console` as low-priority audit
-cases. It isn't designed yet and needs an ADR before Days 9–10 if adopted.
+cases. It isn't designed yet: Day 9 shipped without it (`review-console`'s
+`case_from_decision()` keeps only `ESCALATE`), so adopting it needs an ADR
+and a change to that filter.

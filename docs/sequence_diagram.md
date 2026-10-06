@@ -111,16 +111,17 @@ sequenceDiagram
     Orchestrator->>ToolGateway: tool-call, summarizer's allowlist:<br/>recent-changes-lookup (2h before fired_at), lookup_runbook (MCP)
     ToolGateway-->>Orchestrator: tool-result
     Note over Orchestrator: summarizer answers {"reasons": [...]}:<br/>probable cause citing a change ref or runbook
-    Note over Orchestrator: orchestrator folds summarizer's reasons[]<br/>into triage-agent's, prefixed "root-cause-summarizer: ..."
+    Note over Orchestrator: orchestrator folds summarizer's reasons[]<br/>into triage-agent's, prefixed "root-cause-summarizer: ...",<br/>and appends its tool calls (agent_id-tagged · ADR-0023)
 
-    Orchestrator->>ReviewConsole: alert.decided (Kafka · RunAgentResponse, decision=ESCALATE)
-    Note over ReviewConsole: persists `cases` row (Postgres, app_id-scoped)
+    Orchestrator->>ReviewConsole: alert.decided (Kafka · RunAgentResponse, decision=ESCALATE,<br/>incl. the alert itself · ADR-0023)
+    Note over ReviewConsole: persists an OPEN `cases` row (Postgres, app_id-scoped)
     Orchestrator->>MemoryStore: alert.decided (Kafka · own consumer group)
     Note over MemoryStore: records decision:ESCALATE for that alert_key
 
     Analyst->>ReviewConsole: GET case list/detail (REST)
-    ReviewConsole-->>Analyst: case incl. reasons[] (explainability trace)
+    ReviewConsole-->>Analyst: case incl. the alert, reasons[], tool_calls[] (explainability trace)
     Analyst->>ReviewConsole: submit verdict + optional resolution_notes (REST)
+    Note over ReviewConsole: OPEN → RESOLVED exactly once (a second verdict is a 409);<br/>verdict.recorded published before the row commits
     Note over ReviewConsole: resolution_notes stored on the case only —<br/>later surfaced via similar-past-case-lookup
 
     ReviewConsole->>MemoryStore: verdict.recorded (Kafka · {app_id, case_id, alert_key, verdict, verdict_by, recorded_at})

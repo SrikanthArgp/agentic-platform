@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-10-02
-- **See**: `ARCHITECTURE.md` §11, §12; `plan.md` Days 18–20; ADR-0003, ADR-0006; rejects ADR-0013
+- **See**: `ARCHITECTURE.md` §11, §12; `plan.md` Days 18–20; ADR-0003, ADR-0006
 
 ## Context
 
@@ -10,10 +10,8 @@ Adding an app means rebuilding and restarting `ingestion`, `orchestrator`,
 and `tool-gateway` (§12). Those containers are shared by every app
 (ADR-0003), so under Compose every rollout briefly interrupts every other
 app. Callers get errors from `ingestion`, and in-flight tool calls fail,
-which pushes those alerts toward `ESCALATE`. ADR-0013 proposed hot-reloading
-tools to avoid this. That only covers `tool-gateway`, only works when code
-reaches the container without a new image, and adds a code-loading path to
-a shared process (§13 T9).
+which pushes those alerts toward `ESCALATE`. Hot-reloading tools in
+`tool-gateway` was proposed to avoid this (rejected below).
 
 The original plan kept Kubernetes out of scope (Compose only). Phase two
 (`ENTERPRISE_READINESS.md` §6) already assumed Kubernetes as the runtime.
@@ -43,17 +41,20 @@ The original plan kept Kubernetes out of scope (Compose only). Phase two
     cooperative rebalancing.
   - The MCP client reconnects and retries a call when its connection drops.
     This is safe because every tool is read-only (ADR-0004).
-- **ADR-0013 (tool hot-reload) is rejected**: rolling updates solve the
-  same problem for all three services, without loading new code into a
-  running process, and keep the image as the authoritative copy (§12).
 
 ## Alternatives considered
 
 - **Stay on Compose throughout**: simplest. But every app rollout is a
   shared outage, and "add an app without disturbing the others" can't be
   shown.
-- **Tool hot-reload (ADR-0013)**: covers only `tool-gateway`, needs a bind
-  mount to be useful, and makes T9 worse.
+- **Tool hot-reload in `tool-gateway`** (an explicit, atomic
+  `POST /admin/reload-tools` called by `register_app.py`): covers only
+  `tool-gateway` (`ingestion` and `orchestrator` also read app files from
+  their images); only useful when code reaches the container without a new
+  image, i.e. the dev bind mount; lets running code differ from the image;
+  and adds a code-loading path to a process every app shares (§13 T9).
+  Rolling updates solve the same problem for all three services and keep
+  the image authoritative (§12).
 - **Kubernetes from Day 1**: more work every day for no gain until there's
   a second app to protect. Compose is faster to iterate on.
 - **Helm instead of Kustomize**: templating isn't needed for one local

@@ -145,8 +145,7 @@ App {
                                  # → "checkout:us-east-1" (§5/§6)
   memory_namespace: string      # Redis/Postgres key prefix in memory-store
 
-  escalate_when: [{             # deterministic guardrails (§13, ADR-0010,
-                                 # ADR-0021):
+  escalate_when: [{             # deterministic guardrails (§13, ADR-0010):
     field: string               # "alert.<envelope field>" (source, severity,
                                  # message, alert_key), "payload.<path>", or
                                  # "context.<GetContext field>", e.g.
@@ -352,8 +351,9 @@ Steps, app-agnostic:
    consumer group, and records the decision for that `alert_key`
    (ADR-0016) — what `GetContext`'s decision counts are built from.
 4. `review-console` consumes `alert.decided`; only `ESCALATE` decisions are
-   persisted into `cases` (app-scoped). An analyst reviews via REST and
-   submits a verdict (optionally with `resolution_notes` — what actually
+   persisted into `cases` (app-scoped), with the alert as it fired and
+   every agent's tool calls (ADR-0023). An analyst reviews via REST and
+   submits a verdict (once: `OPEN` → `RESOLVED`) (optionally with `resolution_notes` — what actually
    fixed it, kept on the case, §6/§8), publishing `verdict.recorded`.
 5. `memory-store` consumes `verdict.recorded` and records it as a verdict
    event for that app's `alert_key` (ADR-0017), which shifts that key's
@@ -399,9 +399,12 @@ to keep in sync.
   `ESCALATE` / `SUPPRESS`, left `DECISION_UNSPECIFIED` for a callable-only
   agent — it explains, it doesn't classify), `reasons[]` (explainability —
   every signal that drove the decision), `tool_calls[]` (summary of each
-  tool invocation: `tool_name`, `result_summary`), `alert_key` (echoed,
-  ADR-0016), `confidence` (0–1, the supervisor's capped value, ADR-0020;
-  0 when the run produced no answer of its own).
+  tool invocation: `tool_name`, `result_summary`, and the `agent_id` that
+  made it — the entry agent's calls, then each callable's, ADR-0023),
+  `alert_key` (echoed, ADR-0016), `confidence` (0–1, the supervisor's
+  capped value, ADR-0020; 0 when the run produced no answer of its own),
+  `alert` (the `RunAgentRequest`, echoed unchanged, so a case can show
+  what fired, ADR-0023).
 
 `reasons[]` is populated from the agent's actual tool-call trace and
 supervisor logic, not written after the fact — this is the platform's
@@ -422,7 +425,7 @@ every alert:
    `supervisor.min_confidence` (default 0.6) → `ESCALATE`, with a reason
    giving the value, the threshold and the cap.
 3. Guardrails: any matching manifest `escalate_when` rule → `ESCALATE`,
-   with a reason naming the rule (§13 T1/T3, ADR-0010/0021); a match on an
+   with a reason naming the rule (§13 T1/T3, ADR-0010); a match on an
    already-`ESCALATE` decision is still named. Steps 2–3 can only move a
    decision *to* `ESCALATE`, never away from it.
 4. Callables whose `invoke_on` matches the now-final decision run (below).
@@ -453,8 +456,10 @@ A callable that fails, times out (`CALLABLE_TIMEOUT_S`, default 30s), or
 is over budget (§10) doesn't block or change the decision:
 `alert.decided` is still published, with a reason noting which callable
 didn't contribute and why (`orchestrator: callable '<id>' didn't
-contribute (timed out after 30s).`). The response's `tool_calls[]` is the
-entry agent's trace; a callable's evidence is cited in its reasons. Today the only callable,
+contribute (timed out after 30s).`). A contributing callable's tool calls
+are appended to the response's `tool_calls[]` after the entry agent's,
+tagged with its `agent_id`, in manifest order; a callable that didn't
+contribute adds none (ADR-0023). Today the only callable,
 `root-cause-summarizer`, uses `invoke_on: ["ESCALATE"]` — that's where a
 human actually reads the explanation (§4 step 4), so auto-resolved and
 suppressed alerts don't pay for the extra LLM call.
@@ -549,7 +554,7 @@ in Tempo/Mimir/Loki.
 
 | Table | Key columns | Notes |
 |---|---|---|
-| `cases` | `id`, `app_id`, `alert_id`, `alert_key`, `decision`, `reasons` (jsonb), `status` (`OPEN`\|`RESOLVED`), `verdict`, `verdict_by`, `resolution_notes` (text, nullable), `created_at`, `resolved_at` | Only `ESCALATE` decisions land here (§4 step 4). `app_id` filter on every read. Unique on `(app_id, alert_id)` so a duplicate `alert.decided` (§10) never creates a second case. `resolution_notes` is the analyst's account of the actual fix — the platform's only record of *how* an incident was resolved (§6). |
+| `cases` | `id`, `app_id`, `alert_id`, `alert_key`, `agent_id`, `decision`, `confidence` (real), `reasons` (jsonb), `tool_calls` (jsonb, each with its `agent_id`), `alert` (jsonb: `source`, `severity`, `message`, `fired_at`, `payload`; null before ADR-0023), `status` (`OPEN`\|`RESOLVED`), `verdict`, `verdict_by`, `resolution_notes` (text, nullable), `created_at`, `resolved_at` | Only `ESCALATE` decisions land here (§4 step 4). `app_id` filter on every read. Unique on `(app_id, alert_id)` so a duplicate `alert.decided` (§10) never creates a second case. `resolution_notes` is the analyst's account of the actual fix — the platform's only record of *how* an incident was resolved (§6). |
 | `memory_events` | `id`, `app_id`, `alert_key`, `kind` (`decision:<Decision>`, from Day 10 `verdict:<verdict>`), `ref_id` (`alert_id` / `case_id`), `occurred_at`, `recorded_at` | `memory-store`'s source of truth (§6, ADR-0017): one row per event, unique per (`app_id`, kind family, `ref_id`) so a redelivered event counts once. Redis is rebuilt from it on a miss. Replaces the earlier per-window `memory_history` snapshot design, which couldn't rebuild a sliding window. |
 | `apps` | `app_id` (PK), `display_name`, `manifest` (jsonb), `created_at`, `updated_at` | `registry`'s App Manifest store (§3) — one row per app, manifest kept as a single jsonb document rather than normalized, since it's read whole and written rarely. |
 | `tools` | (`tool_id`, `version`) (PK), `description`, `scope`, `app_id` (null for global), `input_schema`/`output_schema` (jsonb), `read_only` (`CHECK` true), `enabled`, `created_at`, `updated_at` | `registry`'s tool registrations (§3, §13 T8). A manifest may only declare registered tool versions. `enabled` is the runtime switch: a disabled tool stays registered but is offered to, and callable by, no agent. |
@@ -904,7 +909,7 @@ not an oversight). Design decisions behind the mitigations are recorded in
 | **Decision integrity** | The costliest failure is a real incident or attack that ends up `SUPPRESS`ed or `AUTO_RESOLVE`d — nobody looks at it. An unnecessary `ESCALATE` costs analyst time; a wrong suppression costs an outage or a breach. |
 | **App isolation** | One app's memory, cases, tools, or budget must never be visible to or affected by another (§3). |
 | **Feedback-loop integrity** | Verdicts and memory shape every future decision for an `alert_key`; poisoning them corrupts decisions silently and durably. |
-| **Case data** | `cases` and `resolution_notes` hold incident details and how systems were fixed. |
+| **Case data** | `cases` and `resolution_notes` hold incident details and how systems were fixed; each case also keeps the alert payload it was decided on (ADR-0023). |
 | **LLM budget / availability** | Exhausting budget or capacity degrades every app sharing the core. |
 | **Data sent to the LLM provider** | Alert payloads may contain usernames, IPs, hostnames, file paths — all leave the platform in every prompt. |
 

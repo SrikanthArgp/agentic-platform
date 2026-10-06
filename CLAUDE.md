@@ -17,7 +17,10 @@ system-of-record for the service map, transport choices, proto contracts,
 and the multi-app model, with section numbers referenced directly from code
 comments in `backend/proto/*.proto`. **Read `docs/adr/`** before changing or reversing a major decision — each
 ADR records why it was made and what was rejected; a changed decision gets
-a new ADR, not an edit. Business scenarios (who would use each app, and where the platform
+a new ADR, not an edit. An ADR that no longer stands on its own (rejected
+and never built, mostly superseded, or only a patch to another) is folded
+into the one that covers it and deleted; numbers are never reused (rules in
+`docs/adr/README.md`). Business scenarios (who would use each app, and where the platform
 doesn't fit) are in `docs/SCENARIOS.md`. Security risks and required mitigations are in
 `docs/ARCHITECTURE.md` §13; the phase-two path to an enterprise
 deployment is `docs/ENTERPRISE_READINESS.md`. **Read `docs/plan.md`** for the
@@ -27,17 +30,28 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Days 1–8 of `docs/plan.md` are done (infra, contracts, skeletons;
+Days 1–9 of `docs/plan.md` are done (infra, contracts, skeletons;
 `tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core;
 `ingestion` and the end-to-end hot path; `registry` + App Manifest;
 `memory-store`; context, supervisor and guardrails in `orchestrator`;
-callable agents); Day 9 (`review-console`) is next. As-built notes for each
+callable agents; `review-console`); Day 10 (closing the feedback loop) is
+next. As-built notes for each
 day are in `docs/plan.md`.
 
 - All 6 services have a FastAPI skeleton (`app/main.py`, `/healthz`),
   a `pyproject.toml`, a committed `uv.lock`, a `Dockerfile`, and passing
-  health-check tests. `review-console`'s package subdirectories are still
-  empty `__init__.py` stubs.
+  health-check tests.
+- `review-console` (`:8006`) consumes `alert.decided` (own group) and turns
+  each `ESCALATE` into an `OPEN` row in `cases` (with `reasons`,
+  `tool_calls`, `confidence`; unique `(app_id, alert_id)`). `GET /cases`
+  (`app_id` required; `alert_key`, `status`, `limit`, `offset`),
+  `GET /cases/{id}`, `POST /cases/{id}/verdict` (`CONFIRMED_INCIDENT` /
+  `CONFIRMED_NOISE`, `verdict_by`, optional `resolution_notes`): `OPEN` →
+  `RESOLVED` once, else `409`. A case also shows the alert itself and every
+  agent's tool calls: `RunAgentResponse.alert` echoes the request and
+  `ToolCall.agent_id` says whose call it was (ADR-0023). The verdict publishes `verdict.recorded`
+  (JSON, no notes) inside the row-lock transaction; Kafka down → `503`,
+  case stays `OPEN`. `memory-store` doesn't consume it until Day 10.
 - `memory-store` serves gRPC `GetContext` (`:50051`, host `:50053`): 1h/24h/7d
   decision counts plus `is_novel_alert`/`has_confirmed_incident_history` per
   `app_id` + `alert_key`. It consumes `alert.decided` (own group) into
@@ -58,7 +72,7 @@ day are in `docs/plan.md`.
   validates the payload against that app's `event_schema_ref`, builds
   `alert_key` from its `alert_key_fields`, publishes `alert.received`,
   returns `202`; unknown app `404`. `GET /alerts/{id}` is a throwaway debug
-  view of the decision (until Day 9's `review-console`).
+  view of the decision (removed on Day 10).
 - `tool-gateway` serves MCP (stateless Streamable HTTP) at `POST /mcp`. At
   startup it loads app tools from `backend/apps/*/tools/` (`app/core/loader.py`;
   the `TOOLS` dict contract, incl. required `read_only: True`, is in its
@@ -71,7 +85,7 @@ day are in `docs/plan.md`.
 - `orchestrator` consumes `alert.received`, runs the app's agents, and
   publishes `alert.decided`. The run is a LangGraph graph
   (`app/agent/graph.py`, ADR-0022) and each agent's tool loop is
-  LangChain's `create_agent` with `ChatOpenAI` (ADR-0015 for the model);
+  LangChain's `create_agent` with `ChatOpenAI` (ADR-0022, incl. the model);
   tools are our own `StructuredTool`s over MCP (`app/agent/react.py`); the same run is exposed as gRPC `RunAgent`
   (`:50051`, host `:50052`). Before the loop it calls `memory-store`'s
   `GetContext` once (one shared channel, `MEMORY_STORE_TARGET`) and gives
@@ -80,7 +94,7 @@ day are in `docs/plan.md`.
   manifest's `supervisor.min_confidence` / default 0.6 → `ESCALATE`,
   ADR-0020), then the manifest's `escalate_when` guardrails (`alert.*`,
   `payload.*`, `context.*`; a match → `ESCALATE`, named in `reasons[]`,
-  ADR-0010/0021). Both only ever move toward `ESCALATE`; memory down →
+  ADR-0010). Both only ever move toward `ESCALATE`; memory down →
   the run continues without context and the supervisor escalates.
   `RunAgentResponse.confidence` carries the final value. Then every
   callable agent whose `invoke_on` has the final decision runs in parallel,
@@ -129,7 +143,7 @@ uv sync                          # install deps (incl. editable ap-shared)
 uv run pytest                    # run that service's tests
 uv run pytest tests/test_main.py::test_healthz_returns_200_with_expected_shape  # single test
 uv run uvicorn app.main:app --reload --port 8000   # run locally
-uv run pytest -m integration     # integration tests (orchestrator, ingestion, registry, memory-store): need the Compose stack up
+uv run pytest -m integration     # integration tests (orchestrator, ingestion, registry, memory-store, review-console): need the Compose stack up
 ```
 
 `backend/shared` (the `ap-shared` package: proto stubs + `observability`
