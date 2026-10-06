@@ -26,7 +26,8 @@ The agent is offered exactly the tools `registry` resolved for it
 else is refused before `tool-gateway`, which checks the same list again.
 
 Exactly one response per run: callables' own answers are never returned
-or published on their own.
+or published on their own; their reasons and tool calls are folded into it
+(ADR-0023), and it echoes the request as `alert`.
 
 Not yet: budgets (Day 14).
 """
@@ -112,8 +113,9 @@ class AgentRunner:
             alert_key=request.alert_key,
             decision=state["decision"],
             reasons=[*state["reasons"], *state["platform_reasons"], *state.get("delegated_reasons", [])],
-            tool_calls=state["tool_calls"],
+            tool_calls=[*state["tool_calls"], *state.get("delegated_tool_calls", [])],
             confidence=state["confidence"],
+            alert=request,
         )
         logger.info(
             "agent decided: app_id=%s agent_id=%s alert_id=%s decision=%s confidence=%.2f tool_calls=%d "
@@ -134,4 +136,5 @@ def not_evaluated_response(request: agent_pb2.RunAgentRequest, why: str) -> agen
         alert_key=request.alert_key,
         decision=agent_pb2.ESCALATE,
         reasons=[REASON_PREFIX + f"not evaluated: {why}. Escalated for human review."],
+        alert=request,
     )

@@ -1,106 +1,130 @@
 # review-console — class diagram
 
-**Status: skeleton only.** Through Day 6 of `docs/plan.md`,
-`review-console` has a FastAPI app with `/healthz` and nothing else. The
-`api/`, `core/`, `db/` and `kafka/` packages are empty `__init__.py`
-stubs. It is built on Day 9.
-
-## As built today
+As built on Day 9 of `docs/plan.md`: an `alert.decided` consumer that
+turns escalations into cases, the analyst REST API, and the
+`verdict.recorded` producer.
 
 ```mermaid
 classDiagram
     direction LR
     class main {
         <<module: app.main>>
-        +SERVICE_NAME = "review-console"
-        +app: FastAPI
+        +create_app(settings, store, publisher) FastAPI
         +healthz() HealthResponse
     }
-    class HealthResponse {
-        <<pydantic>>
-        +status: str
-        +service: str
+    class Settings {
+        <<dataclass: app.core.config>>
+        +postgres_dsn: str
+        +kafka_bootstrap_servers: str
+        +kafka_enabled: bool
+        +from_env() Settings
     }
-    class observability {
-        <<ap-shared>>
-        +setup_observability(service_name) Tracer
+    class cases_api {
+        <<router: app.api.cases>>
+        +GET /cases?app_id&alert_key&status&limit&offset
+        +GET /cases/id
+        +POST /cases/id/verdict
     }
-    class api { <<empty package>> }
-    class core { <<empty package>> }
-    class db { <<empty package>> }
-    class kafka { <<empty package>> }
-
-    main ..> HealthResponse : /healthz
-    main ..> observability : at import
-```
-
-- **`main`**: creates the FastAPI app at import time, calls
-  `setup_observability("review-console")`, and serves `GET /healthz`.
-- **`HealthResponse`**: the `{status, service}` body that Compose health
-  checks poll.
-
-## Contracts already in the repo (implementation pending)
-
-The `cases` table already exists in `backend/local/postgres/init.sql`.
-The message it will consume, `RunAgentResponse`, is in
-`backend/proto/agent.proto`.
-
-```mermaid
-classDiagram
-    direction LR
-    class RunAgentResponse {
-        <<proto: agent.proto, alert.decided payload>>
-        +app_id: str
-        +agent_id: str
-        +alert_id: str
-        +decision: Decision
+    class CaseService {
+        <<app.core.service>>
+        +record_decision(RunAgentResponse) bool?
+        +get(case_id) Case
+        +list(CaseQuery) list~Case~
+        +record_verdict(case_id, VerdictIn) Case
+    }
+    class CaseStore {
+        <<protocol>>
+        +add(NewCase) bool
+        +get(case_id) Case?
+        +list(CaseQuery) list~Case~
+        +lock(case_id) LockedCase
+    }
+    class PostgresCaseStore {
+        <<app.db.postgres>>
+    }
+    class LockedCase {
+        <<protocol>>
+        +case: Case?
+        +resolve(VerdictIn, at) Case
+    }
+    class DecisionConsumer {
+        <<app.kafka.decisions>>
+        group = review-console
+        +start()
+        +stop()
+    }
+    class Publisher {
+        <<protocol: app.kafka.publisher>>
+        +publish(topic, key, value)
+    }
+    class KafkaPublisher
+    class NewCase {
+        <<pydantic: app.core.cases>>
+        +app_id, alert_id, alert_key, agent_id
+        +decision: str
+        +confidence: float
         +reasons: list~str~
-        +tool_calls: list~ToolCall~
+        +tool_calls: list~ToolCallSummary~
+        +alert: AlertSummary?
     }
-    class ToolCall {
-        <<proto>>
-        +tool_name: str
-        +result_summary: str
+    class AlertSummary {
+        <<pydantic>>
+        +source, severity, message
+        +fired_at: datetime?
+        +payload: dict
     }
-    class cases {
-        <<Postgres table>>
-        +id: bigserial
-        +app_id: text
-        +alert_id: text
-        +alert_key: text
-        +decision: text
-        +reasons: jsonb
+    class ToolCallSummary {
+        <<pydantic>>
+        +tool_name, result_summary
+        +agent_id: str
+    }
+    class Case {
+        <<pydantic>>
+        +id: int
         +status: OPEN or RESOLVED
-        +verdict: text?
-        +verdict_by: text?
-        +resolution_notes: text?
-        +created_at: timestamptz
-        +resolved_at: timestamptz?
+        +verdict: Verdict?
+        +verdict_by: str?
+        +resolution_notes: str?
+        +created_at, resolved_at?
     }
-    RunAgentResponse *-- ToolCall
-    RunAgentResponse ..> cases : ESCALATE only becomes a row
+    class VerdictIn {
+        <<pydantic>>
+        +verdict: CONFIRMED_INCIDENT or CONFIRMED_NOISE
+        +verdict_by: str
+        +resolution_notes: str?
+    }
+
+    main ..> Settings
+    main ..> cases_api
+    main ..> DecisionConsumer : started with the app
+    cases_api ..> CaseService
+    DecisionConsumer ..> CaseService : handle_decided()
+    CaseService ..> CaseStore
+    CaseService ..> Publisher : verdict.recorded
+    PostgresCaseStore ..|> CaseStore
+    CaseStore ..> LockedCase : lock()
+    KafkaPublisher ..|> Publisher
+    NewCase <|-- Case
+    NewCase *-- AlertSummary
+    NewCase *-- ToolCallSummary
+    CaseService ..> VerdictIn
 ```
 
-- **`cases`**: one row per escalated alert. `UNIQUE (app_id, alert_id)`
-  means a duplicate `alert.decided` can never create a second case.
-  - Indexes on `(app_id, alert_key)` and `(app_id, status)` back the
-    planned `GET /cases` filters.
-  - `resolution_notes` holds the analyst's account of the actual fix. It
-    stays on the case and never goes into Kafka.
-
-### Planned design (from `docs/plan.md` Day 9)
-
-- A Kafka consumer on `alert.decided` that persists only `ESCALATE`
-  decisions into `cases`.
-- REST endpoints:
-  - `GET /cases`, filterable by `app_id`, `alert_key`, ...;
-  - `GET /cases/{id}`, showing `reasons[]` and the tool-call summary;
-  - `POST /cases/{id}/verdict`, with `verdict`, `verdict_by` and optional
-    `resolution_notes`.
-- A verdict state machine: a case moves `OPEN` → `RESOLVED` exactly once.
-  A second verdict is rejected.
-- A producer of `verdict.recorded`, keyed `{app_id}:{alert_key}`.
-  `memory-store` consumes it on Day 10.
-- Replaces `ingestion`'s Day 4 debug `GET /alerts/{id}`.
-
-Update this file with the real classes when Day 9 lands.
+- **`case_from_decision()`** (`app.core.cases`) is the persistence filter:
+  only `ESCALATE` becomes a `NewCase`; `AUTO_RESOLVE`/`SUPPRESS` return
+  `None`. It copies `RunAgentResponse.alert` into `AlertSummary` (`None`
+  for a decision published before ADR-0023) and each `ToolCall`'s
+  `agent_id`. `PostgresCaseStore.add` is `ON CONFLICT (app_id, alert_id) DO
+  NOTHING`, so a redelivered decision never creates a second case.
+- **`CaseService.record_verdict`** holds the state machine, under
+  `lock()` (`SELECT ... FOR UPDATE`): no case → `CaseNotFoundError` (404),
+  `RESOLVED` → `CaseAlreadyResolvedError` (409), else `resolve()` and
+  publish `verdict.recorded` before commit. A `PublishError` rolls back
+  (503; the case stays `OPEN`).
+- **`verdict_event()`** builds the `verdict.recorded` body: `{app_id,
+  case_id, alert_key, verdict, verdict_by, recorded_at}`, keyed
+  `{app_id}:{alert_key}`. `resolution_notes` stays on the case (ADR-0011).
+- **`DecisionConsumer`**: own group, one message at a time, commit after
+  handling; unusable messages are skipped, Postgres errors retried.
+- With `KAFKA_ENABLED=false`, `main` uses a publisher that always raises
+  `PublishError`: cases are readable, verdicts get 503.

@@ -1,4 +1,4 @@
-"""`escalate_when` evaluation, table-driven (ADR-0010, ADR-0021)."""
+"""`escalate_when` evaluation, table-driven (ADR-0010)."""
 
 import pytest
 

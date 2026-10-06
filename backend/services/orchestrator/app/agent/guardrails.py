@@ -1,4 +1,4 @@
-"""Deterministic `escalate_when` guardrails (ADR-0010, ADR-0021).
+"""Deterministic `escalate_when` guardrails (ADR-0010).
 
 A rule is `{field, in}`. `field` is one of:
 

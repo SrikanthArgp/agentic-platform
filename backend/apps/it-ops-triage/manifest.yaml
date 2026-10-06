@@ -42,7 +42,7 @@ tools:
 # Prefix of every memory-store key for this app (§3, §6).
 memory_namespace: it-ops-triage
 
-# Deterministic guardrails (ADR-0010, ADR-0021): any match forces ESCALATE,
+# Deterministic guardrails (ADR-0010): any match forces ESCALATE,
 # whatever the agent decided. Rules read "alert.<envelope field>",
 # "payload.<path>" or "context.<GetContextResponse field>".
 escalate_when:

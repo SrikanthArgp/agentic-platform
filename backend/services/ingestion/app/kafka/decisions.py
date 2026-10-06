@@ -1,7 +1,7 @@
 """Day 4 debug only: remember accepted alerts and their `alert.decided` results.
 
 Backs the throwaway `GET /alerts/{id}`, so a decision is observable before
-`review-console` exists; delete both on Day 9. In-memory and per-replica on
+`review-console` existed; delete both on Day 10. In-memory and per-replica on
 purpose: nothing durable should grow around it. The consumer has no group
 and reads `alert.decided` from the start, so a restart rebuilds what it can
 (decisions without an accept time on this replica have no latency).

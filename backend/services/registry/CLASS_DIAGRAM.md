@@ -1,6 +1,6 @@
 # registry — class diagram
 
-As built through Day 8 of `docs/plan.md` (unchanged since Day 7). `registry` stores two kinds of
+As built through Day 9 of `docs/plan.md` (unchanged since Day 7). `registry` stores two kinds of
 records: **tool registrations** (one per `tool_id` + `version`) and **App
 Manifests** (one per `app_id`). It validates a manifest when it is
 registered, and serves it back *resolved*: each agent carries the tools it
@@ -407,7 +407,7 @@ field:
 | `agents[i].invoke_on` | set on the entry agent; empty on a callable agent |
 | `agents[i].invoke_on[j]` | not a `Decision` name (`DECISION_UNSPECIFIED` excluded) |
 | `alert_key_fields` | empty, or a field repeated |
-| `escalate_when[i].field` | doesn't start with `alert.`, `payload.` or `context.`; an `alert.<name>` whose name isn't in `ENVELOPE_FIELDS` (`source`, `severity`, `message`, `alert_key`; ADR-0021 — `orchestrator`'s guardrails list the same); an invalid `payload.<path>`; or a `context.<path>` that isn't a scalar field of `GetContextResponse` (walked via the proto descriptor, e.g. `context.window_24h.escalation_count` is fine, `context.window_24h` is not) |
+| `escalate_when[i].field` | doesn't start with `alert.`, `payload.` or `context.`; an `alert.<name>` whose name isn't in `ENVELOPE_FIELDS` (`source`, `severity`, `message`, `alert_key`; ADR-0010 — `orchestrator`'s guardrails list the same); an invalid `payload.<path>`; or a `context.<path>` that isn't a scalar field of `GetContextResponse` (walked via the proto descriptor, e.g. `context.window_24h.escalation_count` is fine, `context.window_24h` is not) |
 | `supervisor.min_confidence` | outside 0–1 (a pydantic `422`, before these checks) |
 
 Not checked here (files in other images): `prompt_ref` (`orchestrator`),

@@ -24,7 +24,7 @@ from proto_gen import agent_pb2, memory_store_pb2
 # Every Decision except the proto3 zero value.
 DECISIONS = frozenset(n for n in agent_pb2.Decision.keys() if n != "DECISION_UNSPECIFIED")
 _PAYLOAD_PATH = re.compile(r"^payload(\.[A-Za-z0-9_-]+)+$")
-# The RunAgentRequest envelope fields a rule may read (ADR-0021); orchestrator's
+# The RunAgentRequest envelope fields a rule may read (ADR-0010); orchestrator's
 # guardrails.ENVELOPE_FIELDS must list the same.
 ENVELOPE_FIELDS = ("source", "severity", "message", "alert_key")
 

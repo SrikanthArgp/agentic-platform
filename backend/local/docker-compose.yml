@@ -251,7 +251,7 @@ services:
     build: { context: .., dockerfile: services/review-console/Dockerfile }
     ports: ["8006:8000"]
     depends_on:
-      kafka: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
       postgres: { condition: service_healthy }
 
 volumes:

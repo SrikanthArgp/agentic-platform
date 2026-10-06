@@ -238,8 +238,10 @@ async def test_unknown_app_or_agent_raises(apps_dir, app_id, agent_id):
 
 
 def test_not_evaluated_response_escalates_with_reason():
-    response = not_evaluated_response(make_request(), "LLM unavailable")
+    request = make_request()
+    response = not_evaluated_response(request, "LLM unavailable")
     assert response.decision == agent_pb2.ESCALATE
+    assert response.alert == request  # the analyst still sees what wasn't evaluated
     assert response.alert_id == "alert-1"
     assert response.alert_key == "disk_full:web-01"
     assert "not evaluated: LLM unavailable" in response.reasons[0]

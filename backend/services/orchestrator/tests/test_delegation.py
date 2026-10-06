@@ -2,7 +2,8 @@
 
 After the entry decision is final (supervisor and guardrails included),
 every callable whose `invoke_on` lists it runs in parallel; their reasons
-are folded into the one response, prefixed and in manifest order.
+are folded into the one response, prefixed and in manifest order, and
+their tool calls appended after the entry agent's (ADR-0023).
 """
 
 import time
@@ -204,8 +205,49 @@ async def test_callable_uses_its_own_tools_and_run_context(apps_dir, app_with_ca
     [(name, _, ctx)] = gateway.calls
     assert name == "recent-changes-lookup"
     assert ctx == RunContext(app_id=APP_ID, agent_id="root-cause-summarizer", alert_id="alert-1")
-    # The response's tool trace is the entry agent's; the callable's is in its reasons/traces.
+    # The callable's call is in the response's trace, tagged with its agent (ADR-0023).
+    assert [(c.agent_id, c.tool_name) for c in response.tool_calls] == [("root-cause-summarizer", "recent-changes-lookup")]
+
+
+async def test_tool_calls_are_the_entry_agents_then_each_callables_in_manifest_order(apps_dir, app_with_callables):
+    registry = app_with_callables(
+        callable_agent("root-cause-summarizer", ["ESCALATE"], tools=[CHANGES_TOOL]),
+        callable_agent("blast-radius", ["ESCALATE"], tools=[RUNBOOK_TOOL]),
+    )
+    gateway = FakeGateway()
+    gateway.results["recent-changes-lookup"] = gateway.results["lookup_runbook"]
+    llm = FakeChatModel(
+        responses=[tool_call(), final("ESCALATE")],
+        scripts={
+            SUMMARIZER: [tool_call("recent-changes-lookup", service_or_host="web-01"), explanation("z")],
+            BLAST: [tool_call(), explanation("w")],
+        },
+        delays={SUMMARIZER: 0.1},  # finishes last, still folded first
+    )
+    response = await run(apps_dir, registry, llm, gateway=gateway)
+
+    assert [(c.agent_id, c.tool_name) for c in response.tool_calls] == [
+        ("triage-agent", "lookup_runbook"),
+        ("root-cause-summarizer", "recent-changes-lookup"),
+        ("blast-radius", "lookup_runbook"),
+    ]
+
+
+async def test_a_callable_that_did_not_contribute_adds_no_tool_calls(apps_dir, app_with_callables):
+    registry = app_with_callables(callable_agent("root-cause-summarizer", ["ESCALATE"], tools=[RUNBOOK_TOOL]))
+    llm = FakeChatModel(
+        responses=[final("ESCALATE")], scripts={SUMMARIZER: [tool_call(call_id=f"c{i}") for i in range(3)]}
+    )
+    response = await run(apps_dir, registry, llm, max_tool_rounds=2)
     assert list(response.tool_calls) == []
+
+
+async def test_the_response_echoes_the_alert(apps_dir, app_with_callables):
+    registry = app_with_callables(callable_agent("root-cause-summarizer", ["ESCALATE"]))
+    llm = FakeChatModel(responses=[final("ESCALATE")], scripts={SUMMARIZER: [explanation("z")]})
+    request = make_request()
+    response = await run(apps_dir, registry, llm, request=request)
+    assert response.alert == request
 
 
 @pytest.mark.parametrize(

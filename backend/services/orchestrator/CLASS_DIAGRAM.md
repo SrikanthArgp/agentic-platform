@@ -1,6 +1,7 @@
 # orchestrator — class diagram
 
-As built through Day 8 of `docs/plan.md`. `orchestrator` runs the agents.
+As built through Day 9 of `docs/plan.md` (Day 9: ADR-0023's `alert` echo and
+every agent's tool calls in the response). `orchestrator` runs the agents.
 It takes a `RunAgentRequest` (from Kafka `alert.received`, or the gRPC
 `RunAgent` call) and resolves the app's manifest from `registry` and the
 prompts from its image. Each run is a **LangGraph** graph (ADR-0022):
@@ -9,10 +10,11 @@ prompts from its image. Each run is a **LangGraph** graph (ADR-0022):
    with `ChatOpenAI`) against `tool-gateway` over MCP;
 3. apply the supervisor and the `escalate_when` guardrails;
 4. fan out to the callable agents whose `invoke_on` matches the final
-   decision, in parallel, and fold their reasons in.
+   decision, in parallel, and fold their reasons and tool calls in.
 
 It returns one `RunAgentResponse` with a decision, a confidence,
-`reasons[]` and the entry agent's tool-call trace.
+`reasons[]`, every agent's tool calls (entry first, then callables, each
+tagged with its `agent_id`), and the request echoed as `alert` (ADR-0023).
 
 Python modules that are plain functions (no class) are drawn as
 `<<module>>` boxes. Third-party and cross-service types are in the
@@ -168,6 +170,7 @@ classDiagram
             +platform_reasons: list, append reducer
             +callable_results: list, append reducer
             +delegated_reasons: list
+            +delegated_tool_calls: list
         }
         class CallableTask {
             <<TypedDict: Send payload>>
@@ -380,7 +383,7 @@ classDiagram
         }
         class RunAgentResponse {
             <<proto: agent.proto>>
-            +decision, confidence, reasons, tool_calls, alert_key
+            +decision, confidence, reasons, tool_calls, alert_key, alert
         }
         class GetContextResponse {
             <<proto: memory_store.proto>>
@@ -489,13 +492,14 @@ flowchart LR
 | `supervisor` | `supervise()` with the manifest threshold or `RunDeps.default_min_confidence` | `decision`, `confidence`, its reason if it escalated |
 | `guardrails` | `guardrails.evaluate()`; every match is a reason; forces ESCALATE if it wasn't already | `decision`, platform reasons |
 | `route_callables` (edge) | `AppManifest.callables_for(final decision)`; one `Send("callable", CallableTask)` each, or `"fold"` if none | — |
-| `callable` | Runs `explain()` under `asyncio.wait_for(CALLABLE_TIMEOUT_S)`. Success → reasons prefixed `"<agent_id>: "` plus any tool-failure reasons. Any failure → one `orchestrator: callable '<id>' didn't contribute (<why>).` reason (timeout, LLM, parse, rounds, missing prompt; anything else is logged as "failed"). | `callable_results: [(index, reasons)]` |
-| `fold` | Sorts results by manifest index and flattens them | `delegated_reasons` |
+| `callable` | Runs `explain()` under `asyncio.wait_for(CALLABLE_TIMEOUT_S)`. Success → reasons prefixed `"<agent_id>: "` plus any tool-failure reasons. Any failure → one `orchestrator: callable '<id>' didn't contribute (<why>).` reason (timeout, LLM, parse, rounds, missing prompt; anything else is logged as "failed"). | `callable_results: [(index, reasons, tool_calls)]` (no calls on failure) |
+| `fold` | Sorts results by manifest index and flattens them | `delegated_reasons`, `delegated_tool_calls` |
 
 `platform_reasons` and `callable_results` use an append reducer, so each
 node adds to them, and the `Send` branches can write concurrently.
 `AgentRunner` builds the response with reasons in this order:
-`reasons + platform_reasons + delegated_reasons`.
+`reasons + platform_reasons + delegated_reasons`, and tool calls as
+`tool_calls + delegated_tool_calls` (ADR-0023).
 
 **`build_callable_graph()`**, `context → explain`, is the direct path when
 `RunAgent` names a callable. `explain_node` runs the same `explain()` with
@@ -567,7 +571,8 @@ returns an **`AgentOutcome`**:
   schema). The tool's coroutine calls `ToolSession.call_tool` with the
   `RunContext` in `_meta` (never as an argument, §13 T4), inside an
   `agent.tool_call` span.
-- `record()` adds the call to `trace` (`ToolCall` with a 300-char summary),
+- `record()` adds the call to `trace` (`ToolCall` with a 300-char summary
+  and the run context's `agent_id`),
   collects `INFRA_TOOL_ERRORS` into `infra_failures`, and returns the result
   wrapped in a nonce data block. That data block is what the model sees
   (§13 T1/T2).
@@ -582,7 +587,7 @@ returns an **`AgentOutcome`**:
 **`llm`**:
 - `build_chat_model()` returns `ChatOpenAI(model, timeout=60,
   max_retries=2)` for `openai`. Swapping providers is a change here
-  (ADR-0015, ADR-0022).
+  (ADR-0022).
 - **`ModelErrors`** middleware turns any exception from the model call into
   **`LLMError`**, the one error type callers handle.
 
@@ -610,7 +615,7 @@ Both cap the reasons at 10 of 500 characters each, and raise
 
 ### Supervisor and guardrails — `supervisor.py`, `guardrails.py`
 
-Unchanged from Day 7 (ADR-0020, ADR-0010/0021), now called from graph
+Unchanged from Day 7 (ADR-0020, ADR-0010), now called from graph
 nodes.
 - **Supervisor**: confidence = min(agent's value, caps); the caps are no
   context 0.5, a novel key that isn't ESCALATE 0.5, and SUPPRESS with an

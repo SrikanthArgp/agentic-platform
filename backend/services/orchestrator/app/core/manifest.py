@@ -49,7 +49,7 @@ class AgentSpec(BaseModel):
 
 
 class EscalateRule(BaseModel):
-    """One `escalate_when` guardrail (ADR-0010, ADR-0021); registry validated its field."""
+    """One `escalate_when` guardrail (ADR-0010); registry validated its field."""
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 

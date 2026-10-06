@@ -25,6 +25,18 @@ CREATE TABLE IF NOT EXISTS cases (
     UNIQUE (app_id, alert_id)
 );
 
+-- Day 9: the rest of RunAgentResponse that a case shows the analyst
+-- (ALTER, so it also applies to a volume created before Day 9).
+ALTER TABLE cases
+    ADD COLUMN IF NOT EXISTS agent_id   TEXT  NOT NULL DEFAULT '',
+    -- [{tool_name, result_summary, agent_id}], from RunAgentResponse.tool_calls.
+    ADD COLUMN IF NOT EXISTS tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb,
+    ADD COLUMN IF NOT EXISTS confidence REAL  NOT NULL DEFAULT 0,
+    -- The alert as orchestrator received it (RunAgentResponse.alert,
+    -- ADR-0023): {source, severity, message, fired_at, payload}. NULL for a
+    -- decision published before it carried one.
+    ADD COLUMN IF NOT EXISTS alert      JSONB;
+
 CREATE INDEX IF NOT EXISTS cases_app_key_idx ON cases (app_id, alert_key);
 CREATE INDEX IF NOT EXISTS cases_app_status_idx ON cases (app_id, status);
 

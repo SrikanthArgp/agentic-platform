@@ -7,7 +7,6 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
     "aiokafka>=0.12",
-    "sqlmodel>=0.0.22",
     "asyncpg>=0.30",
     "ap-shared",
 ]
@@ -19,4 +18,9 @@ ap-shared = { path = "../../shared", editable = true }
 dev = [
     "pytest>=8.3",
     "httpx>=0.27",
+    "anyio>=4",
 ]
+
+[tool.pytest.ini_options]
+markers = ["integration: needs the Compose stack running (backend/local); run with `uv run pytest -m integration`"]
+addopts = "-m 'not integration'"

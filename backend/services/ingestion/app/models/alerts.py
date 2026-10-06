@@ -35,7 +35,7 @@ class AlertAccepted(BaseModel):
 
 
 class AlertStatus(BaseModel):
-    """Debug view of one alert (Day 4 only; review-console replaces it on Day 9)."""
+    """Debug view of one alert (Day 4 only; review-console replaced it on Day 9, removed on Day 10)."""
 
     alert_id: str
     app_id: str

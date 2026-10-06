@@ -11,7 +11,7 @@
 - `supervisor`: confidence, capped by fixed rules, below the app's
   threshold -> ESCALATE (`supervisor.py`, ADR-0020).
 - `guardrails`: any matching `escalate_when` rule -> ESCALATE, named in a
-  reason (`guardrails.py`, ADR-0010/0021).
+  reason (`guardrails.py`, ADR-0010).
 
 - `callable` (Day 8, ADR-0012): one branch per callable agent whose
   `invoke_on` contains the *final* decision, fanned out with `Send` so they
@@ -100,10 +100,12 @@ class RunState(TypedDict, total=False):
     output_tokens: int
     # `orchestrator: ...` reasons, appended by each node in order.
     platform_reasons: Annotated[list[str], operator.add]
-    # callable branches: (manifest index, reasons), in whatever order they finish.
-    callable_results: Annotated[list[tuple[int, list[str]]], operator.add]
-    # fold: the callables' reasons, in manifest order.
+    # callable branches: (manifest index, reasons, tool calls), in whatever
+    # order they finish.
+    callable_results: Annotated[list[tuple[int, list[str], list[agent_pb2.ToolCall]]], operator.add]
+    # fold: the callables' reasons and tool calls, in manifest order (ADR-0023).
     delegated_reasons: list[str]
+    delegated_tool_calls: list[agent_pb2.ToolCall]
 
 
 class CallableTask(TypedDict):
@@ -214,7 +216,7 @@ def route_callables(state: RunState) -> list[Send] | str:
 async def callable_node(task: CallableTask, runtime: Runtime[RunDeps]) -> RunState:
     deps, agent = runtime.context, task["agent"]
     try:
-        reasons, _, failures = await asyncio.wait_for(
+        reasons, calls, failures = await asyncio.wait_for(
             explain(deps, task["manifest"], agent, task["request"], task["memory_context"], task["entry"]),
             deps.callable_timeout_s,
         )
@@ -223,13 +225,17 @@ async def callable_node(task: CallableTask, runtime: Runtime[RunDeps]) -> RunSta
         why = _failure(e, deps)
         if why == "failed":
             logger.exception("callable %s failed", agent.agent_id)
-        out = [REASON_PREFIX + f"callable '{agent.agent_id}' didn't contribute ({why})."]
-    return {"callable_results": [(task["index"], out)]}
+        # Its trace goes with it: a callable that didn't contribute shows no calls.
+        out, calls = [REASON_PREFIX + f"callable '{agent.agent_id}' didn't contribute ({why})."], []
+    return {"callable_results": [(task["index"], out, calls)]}
 
 
 def fold_node(state: RunState) -> RunState:
     ordered = sorted(state.get("callable_results", []), key=lambda r: r[0])
-    return {"delegated_reasons": [reason for _, reasons in ordered for reason in reasons]}
+    return {
+        "delegated_reasons": [reason for _, reasons, _ in ordered for reason in reasons],
+        "delegated_tool_calls": [call for _, _, calls in ordered for call in calls],
+    }
 
 
 async def explain(

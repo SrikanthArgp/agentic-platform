@@ -78,7 +78,9 @@ class RunTools:
         return self.record(name, ToolResult(True, {"error": TOOL_NOT_ALLOWED, "tool_id": name}))
 
     def record(self, name: str, result: ToolResult) -> str:
-        self.trace.append(agent_pb2.ToolCall(tool_name=name, result_summary=summarize(result)))
+        self.trace.append(
+            agent_pb2.ToolCall(tool_name=name, result_summary=summarize(result), agent_id=self._context.agent_id)
+        )
         if result.error_code in INFRA_TOOL_ERRORS:
             self.infra_failures.append(REASON_PREFIX + f"tool '{name}' failed ({result.error_code}).")
         return prompt.tool_result_message(name, result.content, self._nonce)

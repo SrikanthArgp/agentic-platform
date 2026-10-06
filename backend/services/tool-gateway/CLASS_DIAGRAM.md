@@ -1,6 +1,6 @@
 # tool-gateway — class diagram
 
-As built through Day 8 of `docs/plan.md`. `tool-gateway` is the platform's
+As built through Day 9 of `docs/plan.md` (unchanged since Day 8). `tool-gateway` is the platform's
 MCP server. At startup it imports every app's tool modules from
 `backend/apps/*/tools/` into a `ToolRegistry`. It then serves MCP
 `tools/list` and `tools/call` over stateless Streamable HTTP at
@@ -321,7 +321,7 @@ Methods:
   `TypeError` if not. A tool cannot return an undeclared shape.
 
 **`ToolRegistry`**: the in-memory `tool_id → ToolSpec` table, built once at
-startup (hot reload was rejected in ADR-0013).
+startup (hot reload was rejected in ADR-0014).
 - `add()` rejects a duplicate `tool_id` across all apps with
   `DuplicateToolError`, because MCP tool names are global.
 - `get()` raises `ToolNotFoundError`.

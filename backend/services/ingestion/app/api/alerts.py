@@ -80,7 +80,7 @@ async def post_event(alert: AlertIn, request: Request, app_id: str = Path(max_le
 
 @router.get("/alerts/{alert_id}", response_model=AlertStatus)
 async def get_alert(alert_id: str, request: Request) -> AlertStatus:
-    """Debug only (Day 4): superseded by review-console on Day 9."""
+    """Debug only (Day 4): superseded by review-console (Day 9); removed on Day 10."""
     found = request.app.state.tracker.get(alert_id)
     if found is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"No alert '{alert_id}' known to this ingestion instance.")

@@ -1,6 +1,6 @@
 # ingestion — class diagram
 
-As built through Day 8 of `docs/plan.md` (unchanged since Day 6). `ingestion` is the platform's
+As built through Day 9 of `docs/plan.md` (unchanged since Day 6). `ingestion` is the platform's
 REST front door: it accepts an alert at `POST /apps/{app_id}/events`,
 validates it against that app's rules (read from `registry`), turns it into
 a `RunAgentRequest`, and publishes it to `alert.received`. It never runs an agent and never decides anything.
@@ -283,7 +283,9 @@ health checks use it.
   publishing because `alert.decided` can arrive before `publish()` returns.
 - **`get_alert`**, `GET /alerts/{alert_id}`: a debug view that reads
   `DecisionTracker`. It returns `404` for an alert this replica never saw.
-  It will be removed on Day 9.
+  It will be removed on Day 10, now that `review-console` (Day 9) is the
+  real read path. It doesn't show `ToolCall.agent_id` or the echoed
+  `alert` (ADR-0023).
 
 Day 4's `POST /alerts` is gone (it now returns `404`).
 
@@ -423,6 +425,6 @@ decision. It feeds each message into `DecisionTracker` and reconnects on
   under `backend/apps/{app_id}/` (the schema itself).
 - **Fail before publishing**: all validation happens before the Kafka
   write, so a bad alert never reaches the agent.
-- **Next changes**: **Day 9**: delete `DecisionTracker`, `DecisionConsumer`, `AlertStatus`
+- **Next changes**: **Day 10**: delete `DecisionTracker`, `DecisionConsumer`, `AlertStatus`
   and `GET /alerts/{id}`. **Day 15**: `KafkaPublisher` is replaced by an
   outbox write behind the same `Publisher` interface.

@@ -42,15 +42,17 @@ class RunAgentRequest(_message.Message):
     def __init__(self, app_id: _Optional[str] = ..., agent_id: _Optional[str] = ..., alert_id: _Optional[str] = ..., alert_key: _Optional[str] = ..., source: _Optional[str] = ..., severity: _Optional[str] = ..., message: _Optional[str] = ..., timestamp_unix_ms: _Optional[int] = ..., payload: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...) -> None: ...
 
 class ToolCall(_message.Message):
-    __slots__ = ("tool_name", "result_summary")
+    __slots__ = ("tool_name", "result_summary", "agent_id")
     TOOL_NAME_FIELD_NUMBER: _ClassVar[int]
     RESULT_SUMMARY_FIELD_NUMBER: _ClassVar[int]
+    AGENT_ID_FIELD_NUMBER: _ClassVar[int]
     tool_name: str
     result_summary: str
-    def __init__(self, tool_name: _Optional[str] = ..., result_summary: _Optional[str] = ...) -> None: ...
+    agent_id: str
+    def __init__(self, tool_name: _Optional[str] = ..., result_summary: _Optional[str] = ..., agent_id: _Optional[str] = ...) -> None: ...
 
 class RunAgentResponse(_message.Message):
-    __slots__ = ("app_id", "agent_id", "alert_id", "decision", "reasons", "tool_calls", "alert_key", "confidence")
+    __slots__ = ("app_id", "agent_id", "alert_id", "decision", "reasons", "tool_calls", "alert_key", "confidence", "alert")
     APP_ID_FIELD_NUMBER: _ClassVar[int]
     AGENT_ID_FIELD_NUMBER: _ClassVar[int]
     ALERT_ID_FIELD_NUMBER: _ClassVar[int]
@@ -59,6 +61,7 @@ class RunAgentResponse(_message.Message):
     TOOL_CALLS_FIELD_NUMBER: _ClassVar[int]
     ALERT_KEY_FIELD_NUMBER: _ClassVar[int]
     CONFIDENCE_FIELD_NUMBER: _ClassVar[int]
+    ALERT_FIELD_NUMBER: _ClassVar[int]
     app_id: str
     agent_id: str
     alert_id: str
@@ -67,4 +70,5 @@ class RunAgentResponse(_message.Message):
     tool_calls: _containers.RepeatedCompositeFieldContainer[ToolCall]
     alert_key: str
     confidence: float
-    def __init__(self, app_id: _Optional[str] = ..., agent_id: _Optional[str] = ..., alert_id: _Optional[str] = ..., decision: _Optional[_Union[Decision, str]] = ..., reasons: _Optional[_Iterable[str]] = ..., tool_calls: _Optional[_Iterable[_Union[ToolCall, _Mapping]]] = ..., alert_key: _Optional[str] = ..., confidence: _Optional[float] = ...) -> None: ...
+    alert: RunAgentRequest
+    def __init__(self, app_id: _Optional[str] = ..., agent_id: _Optional[str] = ..., alert_id: _Optional[str] = ..., decision: _Optional[_Union[Decision, str]] = ..., reasons: _Optional[_Iterable[str]] = ..., tool_calls: _Optional[_Iterable[_Union[ToolCall, _Mapping]]] = ..., alert_key: _Optional[str] = ..., confidence: _Optional[float] = ..., alert: _Optional[_Union[RunAgentRequest, _Mapping]] = ...) -> None: ...

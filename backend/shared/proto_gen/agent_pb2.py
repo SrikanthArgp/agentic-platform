@@ -25,21 +25,21 @@ _sym_db = _symbol_database.Default()
 from google.protobuf import struct_pb2 as google_dot_protobuf_dot_struct__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0b\x61gent.proto\x12\x05\x61gent\x1a\x1cgoogle/protobuf/struct.proto\"\xd0\x01\n\x0fRunAgentRequest\x12\x0e\n\x06\x61pp_id\x18\x01 \x01(\t\x12\x10\n\x08\x61gent_id\x18\x02 \x01(\t\x12\x10\n\x08\x61lert_id\x18\x03 \x01(\t\x12\x11\n\talert_key\x18\x04 \x01(\t\x12\x0e\n\x06source\x18\x05 \x01(\t\x12\x10\n\x08severity\x18\x06 \x01(\t\x12\x0f\n\x07message\x18\x07 \x01(\t\x12\x19\n\x11timestamp_unix_ms\x18\x08 \x01(\x03\x12(\n\x07payload\x18\t \x01(\x0b\x32\x17.google.protobuf.Struct\"5\n\x08ToolCall\x12\x11\n\ttool_name\x18\x01 \x01(\t\x12\x16\n\x0eresult_summary\x18\x02 \x01(\t\"\xc6\x01\n\x10RunAgentResponse\x12\x0e\n\x06\x61pp_id\x18\x01 \x01(\t\x12\x10\n\x08\x61gent_id\x18\x02 \x01(\t\x12\x10\n\x08\x61lert_id\x18\x03 \x01(\t\x12!\n\x08\x64\x65\x63ision\x18\x04 \x01(\x0e\x32\x0f.agent.Decision\x12\x0f\n\x07reasons\x18\x05 \x03(\t\x12#\n\ntool_calls\x18\x06 \x03(\x0b\x32\x0f.agent.ToolCall\x12\x11\n\talert_key\x18\x07 \x01(\t\x12\x12\n\nconfidence\x18\x08 \x01(\x02*R\n\x08\x44\x65\x63ision\x12\x18\n\x14\x44\x45\x43ISION_UNSPECIFIED\x10\x00\x12\x10\n\x0c\x41UTO_RESOLVE\x10\x01\x12\x0c\n\x08\x45SCALATE\x10\x02\x12\x0c\n\x08SUPPRESS\x10\x03\x32\x44\n\x05\x41gent\x12;\n\x08RunAgent\x12\x16.agent.RunAgentRequest\x1a\x17.agent.RunAgentResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0b\x61gent.proto\x12\x05\x61gent\x1a\x1cgoogle/protobuf/struct.proto\"\xd0\x01\n\x0fRunAgentRequest\x12\x0e\n\x06\x61pp_id\x18\x01 \x01(\t\x12\x10\n\x08\x61gent_id\x18\x02 \x01(\t\x12\x10\n\x08\x61lert_id\x18\x03 \x01(\t\x12\x11\n\talert_key\x18\x04 \x01(\t\x12\x0e\n\x06source\x18\x05 \x01(\t\x12\x10\n\x08severity\x18\x06 \x01(\t\x12\x0f\n\x07message\x18\x07 \x01(\t\x12\x19\n\x11timestamp_unix_ms\x18\x08 \x01(\x03\x12(\n\x07payload\x18\t \x01(\x0b\x32\x17.google.protobuf.Struct\"G\n\x08ToolCall\x12\x11\n\ttool_name\x18\x01 \x01(\t\x12\x16\n\x0eresult_summary\x18\x02 \x01(\t\x12\x10\n\x08\x61gent_id\x18\x03 \x01(\t\"\xed\x01\n\x10RunAgentResponse\x12\x0e\n\x06\x61pp_id\x18\x01 \x01(\t\x12\x10\n\x08\x61gent_id\x18\x02 \x01(\t\x12\x10\n\x08\x61lert_id\x18\x03 \x01(\t\x12!\n\x08\x64\x65\x63ision\x18\x04 \x01(\x0e\x32\x0f.agent.Decision\x12\x0f\n\x07reasons\x18\x05 \x03(\t\x12#\n\ntool_calls\x18\x06 \x03(\x0b\x32\x0f.agent.ToolCall\x12\x11\n\talert_key\x18\x07 \x01(\t\x12\x12\n\nconfidence\x18\x08 \x01(\x02\x12%\n\x05\x61lert\x18\t \x01(\x0b\x32\x16.agent.RunAgentRequest*R\n\x08\x44\x65\x63ision\x12\x18\n\x14\x44\x45\x43ISION_UNSPECIFIED\x10\x00\x12\x10\n\x0c\x41UTO_RESOLVE\x10\x01\x12\x0c\n\x08\x45SCALATE\x10\x02\x12\x0c\n\x08SUPPRESS\x10\x03\x32\x44\n\x05\x41gent\x12;\n\x08RunAgent\x12\x16.agent.RunAgentRequest\x1a\x17.agent.RunAgentResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'agent_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_DECISION']._serialized_start=519
-  _globals['_DECISION']._serialized_end=601
+  _globals['_DECISION']._serialized_start=576
+  _globals['_DECISION']._serialized_end=658
   _globals['_RUNAGENTREQUEST']._serialized_start=53
   _globals['_RUNAGENTREQUEST']._serialized_end=261
   _globals['_TOOLCALL']._serialized_start=263
-  _globals['_TOOLCALL']._serialized_end=316
-  _globals['_RUNAGENTRESPONSE']._serialized_start=319
-  _globals['_RUNAGENTRESPONSE']._serialized_end=517
-  _globals['_AGENT']._serialized_start=603
-  _globals['_AGENT']._serialized_end=671
+  _globals['_TOOLCALL']._serialized_end=334
+  _globals['_RUNAGENTRESPONSE']._serialized_start=337
+  _globals['_RUNAGENTRESPONSE']._serialized_end=574
+  _globals['_AGENT']._serialized_start=660
+  _globals['_AGENT']._serialized_end=728
 # @@protoc_insertion_point(module_scope)

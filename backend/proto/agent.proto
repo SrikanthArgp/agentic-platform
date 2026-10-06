@@ -47,12 +47,15 @@ enum Decision {
   SUPPRESS = 3;
 }
 
-// One tool call the agent made while reasoning about this alert, via
+// One tool call an agent made while reasoning about this alert, via
 // tool-gateway. Kept as a summary, not a full transcript — the full
 // transcript lives in the trace (see docs/ARCHITECTURE.md §7).
 message ToolCall {
   string tool_name = 1;
   string result_summary = 2;
+  // Which agent made the call: the entry agent, or a callable agent whose
+  // calls orchestrator appended after the entry agent's. See docs/adr/0023.
+  string agent_id = 3;
 }
 
 message RunAgentResponse {
@@ -68,6 +71,8 @@ message RunAgentResponse {
   // Explainability: every signal that drove the decision, not just the
   // decision itself — mirrors Sentinel's reasons[] contract.
   repeated string reasons = 5;
+  // The entry agent's tool calls, then each callable agent's, in manifest
+  // order (ToolCall.agent_id says whose). See docs/adr/0023.
   repeated ToolCall tool_calls = 6;
   // Echoed from RunAgentRequest.alert_key, so consumers of alert.decided
   // (memory-store's decision counts, review-console's cases) don't parse it
@@ -78,4 +83,9 @@ message RunAgentResponse {
   // Below the app's threshold the decision was forced to ESCALATE. 0 when
   // the run produced no answer of its own. See docs/adr/0020.
   float confidence = 8;
+  // The alert this decision is about, exactly as orchestrator received it
+  // (envelope + payload), so a consumer of alert.decided (review-console's
+  // cases) can show it without a second source. Untrusted data, like the
+  // payload always is (§13). See docs/adr/0023.
+  RunAgentRequest alert = 9;
 }

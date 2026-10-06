@@ -90,7 +90,7 @@ class EscalateRuleIn(_Strict):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     # "alert.<envelope field>", "payload.<path>" or "context.<GetContextResponse
-    # field path>" (ADR-0010, ADR-0021).
+    # field path>" (ADR-0010).
     field: str
     in_: list[Scalar] = Field(alias="in", min_length=1)
 

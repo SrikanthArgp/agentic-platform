@@ -1,4 +1,4 @@
-"""The agent's chat model (ADR-0022, provider choice ADR-0015).
+"""The agent's chat model (ADR-0022).
 
 The agent talks to a LangChain chat model, so the provider is a
 constructor swap here, never a change to the loop. Provider SDKs read

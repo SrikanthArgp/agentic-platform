@@ -1,7 +1,7 @@
 """The tool table `tool-gateway` serves from: `tool_id` -> `ToolSpec`.
 
 Built once at startup (docs/ARCHITECTURE.md §12; hot reload was rejected in
-ADR-0013). Being loaded here does not mean a caller may use a tool: which
+ADR-0014). Being loaded here does not mean a caller may use a tool: which
 agent may call which tool is decided per request by its `tool_allowlist`
 (§3), not by what was loaded.
 """
