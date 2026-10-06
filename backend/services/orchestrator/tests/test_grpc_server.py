@@ -6,6 +6,7 @@ import pytest
 from app.grpc.server import start_grpc_server
 from proto_gen import agent_pb2, agent_pb2_grpc
 from tests.conftest import FakeChatModel, final, make_request, make_runner
+from tests.test_kafka_alerts import DownGateway
 
 pytestmark = pytest.mark.anyio
 
@@ -30,3 +31,15 @@ async def test_unknown_app_is_not_found(stub):
     with pytest.raises(grpc.aio.AioRpcError) as e:
         await stub.RunAgent(request)
     assert e.value.code() == grpc.StatusCode.NOT_FOUND
+
+
+async def test_tool_gateway_down_answers_escalate(apps_dir, unused_port):
+    server = await start_grpc_server(make_runner(apps_dir, FakeChatModel(responses=[]), gateway=DownGateway()), unused_port)
+    try:
+        async with grpc.aio.insecure_channel(f"localhost:{unused_port}") as channel:
+            response = await agent_pb2_grpc.AgentStub(channel).RunAgent(make_request())
+    finally:
+        await server.stop(grace=None)
+
+    assert response.decision == agent_pb2.ESCALATE
+    assert "not evaluated: tool-gateway unreachable" in response.reasons[0]

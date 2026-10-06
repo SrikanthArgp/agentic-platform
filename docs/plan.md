@@ -1,6 +1,6 @@
 # Build Plan: 27-Day Sequence
 
-Status: Days 1–10 done; Day 11 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
+Status: Days 1–11 done; Day 12 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
 
 Service map this plan assumes (see `docs/ARCHITECTURE.md` for full rationale): `ingestion`, `orchestrator`, `memory-store`, `review-console`, `registry`, `tool-gateway`, plus Celery workers. The platform is multi-app: three configurable use cases (products) run on the same shared core, each registered as an **App Manifest** in `registry` (introduced Day 5) rather than hardcoded. App #1 / reference domain adapter: IT ops alert triage (`it-ops-triage`; `ingestion` accepts alerts; `orchestrator`'s agent decides auto-resolve / escalate / suppress-as-noise). App #2 is **cloud cost-anomaly triage** (`cost-anomaly-triage`): a spend-spike alert from a cloud billing/cost tool. App #3 is **security alert triage** (`security-alert-triage`): SIEM/EDR alerts. All three use the same `AUTO_RESOLVE` / `ESCALATE` / `SUPPRESS` decision enum from `agent.proto` — apps that need a different decision vocabulary would require a proto change and are out of scope. App #2 gets a first cut on Day 13 and is finished Day 17; a local Kubernetes cluster is stood up on Days 18–19 (ADR-0014), and app #3 is built Day 20 and shipped to it by rolling update. Agent-to-agent (A2A) communication between apps is explicitly out of scope — apps are isolated tenants sharing infrastructure (Kafka/gRPC/REST/MCP transports), not a mesh. A "tenant" is an app; there is no per-customer tenancy in this build.
 
@@ -297,7 +297,7 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 ## Week 3 — Integration + platform hardening
 
-### Day 11 — Week 2 integration pass (+ buffer)
+### Day 11 — Week 2 integration pass (+ buffer) ✅
 
 **Goal**: the full loop works end to end, and drift from Weeks 1–2 is caught. Any Week 2 overrun lands here.
 
@@ -307,6 +307,15 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 - **Unit tests**: full regression run across `ingestion`, `orchestrator`, `memory-store`, `review-console`, `registry`, `tool-gateway`.
 
 **Definition of done**: one alert can be traced through the entire feedback loop by hand, and `pytest` is green across every service touched so far.
+
+**As built** (notes for later days):
+- Run from a clean slate (`down -v`, `up --build --wait`, `register_app.py it-ops-triage`, `seed.py`). Unit tests: `ap-shared` 18, `ingestion` 36, `memory-store` 61, `orchestrator` 206, `registry` 72, `review-console` 38, `tool-gateway` 69. Integration (`-m integration`, live stack + LLM): `ingestion` 3, `memory-store` 5, `orchestrator` 6, `registry` 2, `review-console` 1; `orchestrator`'s two `test_memory_store_live` cases need `seed.py` first, as their docstring says.
+- The hand trace, one critical `disk_full` on `web-01` (seeded, 93% and rising, `fired_at` 35 min after `CHG-20931`): `ingestion` 202 → `orchestrator` (memory context cited in `reasons[]`, guardrail `alert.severity` named, `root-cause-summarizer` pinned `CHG-20931` with its own tool calls tagged by `agent_id`) → case on `review-console` ~7s after the POST → `CONFIRMED_INCIDENT` verdict (a second one `409`) → `memory-store` recorded it ~5ms later: `window_7d.confirmed_incident_count` 0→1, `has_confirmed_incident_history` false→true, Redis facts updated in place. The next, milder alert on the key escalated citing that history. Deleting the Redis keys rebuilt a byte-identical `GetContext` from Postgres.
+- Outages, each on the live stack: `memory-store` down → the agent's AUTO_RESOLVE was capped at 0.5 and escalated, both named in `reasons[]`; on restart its group caught up on the missed decision. `review-console` down → caught up on restart. `registry` down past the TTL → readers with a cached copy served it; an uncached app got `503` (`ingestion`) and `registry_unavailable` (`tool-gateway`), so the run escalated with the failed tools named. Kafka down → `ingestion` and verdicts `503` after the 10s send timeout, nothing committed; every consumer reconnected on its own. The tool kill switch (`PATCH … enabled:false`) took effect within one 30s TTL each way.
+- Fixed: `tool-gateway` down made every run fail in `MCPToolGateway.connect()` (MCP initialize, before any `call_tool`), as an anyio exception group caught by the catch-all: "not evaluated: agent run failed" and an ERROR traceback. `connect()` now raises `GatewayUnavailableError` ("tool-gateway unreachable (ConnectError: …)"), handled on the Kafka and gRPC paths like `ManifestUnavailableError`; errors raised inside the session aren't remapped. Tests in `test_gateway_client.py`, `test_kafka_alerts.py`, `test_grpc_server.py`.
+- Found, not fixed — **a `503` verdict can still reach `memory-store`**. Same cause as Day 4's ingestion note: the idempotent producer never expires a queued message, so the verdict that got `503` (case stays `OPEN`) was delivered once Kafka returned; the analyst's retry was then a duplicate by case id. Harmless when the retry is the same verdict; a *different* verdict leaves `cases` and `memory_events` disagreeing for good. Day 15's outbox covers `ingestion` only; see the open decision there.
+- Docs drift fixed: §3 named two `registry` readers (there are four) and showed `similar-past-case-lookup` as current (Day 13); §5 didn't describe the "not evaluated" path; §12 said `tool-gateway` fails closed whenever `registry` is down (only with no cached copy). §6 matched the code. `ingestion`'s publisher docstring still said `POST /alerts`; both publishers now say what a timeout `503` means.
+- Seen, left for their days: services' trace ids don't connect across hops (no propagation until Day 23); `Struct` turns payload integers into doubles (`93` → `93.0`), as §5 says.
 
 ---
 
@@ -363,6 +372,8 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 - **Unit tests**: outbox write-then-relay round trip, two concurrent relay workers never publish the same row twice, the relay lock prevents overlapping runs, rows for one key are published in `id` order with the stored key.
 
 **Definition of done**: alerts posted to both registered apps flow through outbox → relay → Kafka → decision exactly as before, with ordering per key preserved; note the added end-to-end latency from the relay interval.
+
+**Open decision (found Day 11)**: `review-console`'s `verdict.recorded` publish has the same timeout ambiguity, and there it can make `cases` and `memory-store` disagree (Day 11 notes). Either give verdicts the same outbox (the verdict and its outbox row commit together; extends ADR-0008, so a new ADR), or accept it and say so. Decide before building this day.
 
 ---
 

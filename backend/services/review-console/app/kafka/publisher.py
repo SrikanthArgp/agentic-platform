@@ -3,8 +3,14 @@
 Day 9 publishes inline, inside the verdict's transaction: the verdict
 commits only once Kafka has the event, and `POST /cases/{id}/verdict`
 returns 503 if Kafka is unreachable, so a verdict is never recorded and
-then lost to `memory-store`. Day 15's outbox (docs/ARCHITECTURE.md §10)
-replaces this. Same producer as `ingestion`'s.
+then lost to `memory-store`. Same producer as `ingestion`'s.
+
+The reverse isn't guaranteed: a 503 from the send *timeout* leaves the
+event queued in the idempotent producer, which retries until Kafka is
+back, so `memory-store` can still record a verdict whose case stayed
+`OPEN` (seen on Day 11). A retry with the same verdict is deduplicated by
+case id; a different one would leave the two disagreeing. Not yet
+scheduled: Day 15's outbox covers `ingestion` only (docs/plan.md Day 11).
 """
 
 import asyncio

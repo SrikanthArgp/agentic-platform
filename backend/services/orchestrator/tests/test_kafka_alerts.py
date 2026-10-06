@@ -1,13 +1,23 @@
 """`alert.received` message handling (the pure part under the Kafka loop)."""
 
+from contextlib import asynccontextmanager
+
 import pytest
 
 from app.kafka.alerts import handle_alert, message_key
+from app.tools.gateway import GatewayUnavailableError
 from proto_gen import agent_pb2
 from registry_client import RegistryUnavailableError
-from tests.conftest import FakeChatModel, FakeMemory, final, make_request, make_runner
+from tests.conftest import FakeChatModel, FakeGateway, FakeMemory, final, make_request, make_runner
 
 pytestmark = pytest.mark.anyio
+
+
+class DownGateway(FakeGateway):
+    @asynccontextmanager
+    async def connect(self):
+        raise GatewayUnavailableError("tool-gateway unreachable (ConnectError: connection refused)")
+        yield
 
 
 class BrokenMemory(FakeMemory):
@@ -67,6 +77,14 @@ async def test_registry_down_publishes_escalate(apps_dir):
 
     assert response.decision == agent_pb2.ESCALATE
     assert "not evaluated: registry unavailable" in response.reasons[0]
+
+
+async def test_tool_gateway_down_publishes_escalate(apps_dir):
+    runner = make_runner(apps_dir, FakeChatModel(responses=[]), gateway=DownGateway())
+    _, response = await handle_alert(make_request().SerializeToString(), runner)
+
+    assert response.decision == agent_pb2.ESCALATE
+    assert "not evaluated: tool-gateway unreachable (ConnectError: connection refused)" in response.reasons[0]
 
 
 @pytest.mark.parametrize("raw", [b"\xff\xff\xff", agent_pb2.RunAgentRequest(app_id="a").SerializeToString()])

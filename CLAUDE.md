@@ -30,12 +30,13 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Days 1–10 of `docs/plan.md` are done (infra, contracts, skeletons;
+Days 1–11 of `docs/plan.md` are done (infra, contracts, skeletons;
 `tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core;
 `ingestion` and the end-to-end hot path; `registry` + App Manifest;
 `memory-store`; context, supervisor and guardrails in `orchestrator`;
-callable agents; `review-console`; the verdict feedback loop); Day 11
-(Week 2 integration pass) is next. As-built notes for each
+callable agents; `review-console`; the verdict feedback loop; the Week 2
+integration pass); Day 12 (`tool-gateway` resilience) is next. As-built
+notes for each
 day are in `docs/plan.md`.
 
 - All 6 services have a FastAPI skeleton (`app/main.py`, `/healthz`),
@@ -96,7 +97,10 @@ day are in `docs/plan.md`.
   ADR-0020), then the manifest's `escalate_when` guardrails (`alert.*`,
   `payload.*`, `context.*`; a match → `ESCALATE`, named in `reasons[]`,
   ADR-0010). Both only ever move toward `ESCALATE`; memory down →
-  the run continues without context and the supervisor escalates.
+  the run continues without context and the supervisor escalates. A run
+  that can't happen (unknown app, `registry` down with no cached copy,
+  `tool-gateway` or the LLM unreachable) publishes `ESCALATE` "not
+  evaluated" instead.
   `RunAgentResponse.confidence` carries the final value. Then every
   callable agent whose `invoke_on` has the final decision runs in parallel,
   in-process (ADR-0012), and its reasons are appended prefixed with its

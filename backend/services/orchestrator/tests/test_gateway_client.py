@@ -6,7 +6,7 @@ import mcp_types as types
 import pytest
 from mcp.server import Server
 
-from app.tools.gateway import GATEWAY_UNREACHABLE, MCPToolGateway
+from app.tools.gateway import GATEWAY_UNREACHABLE, GatewayUnavailableError, MCPToolGateway
 from run_context import RunContext, from_meta
 
 pytestmark = pytest.mark.anyio
@@ -84,3 +84,22 @@ async def test_transport_failure_becomes_gateway_unreachable():
     result = await MCPToolSession(BrokenClient()).call_tool("lookup_runbook", {}, context=CONTEXT)
     assert result.is_error
     assert result.error_code == GATEWAY_UNREACHABLE
+
+
+async def test_unreachable_gateway_fails_to_connect_with_a_typed_error(unused_port):
+    # Found on Day 11: with tool-gateway down, MCP initialize fails inside
+    # connect(), before any call_tool, as an anyio exception group.
+    with pytest.raises(GatewayUnavailableError, match=r"tool-gateway unreachable \(ConnectError"):
+        async with MCPToolGateway(f"http://127.0.0.1:{unused_port}/mcp").connect():
+            pass
+
+
+async def test_errors_inside_the_session_are_not_mistaken_for_an_outage():
+    # The MCP client's task group may wrap it in an exception group; either
+    # way it must not be reported as tool-gateway being down.
+    with pytest.raises((ValueError, BaseExceptionGroup)) as e:
+        async with MCPToolGateway(fake_tool_gateway([])).connect():
+            raise ValueError("caller bug")
+
+    assert not isinstance(e.value, GatewayUnavailableError)
+    assert isinstance(e.value, ValueError) or e.group_contains(ValueError, match="caller bug")

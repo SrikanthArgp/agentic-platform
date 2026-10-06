@@ -184,12 +184,16 @@ startup (§12); it never hardcodes a tool list. **Global** tools (e.g.
 `similar-past-case-lookup`) are platform code: they live in `tool-gateway`'s
 own package, not under any app, since they must stay app-agnostic.
 
-**Resolution flow**: `orchestrator` and `ingestion` each resolve `app_id →
-App Manifest` via a `registry` REST call, cached in-memory with the same
-short TTL (default 30s) so a
+**Resolution flow**: `ingestion`, `orchestrator`, `tool-gateway` and
+`memory-store` each resolve `app_id → App Manifest` via a `registry` REST
+call (`ap-shared`'s `registry_client`, §12 step 4), cached in-memory with
+the same short TTL (default 30s) so a
 manifest edit (e.g. disabling a tool) takes effect on the next fetch without
 a restart — this is what `plan.md` Day 5's "no code change or redeploy"
-definition of done depends on.
+definition of done depends on. With `registry` unreachable, each serves
+its last copy, even expired; with no copy, the app's events fail closed
+(`503` at `ingestion`, `registry_unavailable` at `tool-gateway`, "not
+evaluated" `ESCALATE` at `orchestrator`).
 
 **Routing is by URL, never inferred**: the alert source chooses the app by
 posting to `POST /apps/{app_id}/events`. No LLM or classifier decides which
@@ -238,7 +242,7 @@ calls remain excluded under A2A (§11); this is scoped to one app's own
 manifest.
 
 The two agents get different tools: `triage-agent` allowlists
-`lookup_runbook` and the global `similar-past-case-lookup`;
+`lookup_runbook` and (from Day 13) the global `similar-past-case-lookup`;
 `root-cause-summarizer` allowlists `lookup_runbook` and the app-owned
 `recent-changes-lookup` (deploys/config/infra changes for a service or host
 in a time window — the strongest single root-cause signal). Its output is a
@@ -283,7 +287,7 @@ anything with a known-bad indicator or high severity is `ESCALATE`d.
 
 | App | Agent (role, `invoke_on`) | `tool_allowlist` |
 |---|---|---|
-| `it-ops-triage` | `triage-agent` (entry) | `lookup_runbook`, `similar-past-case-lookup` |
+| `it-ops-triage` | `triage-agent` (entry) | `lookup_runbook`, `similar-past-case-lookup` (Day 13) |
 | | `root-cause-summarizer` (callable, `["ESCALATE"]`) | `lookup_runbook`, `recent-changes-lookup` |
 | `cost-anomaly-triage` | `cost-triage-agent` (entry) | `billing-lookup`, `similar-past-case-lookup` |
 | `security-alert-triage` | `security-triage-agent` (entry) | `ioc-reputation-lookup`, `similar-past-case-lookup` |
@@ -430,6 +434,15 @@ every alert:
    decision *to* `ESCALATE`, never away from it.
 4. Callables whose `invoke_on` matches the now-final decision run (below).
 5. `alert.decided` is published.
+
+A run that can't happen at all — the app is unknown or can't be resolved
+(`registry` unreachable with no cached copy), `tool-gateway` can't be
+connected to, the LLM is unreachable, or any unexpected error — skips
+steps 1–4 and publishes
+`ESCALATE` with an `orchestrator: not evaluated: <why>` reason and
+confidence 0, so every alert that decodes still gets exactly one
+`alert.decided` and reaches a human. gRPC `RunAgent` answers the same,
+except an unknown app or agent, which is `NOT_FOUND`.
 
 **Prompt inputs are data, never instructions**: the alert `payload`, every
 tool result, and `resolution_notes` are passed to the LLM inside clearly
@@ -772,7 +785,7 @@ Two deployment targets built from the **same images** (ADR-0014):
 
 | App piece | Lives in | Consumed by | How a change takes effect |
 |---|---|---|---|
-| App Manifest | Postgres `apps` row (§8), written via `registry` REST | `orchestrator`, `ingestion`, `tool-gateway` (via `registry`) | Next manifest fetch (≤30s TTL, §3) — no redeploy |
+| App Manifest | Postgres `apps` row (§8), written via `registry` REST | `orchestrator`, `ingestion`, `tool-gateway`, `memory-store` (via `registry`) | Next manifest fetch (≤30s TTL, §3) — no redeploy |
 | Tool enabled/disabled | Postgres `tools` row (§8), `PATCH /tools/{tool_id}/versions/{version}` | same | Next manifest fetch (≤30s TTL) — no redeploy |
 | Event schema | `backend/apps/{app_id}/` | `ingestion` | Image rebuild + restart (rolling on Kubernetes) |
 | Prompt template(s) | `backend/apps/{app_id}/` | `orchestrator` | Image rebuild + restart (rolling on Kubernetes) |
@@ -843,7 +856,8 @@ it's data. The flow:
    `registry` serves the manifest *resolved*: each agent carries `tools`,
    its `tool_allowlist` minus tools that are undeclared or disabled, so
    `orchestrator` (what to offer the LLM) and `tool-gateway` (what to allow
-   per call, failing closed if `registry` is unreachable) read one answer.
+   per call, failing closed if `registry` is unreachable and it has no
+   earlier copy) read one answer.
    `tool-gateway` reads only that list, for the allowlist re-check.
    `memory-store` reads only `memory_namespace`, to name its Redis keys
    (ADR-0018). `review-console` never reads manifests. If `registry`

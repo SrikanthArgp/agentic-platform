@@ -8,12 +8,14 @@ tool arguments (docs/ARCHITECTURE.md §13 T4).
 Failures come back as `ToolResult(is_error=True)` with an `error` code:
 `tool-gateway`'s own codes (`tool_not_found`, `invalid_arguments`,
 `tool_failed`), or `gateway_unreachable` when the call itself failed.
+If the connection can't even be opened, `connect()` raises
+`GatewayUnavailableError` and the run is "not evaluated" (ESCALATE).
 """
 
 import json
 import logging
 from collections.abc import AsyncIterator, Sequence
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -24,6 +26,10 @@ from run_context import RunContext
 logger = logging.getLogger(__name__)
 
 GATEWAY_UNREACHABLE = "gateway_unreachable"
+
+
+class GatewayUnavailableError(RuntimeError):
+    """The MCP connection to `tool-gateway` couldn't be opened."""
 
 
 @dataclass(frozen=True)
@@ -62,7 +68,13 @@ class MCPToolGateway:
 
     @asynccontextmanager
     async def connect(self) -> AsyncIterator["MCPToolSession"]:
-        async with Client(self._server) as client:
+        async with AsyncExitStack() as stack:
+            # Only opening the session (MCP initialize) is mapped; errors
+            # raised by the caller inside the block propagate unchanged.
+            try:
+                client = await stack.enter_async_context(Client(self._server))
+            except Exception as e:
+                raise GatewayUnavailableError(f"tool-gateway unreachable ({_root_cause(e)})") from e
             yield MCPToolSession(client)
 
 
@@ -101,6 +113,14 @@ class MCPToolSession:
         if result.is_error and "error" not in content:
             content = {"error": "tool_failed", **content}
         return ToolResult(is_error=bool(result.is_error), content=content)
+
+
+def _root_cause(e: BaseException) -> str:
+    """The first leaf of an exception group (the MCP client wraps transport
+    errors in anyio task groups), as `Type: message`."""
+    while isinstance(e, BaseExceptionGroup) and e.exceptions:
+        e = e.exceptions[0]
+    return f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
 
 
 def _json_object(text: str) -> dict[str, Any] | None:

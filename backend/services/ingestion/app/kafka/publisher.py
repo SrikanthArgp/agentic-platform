@@ -1,9 +1,12 @@
 """Publishes `alert.received` (idempotent producer, acks=all; ADR-0002).
 
-Day 4 publishes inline: `POST /alerts` returns 202 only once Kafka has the
+Day 4 publishes inline: `POST /apps/{app_id}/events` returns 202 only once Kafka has the
 message, and 503 if Kafka is unreachable, so an alert is never accepted and
-then lost. Day 15 replaces this with the Postgres outbox + Celery relay
-(docs/ARCHITECTURE.md §10), which accepts alerts during a Kafka outage too.
+then lost. A 503 from the send *timeout* may still be delivered once Kafka
+is back (the idempotent producer never expires a queued message), so a
+client retry can triage the alert twice (docs/plan.md Day 4). Day 15
+replaces this with the Postgres outbox + Celery relay (docs/ARCHITECTURE.md
+§10), which accepts alerts during a Kafka outage too.
 """
 
 import asyncio

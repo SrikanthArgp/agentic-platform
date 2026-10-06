@@ -310,6 +310,9 @@ classDiagram
         class ContextUnavailableError {
             <<exception: RuntimeError>>
         }
+        class GatewayUnavailableError {
+            <<exception: RuntimeError>>
+        }
     }
 
     namespace manifest_port {
@@ -455,6 +458,7 @@ classDiagram
     MCPToolGateway ..|> ToolGateway
     MCPToolSession ..|> ToolSession
     ToolSession ..> ToolResult
+    MCPToolGateway ..> GatewayUnavailableError
     MemoryStoreClient ..|> ContextSource
     MemoryStoreClient ..> ContextUnavailableError
     MemoryStoreClient ..> GetContextResponse
@@ -548,7 +552,7 @@ OpenAI client needs `OPENAI_API_KEY` and tests import `main` without one.
 
 These are unchanged by LangGraph: both call `AgentRunner.run()`.
 - `handle_alert()` turns any failed run (`ResolutionError`, `LLMError`,
-  `ManifestUnavailableError`, anything else) into
+  `ManifestUnavailableError`, `GatewayUnavailableError`, anything else) into
   `not_evaluated_response()`, so every decodable alert gets exactly one
   `alert.decided`.
 - `AlertPipeline` commits only after publishing.
@@ -626,9 +630,11 @@ nodes.
 
 ### Ports — `app/tools/gateway.py`, `app/memory/client.py`
 
-- **`ToolGateway` / `ToolSession`**: `connect()` opens an `mcp.Client`.
+- **`ToolGateway` / `ToolSession`**: `connect()` opens an `mcp.Client`;
+  if that fails (tool-gateway down: MCP initialize fails before any call)
+  it raises `GatewayUnavailableError`, and the run is "not evaluated".
   `MCPToolSession.call_tool` sends the arguments, with `RunContext` as
-  `_meta`. A transport failure becomes `gateway_unreachable`.
+  `_meta`. A transport failure on a call becomes `gateway_unreachable`.
 - **`MemoryStoreClient`**: one `grpc.aio` channel per process, with a
   deadline on each call. Any RPC error becomes `ContextUnavailableError`.
 
