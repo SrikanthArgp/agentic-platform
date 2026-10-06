@@ -1,7 +1,7 @@
 """memory-store: behavioural context per alert_key (ARCHITECTURE §6, ADR-0016/0017/0018).
 
-gRPC `GetContext` on GRPC_PORT (50051), fed by an `alert.decided`
-consumer. HTTP serves only `/healthz`.
+gRPC `GetContext` on GRPC_PORT (50051), fed by one consumer of
+`alert.decided` and `verdict.recorded`. HTTP serves only `/healthz`.
 """
 
 from collections.abc import AsyncIterator
@@ -15,7 +15,7 @@ from app.core.config import Settings
 from app.core.service import MemoryService
 from app.db.postgres import PostgresEventStore, create_pool
 from app.grpc.server import start_grpc_server
-from app.kafka.decisions import DecisionConsumer
+from app.kafka.consumer import EventConsumer
 from app.redis.cache import MemoryCache
 from observability import setup_observability
 from registry_client import RegistryClient
@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     registry = RegistryClient(settings.registry_url, ttl_s=settings.manifest_ttl_s)
     service = MemoryService(PostgresEventStore(pool), MemoryCache(redis), registry)
     grpc_server = await start_grpc_server(service, settings.grpc_port)
-    consumer = DecisionConsumer(service, settings.kafka_bootstrap_servers) if settings.kafka_enabled else None
+    consumer = EventConsumer(service, settings.kafka_bootstrap_servers) if settings.kafka_enabled else None
     if consumer:
         consumer.start()
     try:

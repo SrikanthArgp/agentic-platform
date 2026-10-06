@@ -7,7 +7,6 @@ fields) plus `payload`, the app-specific event validated against the app's
 `422`.
 """
 
-from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
@@ -33,18 +32,3 @@ class AlertAccepted(BaseModel):
     alert_key: str
     status: Literal["accepted"] = "accepted"
 
-
-class AlertStatus(BaseModel):
-    """Debug view of one alert (Day 4 only; review-console replaced it on Day 9, removed on Day 10)."""
-
-    alert_id: str
-    app_id: str
-    alert_key: str
-    status: Literal["pending", "decided"]
-    accepted_at: datetime
-    decided_at: datetime | None = None
-    latency_ms: int | None = None
-    decision: str | None = None
-    agent_id: str | None = None
-    reasons: list[str] = []
-    tool_calls: list[dict[str, str]] = []

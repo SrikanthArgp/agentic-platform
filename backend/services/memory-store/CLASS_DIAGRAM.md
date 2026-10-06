@@ -1,11 +1,12 @@
 # memory-store — class diagram
 
-As built through Day 9 of `docs/plan.md` (unchanged since Day 6). `memory-store` answers one
+As built through Day 10 of `docs/plan.md`. `memory-store` answers one
 question for `orchestrator`: *what has this platform seen and decided for
-this `alert_key` lately?* It serves gRPC `GetContext` (1h/24h/7d decision
-counts, `is_novel_alert`, `has_confirmed_incident_history`), built from an
-event log it fills by consuming `alert.decided` (ADR-0016, ADR-0017). Day 10
-adds analyst verdicts as a second kind of event.
+this `alert_key` lately, and what did analysts say about it?* It serves
+gRPC `GetContext` (1h/24h/7d decision and verdict counts, `is_novel_alert`,
+`has_confirmed_incident_history`), built from an event log it fills by
+consuming `alert.decided` (ADR-0016, ADR-0017) and, since Day 10,
+`verdict.recorded`.
 
 Python modules that are plain functions (no class) are drawn as
 `<<module>>` boxes. Third-party and cross-service types are in the
@@ -19,7 +20,7 @@ classDiagram
     class Transports {
         <<layer>>
         MemoryStoreServicer - gRPC GetContext
-        DecisionConsumer - Kafka alert.decided
+        EventConsumer - Kafka alert.decided + verdict.recorded
     }
     class Core {
         <<layer>>
@@ -81,21 +82,25 @@ classDiagram
             <<module: app.grpc.server>>
             +start_grpc_server(service, port) grpc.aio.Server
         }
-        class DecisionConsumer {
+        class EventConsumer {
+            <<app.kafka.consumer>>
             -_service: MemoryService
-            -_topic = "alert.decided"
+            -_handlers: topic → handler (HANDLERS)
             -_group_id = "memory-store"
             -_task: Task?
             +start() None
             +stop() None
             -_run_forever() None
             -_consume() None
-            -_handle_with_retry(raw, timestamp_ms) None
+            -_handle_with_retry(handler, raw, timestamp_ms) None
         }
         class kafka_decisions {
             <<module: app.kafka.decisions>>
             +handle_decided(raw, timestamp_ms, service) bool
-            +RETRY_DELAYS_S
+        }
+        class kafka_verdicts {
+            <<module: app.kafka.verdicts>>
+            +handle_verdict(raw, timestamp_ms, service) bool
         }
     }
 
@@ -131,6 +136,7 @@ classDiagram
             +WINDOWS_MS: 1h, 24h, 7d
             +RETENTION_MS = 7d
             +decision_event(response, at_ms) Event
+            +verdict_event(case_id, verdict, at_ms) Event
             +aggregate(events, now_ms, window_ms) ContextAggregate
             +build_context(app_id, alert_key, events, facts, now_ms) GetContextResponse
         }
@@ -177,17 +183,20 @@ classDiagram
     main ..> Settings : from_env
     main ..> MemoryService : builds in lifespan
     main ..> grpc_server : start
-    main *-- DecisionConsumer : if KAFKA_ENABLED
+    main *-- EventConsumer : if KAFKA_ENABLED
     main ..> HealthResponse
 
     grpc_server *-- MemoryStoreServicer
     MemoryStoreServicer --> MemoryService : get_context
     MemoryStoreServicer ..> GetContextRequest
-    DecisionConsumer ..> kafka_decisions : handle_decided
-    DecisionConsumer *-- AIOKafkaConsumer
+    EventConsumer ..> kafka_decisions : alert.decided
+    EventConsumer ..> kafka_verdicts : verdict.recorded
+    EventConsumer *-- AIOKafkaConsumer
     kafka_decisions ..> RunAgentResponse : decodes
     kafka_decisions ..> MemoryService : record
     kafka_decisions ..> events : decision_event
+    kafka_verdicts ..> MemoryService : record
+    kafka_verdicts ..> events : verdict_event
 
     MemoryService --> EventStore
     MemoryService --> MemoryCache
@@ -213,7 +222,7 @@ classDiagram
 `RegistryClient` (`REGISTRY_URL`, `MANIFEST_TTL_S`), then the
 `MemoryService`. It starts the gRPC server on `GRPC_PORT` (50051; Compose
 publishes it as 50053) and, unless `KAFKA_ENABLED=false`, the
-`DecisionConsumer`. On shutdown it stops all of them in reverse. HTTP serves
+`EventConsumer`. On shutdown it stops all of them in reverse. HTTP serves
 only `/healthz`.
 
 **`Settings`**: frozen dataclass from the environment, with defaults that
@@ -222,11 +231,12 @@ point at the Compose stack from the host.
 ### Core — `app/core/events.py`
 
 **`Event`**: one thing that happened to an `alert_key`.
-- `kind`: `decision:<Decision>` (e.g. `decision:SUPPRESS`), or from Day 10
+- `kind`: `decision:<Decision>` (e.g. `decision:SUPPRESS`), or
   `verdict:CONFIRMED_INCIDENT` / `verdict:CONFIRMED_NOISE`.
-- `ref_id`: what it's about (the `alert_id` for a decision). `family` is
+- `ref_id`: what it's about (the `alert_id` for a decision, the `case_id`
+  for a verdict, so each case counts one verdict). `family` is
   the part of `kind` before `:`; (`app_id`, family, `ref_id`) is unique.
-- `at_ms`: when it happened (a decision's Kafka message timestamp).
+- `at_ms`: when it happened (the Kafka message timestamp, for both kinds).
 
 **`Facts`**: the two all-time facts that outlive the 7-day window: `seen`
 (any decision ever) and `confirmed_incident` (any confirmed-incident
@@ -287,7 +297,7 @@ Every write only adds, so a rebuild racing a new event ends with the union
 rather than losing the event. Both keys get an 8-day TTL on every touch;
 idle keys expire and are rebuilt on demand.
 
-### Transports — `app/grpc/server.py`, `app/kafka/decisions.py`
+### Transports — `app/grpc/server.py`, `app/kafka/`
 
 **`MemoryStoreServicer.GetContext`**: missing `app_id`/`alert_key` →
 `INVALID_ARGUMENT`; unknown app → `NOT_FOUND`; `registry` down with
@@ -299,11 +309,18 @@ an error.
 Undecodable messages, or ones missing `app_id`/`alert_id`/`alert_key`
 (every message from before ADR-0016), are logged and skipped.
 
-**`DecisionConsumer`**: consumer group `memory-store` on `alert.decided`,
-from the earliest offset, one message at a time, offset committed after
-the event is stored. A failed `handle_decided` (registry or Postgres down)
-is retried with backoff (0.5 s → 10 s) and never skipped. It reconnects to
-Kafka every 2 s while Kafka is down.
+**`handle_verdict(raw, timestamp_ms, service)`**: parses
+`review-console`'s JSON (`{app_id, case_id, alert_key, verdict,
+verdict_by, recorded_at}`) and records `verdict_event(str(case_id),
+verdict, timestamp)`. Not JSON, a missing `app_id`/`alert_key`/`case_id`,
+or a verdict other than `CONFIRMED_INCIDENT`/`CONFIRMED_NOISE`: logged and
+skipped. `verdict_by` and `recorded_at` aren't stored.
+
+**`EventConsumer`**: consumer group `memory-store` on both topics
+(`HANDLERS` maps each to its handler), from the earliest offset, one
+message at a time, offset committed after the event is stored. A failed
+handler (registry or Postgres down) is retried with backoff (0.5 s → 10 s)
+and never skipped. It reconnects to Kafka every 2 s while Kafka is down.
 
 ## Flows
 
@@ -328,19 +345,19 @@ sequenceDiagram
     S-->>O: build_context(...) → GetContextResponse
 ```
 
-**Recording a decision**
+**Recording a decision or a verdict**
 
 ```mermaid
 sequenceDiagram
-    participant K as Kafka alert.decided
-    participant C as DecisionConsumer
+    participant K as Kafka alert.decided / verdict.recorded
+    participant C as EventConsumer
     participant S as MemoryService
     participant P as Postgres
     participant R as Redis
-    K->>C: RunAgentResponse (alert_key, decision), timestamp
+    K->>C: RunAgentResponse (decision) or verdict JSON, timestamp
     C->>S: record(app_id, alert_key, Event)
     S->>P: INSERT ... ON CONFLICT DO NOTHING
-    S->>R: ZADD, trim, HSET seen, EXPIRE
+    S->>R: ZADD, trim, HSET seen / confirmed_incident, EXPIRE
     C->>K: commit offset
 ```
 
@@ -359,6 +376,5 @@ sequenceDiagram
   `memory_context` block, the supervisor's input, and what `context.*`
   guardrails read. A failed call doesn't stop the run: the supervisor
   caps confidence at 0.5 instead.
-- **Next changes**: Day 10 consumes
-  `verdict.recorded` as `verdict:*` events; a retention job for old
-  `memory_events` rows is not in this build (ADR-0017).
+- **Next changes**: none planned for the service itself; a retention job
+  for old `memory_events` rows is not in this build (ADR-0017).

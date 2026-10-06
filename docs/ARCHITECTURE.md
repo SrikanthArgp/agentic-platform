@@ -481,11 +481,16 @@ Kafka topic, since `orchestrator` needs this inline before it can reason.
   windowed: one real incident long ago still argues against `SUPPRESS`).
 
 The verdict counts are what make the feedback loop concrete: repeated
-confirmed-noise verdicts push an `alert_key` toward `SUPPRESS`; any
-confirmed incident pushes it toward `ESCALATE`.
+confirmed-noise verdicts push an `alert_key` toward its runbook's benign
+action (`SUPPRESS` or `AUTO_RESOLVE`) when no escalate condition holds;
+any confirmed incident pushes it toward `ESCALATE`. Verdicts reach the
+agent only through these counts, so how much they move a decision is up to
+each app's prompt (`it-ops-triage`: 2+ noise verdicts in 7d, Day 10) and is
+measured by the eval (Day 25); nothing deterministic ever lowers a decision
+because of them.
 
 Stored as an event log (ADR-0017): every decision (from `alert.decided`,
-ADR-0016) and, from Day 10, every verdict is one row in Postgres
+ADR-0016) and every verdict (from `verdict.recorded`) is one row in Postgres
 `memory_events`, the source of truth. Redis caches each
 `{memory_namespace}:{alert_key}` as a sorted set of its last 7 days of
 events plus a hash of all-time facts; window counts are computed by one
@@ -555,7 +560,7 @@ in Tempo/Mimir/Loki.
 | Table | Key columns | Notes |
 |---|---|---|
 | `cases` | `id`, `app_id`, `alert_id`, `alert_key`, `agent_id`, `decision`, `confidence` (real), `reasons` (jsonb), `tool_calls` (jsonb, each with its `agent_id`), `alert` (jsonb: `source`, `severity`, `message`, `fired_at`, `payload`; null before ADR-0023), `status` (`OPEN`\|`RESOLVED`), `verdict`, `verdict_by`, `resolution_notes` (text, nullable), `created_at`, `resolved_at` | Only `ESCALATE` decisions land here (§4 step 4). `app_id` filter on every read. Unique on `(app_id, alert_id)` so a duplicate `alert.decided` (§10) never creates a second case. `resolution_notes` is the analyst's account of the actual fix — the platform's only record of *how* an incident was resolved (§6). |
-| `memory_events` | `id`, `app_id`, `alert_key`, `kind` (`decision:<Decision>`, from Day 10 `verdict:<verdict>`), `ref_id` (`alert_id` / `case_id`), `occurred_at`, `recorded_at` | `memory-store`'s source of truth (§6, ADR-0017): one row per event, unique per (`app_id`, kind family, `ref_id`) so a redelivered event counts once. Redis is rebuilt from it on a miss. Replaces the earlier per-window `memory_history` snapshot design, which couldn't rebuild a sliding window. |
+| `memory_events` | `id`, `app_id`, `alert_key`, `kind` (`decision:<Decision>` or `verdict:<verdict>`), `ref_id` (`alert_id` / `case_id`), `occurred_at`, `recorded_at` | `memory-store`'s source of truth (§6, ADR-0017): one row per event, unique per (`app_id`, kind family, `ref_id`) so a redelivered event counts once. Redis is rebuilt from it on a miss. Replaces the earlier per-window `memory_history` snapshot design, which couldn't rebuild a sliding window. |
 | `apps` | `app_id` (PK), `display_name`, `manifest` (jsonb), `created_at`, `updated_at` | `registry`'s App Manifest store (§3) — one row per app, manifest kept as a single jsonb document rather than normalized, since it's read whole and written rarely. |
 | `tools` | (`tool_id`, `version`) (PK), `description`, `scope`, `app_id` (null for global), `input_schema`/`output_schema` (jsonb), `read_only` (`CHECK` true), `enabled`, `created_at`, `updated_at` | `registry`'s tool registrations (§3, §13 T8). A manifest may only declare registered tool versions. `enabled` is the runtime switch: a disabled tool stays registered but is offered to, and callable by, no agent. |
 | `outbox` | `id`, `app_id`, `alert_id`, `topic`, `kafka_key` (`{app_id}:{alert_key}`), `payload` (bytea, protobuf `RunAgentRequest`), `headers` (jsonb, incl. trace context), `status` (`PENDING`\|`SENT`\|`DEAD`), `attempts`, `last_error`, `created_at`, `sent_at` | `ingestion`'s Day 15 outbox (§10). Written by `ingestion`, drained by the Celery relay. `SENT` rows are pruned after a retention window; `DEAD` rows are kept for inspection. |

@@ -1,6 +1,6 @@
 # Build Plan: 27-Day Sequence
 
-Status: Days 1–9 done; Day 10 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
+Status: Days 1–10 done; Day 11 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
 
 Service map this plan assumes (see `docs/ARCHITECTURE.md` for full rationale): `ingestion`, `orchestrator`, `memory-store`, `review-console`, `registry`, `tool-gateway`, plus Celery workers. The platform is multi-app: three configurable use cases (products) run on the same shared core, each registered as an **App Manifest** in `registry` (introduced Day 5) rather than hardcoded. App #1 / reference domain adapter: IT ops alert triage (`it-ops-triage`; `ingestion` accepts alerts; `orchestrator`'s agent decides auto-resolve / escalate / suppress-as-noise). App #2 is **cloud cost-anomaly triage** (`cost-anomaly-triage`): a spend-spike alert from a cloud billing/cost tool. App #3 is **security alert triage** (`security-alert-triage`): SIEM/EDR alerts. All three use the same `AUTO_RESOLVE` / `ESCALATE` / `SUPPRESS` decision enum from `agent.proto` — apps that need a different decision vocabulary would require a proto change and are out of scope. App #2 gets a first cut on Day 13 and is finished Day 17; a local Kubernetes cluster is stood up on Days 18–19 (ADR-0014), and app #3 is built Day 20 and shipped to it by rolling update. Agent-to-agent (A2A) communication between apps is explicitly out of scope — apps are isolated tenants sharing infrastructure (Kafka/gRPC/REST/MCP transports), not a mesh. A "tenant" is an app; there is no per-customer tenancy in this build.
 
@@ -273,7 +273,7 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 ---
 
-### Day 10 — Close the feedback loop
+### Day 10 — Close the feedback loop ✅
 
 **Goal**: analyst verdicts measurably change future agent behavior.
 
@@ -282,6 +282,16 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 - **Unit tests**: verdict-driven adjustment logic against a mocked/in-memory Redis (noise verdict → `confirmed_noise_count` up in all windows; incident verdict → `confirmed_incident_count` up and the all-time flag set; a verdict for app A never touches app B's key).
 
 **Definition of done**: re-querying `GetContext` for an alert type after a verdict shows a measurable change in the returned aggregates.
+
+
+**As built** (notes for later days):
+- `memory-store`: `app/kafka/verdicts.py` `handle_verdict()` turns `review-console`'s JSON into `verdict_event(str(case_id), verdict, t)` (`app/core/events.py`): kind `verdict:CONFIRMED_INCIDENT` / `verdict:CONFIRMED_NOISE`, `ref_id` = case id, time = the Kafka message timestamp (same clock as decisions; `review-console` publishes inside the verdict's transaction). `verdict_by`/`recorded_at` aren't stored. No new counters or schema: the window counts and `has_confirmed_incident_history` already followed from the events (ADR-0017), and the Redis cache sets the `confirmed_incident` fact on add.
+- One consumer for both topics: `app/kafka/consumer.py` `EventConsumer` (group `memory-store`, `HANDLERS` topic → handler) replaces `DecisionConsumer`; `decisions.py` keeps just `handle_decided`. Same rules: one message at a time, commit after storing, unusable messages skipped (not JSON, missing `app_id`/`alert_key`/`case_id`, unknown verdict), anything else retried. Different topics aren't ordered relative to each other, which doesn't matter: a verdict and a decision are separate events counted by time.
+- `it-ops-triage`'s `triage-agent.md` gets a verdict step: `has_confirmed_incident_history` → never SUPPRESS; 2+ `confirmed_noise_count` in 7d with no confirmed incident may stand in for what the alert data can't show (e.g. whether usage recovered), so the runbook's own `suggested_action` is taken when it is AUTO_RESOLVE or SUPPRESS, never when an escalate condition is met; recent `confirmed_incident_count` → lean ESCALATE. Step 2's "can't tell → ESCALATE" now defers to that step; without it noise verdicts could never change a decision, since alerts don't carry recovery data.
+- `ingestion`: the Day 4 debug `GET /alerts/{id}` is gone with `DecisionTracker`, its group-less consumer and `AlertStatus` (`app/kafka/decisions.py` deleted); `ingestion` no longer reads Kafka. The hot-path integration test now waits for the RB-003 escalation's case on `review-console`.
+- Tests: `memory-store/tests/test_verdicts_consumer.py` (noise → `confirmed_noise_count` in every window, alert counts unchanged; incident → count + flag, flag outlives 7d; cached key updated without a rebuild; app A's verdict never reaches app B's same `alert_key`; redelivery once; a case id equal to an alert id doesn't collide; 9 kinds of unusable message; registry down → retry; the consumer reads both topics) and a Kafka integration test (published verdicts move `GetContext`).
+- Definition of done, verified on the Compose stack: a `disk_full` alert through `ingestion` became case 34; before the verdict `window_7d` had `confirmed_incident_count: 0` and `has_confirmed_incident_history: false`; after a `CONFIRMED_INCIDENT` verdict via `review-console`, 1 and `true`.
+- Behaviour, measured on the live LLM with a throwaway A/B (three fresh keys seeded with the same 3 ESCALATE decisions, `disk_full` at 93%, gRPC `RunAgent` ×5 each, no state change): no verdicts → ESCALATE 5/5; 1 incident verdict → ESCALATE 5/5 at higher confidence (reasons cite `has_confirmed_incident_history`); 2 noise verdicts → AUTO_RESOLVE 1/5 (2/4 SUPPRESS before the prompt said to keep the runbook's own action). The incident direction is reliable; the noise direction is real but weak, and five samples can't tune it — that's Day 25's eval. Separately, sequential live alerts showed the agent sometimes AUTO_RESOLVEs a repeat key with no verdicts at all, leaning on its own decision history despite the platform prompt forbidding it (§13 T3); add that as an eval case.
 
 ---
 
@@ -492,7 +502,7 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 **Goal**: a prompt or logic regression is caught automatically, not by eyeballing a demo.
 
-- A small labeled fixture set per app (synthetic alerts with expected decisions — reuse Day 21's simulator scenarios as the starting point) checked into `backend/apps/{app_id}/`, including an **adversarial set** per app (§13 T1–T3: injection in payload, injection in `resolution_notes`, memory poisoning).
+- A small labeled fixture set per app (synthetic alerts with expected decisions — reuse Day 21's simulator scenarios as the starting point) checked into `backend/apps/{app_id}/`, including an **adversarial set** per app (§13 T1–T3: injection in payload, injection in `resolution_notes`, memory poisoning). Include **verdict-history cases** too (found on Day 10): the same alert under seeded memory with no verdicts, with 2+ `confirmed_noise_count`, and with `has_confirmed_incident_history`, so the eval measures how much verdicts move decisions; and a self-reinforcement case (T3): a key with only the platform's own earlier decisions and no verdicts must not be auto-resolved or suppressed on that history alone.
 - Eval script: run `orchestrator` against the fixtures, report per-app accuracy plus precision/recall per decision (`AUTO_RESOLVE` / `ESCALATE` / `SUPPRESS`) — missed escalations are the costliest error, so report `ESCALATE` recall explicitly — and flag regressions. Adversarial cases are a hard gate, not an average: any injected or poisoned case that ends `SUPPRESS`/`AUTO_RESOLVE` when it should escalate fails the run.
 - Wire as a Celery task (batch re-eval trigger), mirroring Sentinel's batch re-scoring shape — scheduled nightly by the `celery-beat` added Day 15, and runnable on demand.
 - **Unit tests**: the eval scoring logic itself (given known predictions vs. labels, correct metrics computed), the adversarial hard gate fails on a single miss.

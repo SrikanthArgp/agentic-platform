@@ -1,6 +1,7 @@
 # ingestion — class diagram
 
-As built through Day 9 of `docs/plan.md` (unchanged since Day 6). `ingestion` is the platform's
+As built through Day 10 of `docs/plan.md` (Day 10 removed the Day 4 debug
+view). `ingestion` is the platform's
 REST front door: it accepts an alert at `POST /apps/{app_id}/events`,
 validates it against that app's rules (read from `registry`), turns it into
 a `RunAgentRequest`, and publishes it to `alert.received`. It never runs an agent and never decides anything.
@@ -32,7 +33,6 @@ classDiagram
         class alerts_router {
             <<module: app.api.alerts>>
             +post_event(alert: AlertIn, request, app_id) AlertAccepted
-            +get_alert(alert_id, request) AlertStatus
         }
     }
 
@@ -101,20 +101,6 @@ classDiagram
             +alert_key: str
             +status = "accepted"
         }
-        class AlertStatus {
-            <<pydantic>>
-            +alert_id: str
-            +app_id: str
-            +alert_key: str
-            +status: str
-            +accepted_at: datetime
-            +decided_at: datetime?
-            +latency_ms: int?
-            +decision: str?
-            +agent_id: str?
-            +reasons: list~str~
-            +tool_calls: list~dict~
-        }
     }
 
     namespace kafka {
@@ -134,37 +120,13 @@ classDiagram
         class PublishError {
             <<exception: RuntimeError>>
         }
-        class DecisionTracker {
-            -_alerts: OrderedDict~str, AlertStatus~
-            -_max: int
-            +accepted(alert_id, app_id, alert_key, at) None
-            +decided(response, at) None
-            +forget(alert_id) None
-            +get(alert_id) AlertStatus?
-            +handle_message(raw: bytes) None
-            -_put(status) None
-        }
-        class DecisionConsumer {
-            -_tracker: DecisionTracker
-            -_bootstrap_servers: str
-            -_task: Task?
-            +start() None
-            +stop() None
-            -_run_forever() None
-        }
     }
 
     namespace external {
         class RunAgentRequest {
             <<proto: agent.proto>>
         }
-        class RunAgentResponse {
-            <<proto: agent.proto>>
-        }
         class AIOKafkaProducer {
-            <<aiokafka>>
-        }
-        class AIOKafkaConsumer {
             <<aiokafka>>
         }
         class Draft202012Validator {
@@ -191,9 +153,7 @@ classDiagram
     main ..> Settings : reads from_env
     main *-- AppStore : app.state.apps
     main *-- RegistryClient : unless apps injected, closed in lifespan
-    main *-- DecisionTracker : app.state.tracker
     main *-- KafkaPublisher : app.state.publisher, unless injected
-    main *-- DecisionConsumer : started in lifespan
     main ..> observability : setup at import
     main ..> alerts_router : include_router
     main ..> HealthResponse
@@ -201,11 +161,9 @@ classDiagram
     %% request path
     alerts_router ..> AlertIn : request body
     alerts_router ..> AlertAccepted : 202 response
-    alerts_router ..> AlertStatus : GET response
     alerts_router ..> AppStore : get(app_id)
     alerts_router ..> envelope : alert_key, request, Kafka key
     alerts_router ..> Publisher : publish alert.received
-    alerts_router ..> DecisionTracker : accepted / forget / get
     alerts_router ..> UnknownAppError : 404
     alerts_router ..> AppUnavailableError : 503
     alerts_router ..> AppConfigError : 500
@@ -230,10 +188,6 @@ classDiagram
     KafkaPublisher ..|> Publisher : implements
     KafkaPublisher *-- AIOKafkaProducer : idempotent, acks=all
     KafkaPublisher ..> PublishError : raises
-    DecisionConsumer --> DecisionTracker : handle_message
-    DecisionConsumer *-- AIOKafkaConsumer : alert.decided, no group
-    DecisionTracker o-- AlertStatus : bounded LRU, 10k
-    DecisionTracker ..> RunAgentResponse : decodes
 ```
 
 ## Classes and modules
@@ -249,12 +203,11 @@ without globals:
 | `settings` | `Settings` | |
 | `apps` | `AppStore` | over the `RegistryClient` (or a fake a test passes as `apps`) |
 | `publisher` | `Publisher` | a `KafkaPublisher`, or the fake a test passes in |
-| `tracker` | `DecisionTracker` | Day 4 debug only |
 
-`lifespan()` starts `KafkaPublisher` and `DecisionConsumer` as background
-tasks on startup and stops them on shutdown, then closes the
+`lifespan()` starts `KafkaPublisher` (connecting in the background) on
+startup and stops it on shutdown, then closes the
 `RegistryClient` if `create_app()` made one. When a test injects a
-`publisher`, or `KAFKA_ENABLED=false`, neither Kafka object is created, so
+`publisher`, or `KAFKA_ENABLED=false`, no producer is created, so
 the app runs with no broker. `setup_observability()` is called at import
 time so logging is JSON from the first line.
 
@@ -277,17 +230,12 @@ health checks use it.
      every error.
   5. `alert_key`, built by `build_alert_key`. A missing field is a `422`.
 
-  It then mints `alert_id`, builds the protobuf, records it in the tracker
-  and publishes. A `PublishError` becomes a `503` with `Retry-After: 5`,
-  and the tracker entry is removed. The tracker is updated *before*
-  publishing because `alert.decided` can arrive before `publish()` returns.
-- **`get_alert`**, `GET /alerts/{alert_id}`: a debug view that reads
-  `DecisionTracker`. It returns `404` for an alert this replica never saw.
-  It will be removed on Day 10, now that `review-console` (Day 9) is the
-  real read path. It doesn't show `ToolCall.agent_id` or the echoed
-  `alert` (ADR-0023).
+  It then mints `alert_id`, builds the protobuf and publishes. A
+  `PublishError` becomes a `503` with `Retry-After: 5`.
 
-Day 4's `POST /alerts` is gone (it now returns `404`).
+Day 4's `POST /alerts` and its debug `GET /alerts/{id}` are gone (both
+`404`). `ingestion` reads nothing back: a decision is seen on
+`review-console` (escalations, as cases) or on the `alert.decided` topic.
 
 ### Core — `app/core/`
 
@@ -358,11 +306,8 @@ the app-specific `payload`. `extra="forbid"` means a caller can't sneak in
 two are set by `ingestion`.
 
 **`AlertAccepted`**: the `202` body. It echoes the ids `ingestion`
-generated, so the caller can poll for the decision.
-
-**`AlertStatus`**: the debug view of one alert, either `pending` or
-`decided`. When decided, it carries the decision, `reasons`,
-`tool_calls` and the end-to-end `latency_ms`.
+generated, so the caller can find the decision later (by `alert_id` /
+`alert_key` on `review-console`'s `GET /cases`, if it escalated).
 
 ### Kafka — `app/kafka/`
 
@@ -379,24 +324,6 @@ This is the seam Day 15 uses to swap in the Postgres outbox.
 
 An alert therefore gets a `202` only once Kafka has stored it.
 
-**`DecisionTracker`** (`decisions.py`, Day 4 debug only): an in-memory
-`OrderedDict` of `alert_id → AlertStatus`, used as an LRU capped at 10,000
-entries.
-- `accepted()` records the alert as pending.
-- `decided()` merges the `RunAgentResponse` and computes latency. For an
-  alert this replica never accepted (e.g. after a restart) it takes
-  `alert_key` from the response itself (ADR-0016).
-- `handle_message()` decodes raw Kafka bytes and skips anything that isn't
-  valid protobuf.
-
-It is per replica and lost on restart, deliberately; the module docstring
-explains why.
-
-**`DecisionConsumer`**: a background task that reads `alert.decided` from
-the beginning, with no consumer group, so every replica sees every
-decision. It feeds each message into `DecisionTracker` and reconnects on
-`KafkaError`.
-
 ## Request flow (`POST /apps/{app_id}/events`)
 
 1. FastAPI parses the body into **`AlertIn`**.
@@ -406,14 +333,11 @@ decision. It feeds each message into `DecisionTracker` and reconnects on
    **`AppEventSpec`**.
 3. **`AppEventSpec.payload_errors`** validates the payload, and
    **`envelope.build_alert_key`** builds `alert_key`.
-4. **`envelope.build_request`** builds the **`RunAgentRequest`**, and
-   **`DecisionTracker.accepted`** records it.
+4. **`envelope.build_request`** builds the **`RunAgentRequest`**.
 5. **`Publisher.publish`** sends it to `alert.received`, keyed by
    **`envelope.message_key`**. The caller gets **`AlertAccepted`** (`202`).
-6. Later, `orchestrator` publishes to `alert.decided`.
-   **`DecisionConsumer`** reads it and calls
-   **`DecisionTracker.handle_message`**, so `GET /alerts/{id}` now returns
-   the decision.
+6. Later, `orchestrator` publishes to `alert.decided`; `ingestion` isn't
+   involved.
 
 ## Design notes
 
@@ -425,6 +349,5 @@ decision. It feeds each message into `DecisionTracker` and reconnects on
   under `backend/apps/{app_id}/` (the schema itself).
 - **Fail before publishing**: all validation happens before the Kafka
   write, so a bad alert never reaches the agent.
-- **Next changes**: **Day 10**: delete `DecisionTracker`, `DecisionConsumer`, `AlertStatus`
-  and `GET /alerts/{id}`. **Day 15**: `KafkaPublisher` is replaced by an
+- **Next changes**: **Day 15**: `KafkaPublisher` is replaced by an
   outbox write behind the same `Publisher` interface.

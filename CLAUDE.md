@@ -30,12 +30,12 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Days 1–9 of `docs/plan.md` are done (infra, contracts, skeletons;
+Days 1–10 of `docs/plan.md` are done (infra, contracts, skeletons;
 `tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core;
 `ingestion` and the end-to-end hot path; `registry` + App Manifest;
 `memory-store`; context, supervisor and guardrails in `orchestrator`;
-callable agents; `review-console`); Day 10 (closing the feedback loop) is
-next. As-built notes for each
+callable agents; `review-console`; the verdict feedback loop); Day 11
+(Week 2 integration pass) is next. As-built notes for each
 day are in `docs/plan.md`.
 
 - All 6 services have a FastAPI skeleton (`app/main.py`, `/healthz`),
@@ -51,10 +51,11 @@ day are in `docs/plan.md`.
   agent's tool calls: `RunAgentResponse.alert` echoes the request and
   `ToolCall.agent_id` says whose call it was (ADR-0023). The verdict publishes `verdict.recorded`
   (JSON, no notes) inside the row-lock transaction; Kafka down → `503`,
-  case stays `OPEN`. `memory-store` doesn't consume it until Day 10.
+  case stays `OPEN`.
 - `memory-store` serves gRPC `GetContext` (`:50051`, host `:50053`): 1h/24h/7d
-  decision counts plus `is_novel_alert`/`has_confirmed_incident_history` per
-  `app_id` + `alert_key`. It consumes `alert.decided` (own group) into
+  decision and verdict counts plus `is_novel_alert`/
+  `has_confirmed_incident_history` per `app_id` + `alert_key`. One consumer
+  (group `memory-store`) reads `alert.decided` and `verdict.recorded` into
   Postgres `memory_events` (an event log, ADR-0017) and caches the last 7
   days per key in Redis (`mem:{memory_namespace}:{alert_key}:*`); a miss
   rebuilds from Postgres. `uv run backend/scripts/seed.py` seeds synthetic
@@ -71,8 +72,8 @@ day are in `docs/plan.md`.
 - `ingestion`: `POST /apps/{app_id}/events` (envelope + `payload`)
   validates the payload against that app's `event_schema_ref`, builds
   `alert_key` from its `alert_key_fields`, publishes `alert.received`,
-  returns `202`; unknown app `404`. `GET /alerts/{id}` is a throwaway debug
-  view of the decision (removed on Day 10).
+  returns `202`; unknown app `404`. It reads nothing back; decisions are
+  seen on `review-console` (escalations) or the `alert.decided` topic.
 - `tool-gateway` serves MCP (stateless Streamable HTTP) at `POST /mcp`. At
   startup it loads app tools from `backend/apps/*/tools/` (`app/core/loader.py`;
   the `TOOLS` dict contract, incl. required `read_only: True`, is in its

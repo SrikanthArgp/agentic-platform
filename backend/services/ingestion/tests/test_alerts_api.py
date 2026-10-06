@@ -1,4 +1,4 @@
-"""`POST /apps/{app_id}/events` and the debug `GET /alerts/{id}`, with fake Kafka and registry."""
+"""`POST /apps/{app_id}/events`, with fake Kafka and registry."""
 
 import json
 from datetime import UTC, datetime
@@ -88,48 +88,18 @@ def test_oversized_payload_is_rejected(client, publisher):
     assert publisher.sent == []
 
 
-def test_kafka_down_is_503_with_retry_after_and_not_tracked(client, publisher):
+def test_kafka_down_is_503_with_retry_after(client, publisher):
     publisher.fail = True
     response = client.post(EVENTS_URL, json=alert_body())
 
     assert response.status_code == 503
     assert response.headers["retry-after"] == "5"
-    assert client.app.state.tracker._alerts == {}
 
 
 def test_explicit_timestamp_is_used(client, publisher):
     client.post(EVENTS_URL, json=alert_body(timestamp="2026-10-03T07:00:00+02:00"))
     message = agent_pb2.RunAgentRequest.FromString(publisher.sent[0][2])
     assert message.timestamp_unix_ms == int(datetime(2026, 10, 3, 5, 0, tzinfo=UTC).timestamp() * 1000)
-
-
-def test_debug_get_shows_pending_then_decided_with_latency(client):
-    alert_id = client.post(EVENTS_URL, json=alert_body()).json()["alert_id"]
-
-    pending = client.get(f"/alerts/{alert_id}").json()
-    assert pending["status"] == "pending"
-    assert pending["alert_key"] == "disk_full:web-01"
-
-    decided = agent_pb2.RunAgentResponse(
-        app_id=APP_ID,
-        agent_id="triage-agent",
-        alert_id=alert_id,
-        decision=agent_pb2.ESCALATE,
-        reasons=["RB-001: above 95%"],
-        tool_calls=[agent_pb2.ToolCall(tool_name="lookup_runbook", result_summary="{...}")],
-    )
-    client.app.state.tracker.handle_message(decided.SerializeToString())
-
-    body = client.get(f"/alerts/{alert_id}").json()
-    assert body["status"] == "decided"
-    assert body["decision"] == "ESCALATE"
-    assert body["reasons"] == ["RB-001: above 95%"]
-    assert body["tool_calls"] == [{"tool_name": "lookup_runbook", "result_summary": "{...}"}]
-    assert body["latency_ms"] >= 0
-
-
-def test_debug_get_unknown_alert_is_404(client):
-    assert client.get("/alerts/nope").status_code == 404
 
 
 def test_real_it_ops_app_accepts_a_realistic_alert():

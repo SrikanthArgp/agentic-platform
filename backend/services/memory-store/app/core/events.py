@@ -1,8 +1,8 @@
 """Memory events and the rolling-window maths (docs/adr/0017).
 
-Memory is an event log: every decision (and, from Day 10, every analyst
-verdict) for an `alert_key` is one `Event`. `GetContext` counts are computed
-by `build_context()` from the last 7 days of events plus two all-time
+Memory is an event log: every decision and every analyst verdict for an
+`alert_key` is one `Event`. `GetContext` counts are computed by
+`build_context()` from the last 7 days of events plus two all-time
 facts, whether those came from Redis or from Postgres, so the cache and the
 rebuild can't disagree.
 
@@ -23,9 +23,10 @@ RETENTION_MS = WINDOWS_MS["7d"]
 
 DECISION = "decision"
 VERDICT = "verdict"
-# Day 10's verdict.recorded values (docs/ARCHITECTURE.md §9).
+# review-console's verdict.recorded values (docs/ARCHITECTURE.md §9).
 CONFIRMED_INCIDENT = f"{VERDICT}:CONFIRMED_INCIDENT"
 CONFIRMED_NOISE = f"{VERDICT}:CONFIRMED_NOISE"
+VERDICT_KINDS = (CONFIRMED_INCIDENT, CONFIRMED_NOISE)
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,14 @@ class Facts:
 
 def decision_event(response: agent_pb2.RunAgentResponse, at_ms: int) -> Event:
     return Event(kind=f"{DECISION}:{agent_pb2.Decision.Name(response.decision)}", ref_id=response.alert_id, at_ms=at_ms)
+
+
+def verdict_event(case_id: str, verdict: str, at_ms: int) -> Event:
+    """An analyst verdict from `verdict.recorded`; one per case, ever."""
+    kind = f"{VERDICT}:{verdict}"
+    if kind not in VERDICT_KINDS:
+        raise ValueError(f"unknown verdict {verdict!r}")
+    return Event(kind=kind, ref_id=case_id, at_ms=at_ms)
 
 
 def aggregate(events: Iterable[Event], now_ms: int, window_ms: int) -> memory_store_pb2.ContextAggregate:

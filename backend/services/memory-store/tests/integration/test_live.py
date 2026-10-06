@@ -5,6 +5,7 @@ real history. Run with `uv run pytest -m integration`.
 """
 
 import asyncio
+import json
 import os
 import time
 import uuid
@@ -103,3 +104,32 @@ async def test_published_decision_is_counted(alert_key):
             return
         await asyncio.sleep(0.3)
     pytest.fail("decision not counted within 15s")
+
+
+async def test_published_verdict_changes_the_context(alert_key):
+    """Day 10's definition of done at the Kafka level: a verdict.recorded
+    event moves GetContext's verdict counts (and the all-time flag)."""
+    before = await get_context(alert_key)  # loaded and cached first
+    assert before.window_7d.confirmed_incident_count == 0 and not before.has_confirmed_incident_history
+    producer = AIOKafkaProducer(bootstrap_servers=Settings.from_env().kafka_bootstrap_servers)
+    await producer.start()
+    try:
+        for case_id, verdict in [(f"{alert_key}-1", "CONFIRMED_NOISE"), (f"{alert_key}-2", "CONFIRMED_INCIDENT")]:
+            body = {"app_id": APP_ID, "case_id": case_id, "alert_key": alert_key, "verdict": verdict,
+                    "verdict_by": "it-test", "recorded_at": "2026-10-06T12:00:00+00:00"}
+            await producer.send_and_wait(
+                "verdict.recorded", json.dumps(body).encode(), key=f"{APP_ID}:{alert_key}".encode()
+            )
+    finally:
+        await producer.stop()
+
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        ctx = await get_context(alert_key)
+        if ctx.window_1h.confirmed_incident_count == 1:
+            assert (ctx.window_1h.confirmed_noise_count, ctx.window_7d.confirmed_noise_count) == (1, 1)
+            assert ctx.has_confirmed_incident_history is True
+            assert ctx.window_7d.alert_count == 0  # a verdict is not a decision
+            return
+        await asyncio.sleep(0.3)
+    pytest.fail("verdicts not counted within 15s")

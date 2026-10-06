@@ -170,10 +170,10 @@ the whole platform.
 
 ### `memory-store`
 The only service that reads/writes behavioral history. Serves `GetContext`
-over gRPC — rolling-window counts (1h/24h/7d) of decisions (and, from
-Day 10, analyst verdicts) per `alert_key`, plus `is_novel_alert` and
+over gRPC — rolling-window counts (1h/24h/7d) of decisions and analyst
+verdicts per `alert_key`, plus `is_novel_alert` and
 `has_confirmed_incident_history`. History is an event log (ADR-0017): it
-consumes `alert.decided` (ADR-0016) and, from Day 10, `verdict.recorded`,
+consumes `alert.decided` (ADR-0016) and `verdict.recorded` in one group,
 storing one Postgres `memory_events` row per event — the source of truth.
 Redis caches each key's last 7 days, prefixed by the app's
 `memory_namespace` (looked up from `registry`, ADR-0018) so two apps'

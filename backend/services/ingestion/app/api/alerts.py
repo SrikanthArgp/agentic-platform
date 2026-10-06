@@ -1,4 +1,4 @@
-"""`POST /apps/{app_id}/events` (intake) and the Day 4 debug `GET /alerts/{alert_id}`.
+"""`POST /apps/{app_id}/events`: alert intake.
 
 The URL chooses the app; nothing infers it (docs/ARCHITECTURE.md §3).
 Validation happens entirely before anything touches Kafka: envelope
@@ -15,9 +15,8 @@ from fastapi import APIRouter, HTTPException, Path, Request, status
 
 from app.core.apps import AppConfigError, AppStore, AppUnavailableError, UnknownAppError
 from app.core.envelope import AlertKeyError, build_alert_key, build_request, message_key
-from app.kafka.decisions import DecisionTracker
 from app.kafka.publisher import ALERT_RECEIVED, PublishError, Publisher
-from app.models.alerts import AlertAccepted, AlertIn, AlertStatus
+from app.models.alerts import AlertAccepted, AlertIn
 
 logger = logging.getLogger(__name__)
 
@@ -61,13 +60,9 @@ async def post_event(alert: AlertIn, request: Request, app_id: str = Path(max_le
     alert_id = str(uuid.uuid4())
     received_at = datetime.now(UTC)
     message = build_request(app_id=app_id, alert_id=alert_id, alert_key=alert_key, alert=alert, received_at=received_at)
-    # Tracked before publishing: the decision can arrive before publish() returns.
-    tracker: DecisionTracker = state.tracker
-    tracker.accepted(alert_id, app_id, alert_key, received_at)
     try:
         await publisher.publish(ALERT_RECEIVED, message_key(app_id, alert_key), message.SerializeToString())
     except PublishError as e:
-        tracker.forget(alert_id)
         logger.warning("alert not accepted: %s", e)
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "Alert intake is temporarily unavailable; retry.",
@@ -76,12 +71,3 @@ async def post_event(alert: AlertIn, request: Request, app_id: str = Path(max_le
 
     logger.info("accepted alert %s app_id=%s alert_key=%s", alert_id, app_id, alert_key)
     return AlertAccepted(alert_id=alert_id, app_id=app_id, alert_key=alert_key)
-
-
-@router.get("/alerts/{alert_id}", response_model=AlertStatus)
-async def get_alert(alert_id: str, request: Request) -> AlertStatus:
-    """Debug only (Day 4): superseded by review-console (Day 9); removed on Day 10."""
-    found = request.app.state.tracker.get(alert_id)
-    if found is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"No alert '{alert_id}' known to this ingestion instance.")
-    return found

@@ -41,8 +41,8 @@ CREATE INDEX IF NOT EXISTS cases_app_key_idx ON cases (app_id, alert_key);
 CREATE INDEX IF NOT EXISTS cases_app_status_idx ON cases (app_id, status);
 
 -- memory-store's source of truth (ADR-0017, §6, §8): one row per event.
--- kind: "decision:<Decision>" (from alert.decided, ADR-0016) or, from Day 10,
--- "verdict:<verdict>". ref_id: the alert_id (decision) or case_id (verdict).
+-- kind: "decision:<Decision>" (from alert.decided, ADR-0016) or
+-- "verdict:<verdict>" (from verdict.recorded). ref_id: the alert_id (decision) or case_id (verdict).
 -- Unique per (app_id, family, ref_id): a redelivered event is stored once.
 -- Redis caches the last 7 days per alert_key and is rebuilt from here.
 CREATE TABLE IF NOT EXISTS memory_events (
