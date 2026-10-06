@@ -162,11 +162,12 @@ in `tool-gateway` itself, available to any app that allowlists them — e.g.
 `similar-past-case-lookup`, which reads `review-console`'s `GET /cases`
 filtered by the caller's `app_id`) or `app`-scoped (owned by one app,
 loaded at startup from `backend/apps/{app_id}/tools/`; fixture-backed in
-this build). Validates every tool
-call's input against the schema registered in `registry` before executing,
-enforces a per-call timeout, and wraps execution in retry/backoff + a
-circuit breaker so a broken tool degrades predictably instead of hanging
-the whole platform.
+this build). Re-checks every call against the calling agent's resolved
+tools from `registry` and validates its arguments against the tool's input
+model before executing. From Day 12 it also validates input against the
+schema registered in `registry`, enforces a per-call timeout, and wraps
+execution in retry/backoff + a circuit breaker so a broken tool degrades
+predictably instead of hanging the whole platform.
 
 ### `memory-store`
 The only service that reads/writes behavioral history. Serves `GetContext`
@@ -232,9 +233,9 @@ gRPC entrypoint, so there's only one schema to maintain),
 `verdict.recorded`, and `alert.received.dlq` (alerts the relay gave up on,
 for human inspection). Every message is keyed `{app_id}:{alert_key}`, so
 one alert key's events stay ordered on one partition while different keys
-spread across replicas (`ARCHITECTURE.md` §8). Trace context rides in
-Kafka headers so a single event's journey is one connected trace, not five
-disjoint ones.
+spread across replicas (`ARCHITECTURE.md` §8). From Day 23, trace context
+rides in Kafka headers so a single event's journey is one connected trace,
+not five disjoint ones.
 
 ### Redis
 `memory-store`'s hot-path cache of each alert key's recent events
@@ -247,8 +248,9 @@ counters, and Celery's broker (task queue, in a separate Redis DB index).
 ### Postgres
 Single local instance, five concerns: `cases` (review-console, app-scoped),
 `memory_events` (memory-store's event log, app-scoped), `apps` and `tools`
-(registry's App Manifests and tool registrations), and `outbox` (ingestion's pending Kafka
-publishes, drained by the Celery relay).
+(registry's App Manifests and tool registrations), and, from Day 15,
+`outbox` (ingestion's pending Kafka publishes, drained by the Celery
+relay).
 
 ---
 

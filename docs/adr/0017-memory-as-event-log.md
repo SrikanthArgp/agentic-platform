@@ -18,9 +18,10 @@ at once instead of sliding.
 - **Postgres `memory_events`** is the source of truth: one row per event
   (`app_id`, `alert_key`, `kind`, `ref_id`, `occurred_at`). `kind` is a
   decision (`decision:ESCALATE`, `decision:SUPPRESS`,
-  `decision:AUTO_RESOLVE`, `decision:DECISION_UNSPECIFIED`) or, from Day 10,
-  a verdict. Unique on (`app_id`, `kind` family, `ref_id`), so a redelivered
-  event is stored once.
+  `decision:AUTO_RESOLVE`, `decision:DECISION_UNSPECIFIED`) or a verdict
+  (`verdict:CONFIRMED_INCIDENT`, `verdict:CONFIRMED_NOISE`, Day 10).
+  Unique on (`app_id`, `kind` family, `ref_id`), so a redelivered event is
+  stored once.
 - **Redis** holds a cache per `{memory_namespace}:{alert_key}`:
   - a sorted set of the last 7 days of events, scored by time, trimmed on
     every write and read;

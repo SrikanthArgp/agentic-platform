@@ -4,7 +4,9 @@
 # ///
 """Hand-publish an `alert.received` event and wait for its `alert.decided`.
 
-Stands in for `ingestion` until Day 4 (docs/plan.md Day 3 definition of done).
+Publishes straight to Kafka, bypassing `ingestion` (no schema check; the
+app must be registered for `orchestrator` to run it). Written for Day 3's
+definition of done; still handy to see one decision without `review-console`.
 
     uv run backend/scripts/publish_alert.py                       # disk_full on web-01
     uv run backend/scripts/publish_alert.py --alert-type healthcheck_flap --host lb-02

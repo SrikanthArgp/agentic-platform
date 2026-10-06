@@ -42,8 +42,8 @@ sequenceDiagram
 
     Client->>Ingestion: POST /apps/{app_id}/events (REST)
     Ingestion->>Ingestion: validate against event_schema_ref
-    Ingestion-->>Client: 202 Accepted
     Ingestion->>Orchestrator: alert.received (Kafka · RunAgentRequest)
+    Ingestion-->>Client: 202 Accepted (once Kafka has it; from Day 15, once the outbox row commits)
 
     Orchestrator->>Registry: resolve app_id → manifest (REST, 30s TTL cache)
     Registry-->>Orchestrator: App Manifest
@@ -93,8 +93,8 @@ sequenceDiagram
 
     Client->>Ingestion: POST /apps/{app_id}/events (REST)
     Ingestion->>Ingestion: validate against event_schema_ref
-    Ingestion-->>Client: 202 Accepted
     Ingestion->>Orchestrator: alert.received (Kafka · RunAgentRequest)
+    Ingestion-->>Client: 202 Accepted (once Kafka has it; from Day 15, once the outbox row commits)
 
     Orchestrator->>Registry: resolve app_id → manifest (REST, 30s TTL cache)
     Registry-->>Orchestrator: App Manifest
@@ -172,6 +172,7 @@ sequenceDiagram
     Registry-->>Orchestrator: updated App Manifest (tool no longer allowlisted)
 
     Orchestrator->>ToolGateway: tool-call loop (MCP) — disabled tool never invoked
+    Note over ToolGateway: re-checks each call against its own cached copy<br/>(same 30s TTL): a stale caller asking for the tool<br/>gets tool_not_allowed
     Note over Orchestrator,ToolGateway: change took effect with no orchestrator<br/>restart or redeploy
 ```
 

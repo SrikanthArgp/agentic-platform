@@ -1,6 +1,6 @@
 # memory-store — class diagram
 
-As built through Day 10 of `docs/plan.md`. `memory-store` answers one
+As built through Day 11 of `docs/plan.md` (unchanged since Day 10). `memory-store` answers one
 question for `orchestrator`: *what has this platform seen and decided for
 this `alert_key` lately, and what did analysts say about it?* It serves
 gRPC `GetContext` (1h/24h/7d decision and verdict counts, `is_novel_alert`,

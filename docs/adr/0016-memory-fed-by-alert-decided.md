@@ -42,7 +42,7 @@ of the Kafka message key, and `review-console` (Day 9) needs it on every
 - ✅ Decision counts follow from the existing event backbone; per-key
   ordering (ADR-0002) keeps them correct across replicas.
 - ✅ `alert_key` is on the decision itself, for `memory-store`,
-  `review-console`, and `ingestion`'s debug view.
+  and `review-console`.
 - ❌ Counts lag the decision by Kafka delivery time (milliseconds normally;
   longer if `memory-store` is down, then caught up from its offset).
 - ❌ A proto change: stubs are regenerated, and old messages have an empty

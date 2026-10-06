@@ -1,6 +1,6 @@
 # tool-gateway — class diagram
 
-As built through Day 9 of `docs/plan.md` (unchanged since Day 8). `tool-gateway` is the platform's
+As built through Day 11 of `docs/plan.md` (unchanged since Day 8). `tool-gateway` is the platform's
 MCP server. At startup it imports every app's tool modules from
 `backend/apps/*/tools/` into a `ToolRegistry`. It then serves MCP
 `tools/list` and `tools/call` over stateless Streamable HTTP at

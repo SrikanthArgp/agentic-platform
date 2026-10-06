@@ -1,6 +1,6 @@
 # registry — class diagram
 
-As built through Day 9 of `docs/plan.md` (unchanged since Day 7). `registry` stores two kinds of
+As built through Day 11 of `docs/plan.md` (unchanged since Day 7). `registry` stores two kinds of
 records: **tool registrations** (one per `tool_id` + `version`) and **App
 Manifests** (one per `app_id`). It validates a manifest when it is
 registered, and serves it back *resolved*: each agent carries the tools it

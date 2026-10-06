@@ -1,6 +1,6 @@
 # review-console — class diagram
 
-As built on Day 9 of `docs/plan.md`: an `alert.decided` consumer that
+As built through Day 11 of `docs/plan.md` (unchanged since Day 9): an `alert.decided` consumer that
 turns escalations into cases, the analyst REST API, and the
 `verdict.recorded` producer.
 
@@ -120,7 +120,8 @@ classDiagram
   `lock()` (`SELECT ... FOR UPDATE`): no case → `CaseNotFoundError` (404),
   `RESOLVED` → `CaseAlreadyResolvedError` (409), else `resolve()` and
   publish `verdict.recorded` before commit. A `PublishError` rolls back
-  (503; the case stays `OPEN`).
+  (503; the case stays `OPEN`). A 503 from the send *timeout* may still be
+  delivered once Kafka is back (Day 11; open decision in `plan.md` Day 15).
 - **`verdict_event()`** builds the `verdict.recorded` body: `{app_id,
   case_id, alert_key, verdict, verdict_by, recorded_at}`, keyed
   `{app_id}:{alert_key}`. `resolution_notes` stays on the case (ADR-0011).

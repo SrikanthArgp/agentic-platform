@@ -1,7 +1,7 @@
 # orchestrator — class diagram
 
-As built through Day 9 of `docs/plan.md` (Day 9: ADR-0023's `alert` echo and
-every agent's tool calls in the response). `orchestrator` runs the agents.
+As built through Day 11 of `docs/plan.md` (Day 9: ADR-0023's `alert` echo and
+every agent's tool calls in the response; Day 11: `GatewayUnavailableError`). `orchestrator` runs the agents.
 It takes a `RunAgentRequest` (from Kafka `alert.received`, or the gRPC
 `RunAgent` call) and resolves the app's manifest from `registry` and the
 prompts from its image. Each run is a **LangGraph** graph (ADR-0022):
