@@ -45,3 +45,4 @@ Rules:
 | [0020](0020-supervisor-confidence.md) | Supervisor confidence = the agent's own estimate, capped by fixed rules | Accepted |
 | [0022](0022-langgraph-agent-framework.md) | OpenAI (`gpt-5.4-mini`) via LangChain inside a LangGraph run graph | Accepted |
 | [0023](0023-decision-carries-alert-and-full-tool-trace.md) | `alert.decided` carries the alert and every agent's tool calls | Accepted |
+| [0024](0024-verdicts-through-the-outbox.md) | `review-console` writes verdicts to its own outbox, drained by the ADR-0008 relay | Accepted |
