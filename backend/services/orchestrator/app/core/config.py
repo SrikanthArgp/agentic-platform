@@ -37,6 +37,10 @@ class Settings:
     # Per MCP tool call; longer than tool-gateway's own TOOL_TIMEOUT_S (5s),
     # so it fires only if tool-gateway itself hangs (docs/adr/0025).
     tool_call_timeout_s: float = 10.0
+    # Token budgets (docs/adr/0029): Redis counters, and the daily limit per
+    # agent for manifests that set none.
+    redis_url: str = "redis://localhost:6379/0"
+    daily_token_budget: int = 1_000_000
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -57,4 +61,6 @@ class Settings:
             max_tool_rounds=int(env.get("MAX_TOOL_ROUNDS", cls.max_tool_rounds)),
             callable_timeout_s=float(env.get("CALLABLE_TIMEOUT_S", cls.callable_timeout_s)),
             tool_call_timeout_s=float(env.get("TOOL_CALL_TIMEOUT_S", cls.tool_call_timeout_s)),
+            redis_url=env.get("REDIS_URL", cls.redis_url),
+            daily_token_budget=int(env.get("DAILY_TOKEN_BUDGET", cls.daily_token_budget)),
         )

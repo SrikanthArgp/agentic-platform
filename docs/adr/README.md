@@ -50,3 +50,4 @@ Rules:
 | [0026](0026-tool-version-resolution.md) | Tool versions are pinned or `latest`; `tool-gateway` refuses a version it didn't load | Accepted |
 | [0027](0027-global-tools-scoped-by-run-context.md) | Global tools read their scope from the run context; `alert_key` joins it | Accepted |
 | [0028](0028-prefetched-tools.md) | Manifest-declared `prefetch_tools`, run by `orchestrator` before the agent's loop | Accepted |
+| [0029](0029-token-budgets-and-rate-limits.md) | Daily token budgets per agent; per-minute rate limits per app and source | Accepted |

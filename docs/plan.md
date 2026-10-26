@@ -368,7 +368,7 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 ---
 
-### Day 14 — Rate & cost governance
+### Day 14 — Rate & cost governance ✅
 
 **Goal**: the platform has a visible, enforced budget instead of unlimited LLM/tool spend.
 
@@ -377,6 +377,15 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 - **Unit tests**: budget counter increment/reset logic, over-budget entry run → `ESCALATE` with the budget reason, over-budget callable → "didn't contribute" reason, rate-limit counters per app and per source, `429` when either limit is hit.
 
 **Definition of done**: artificially lower a budget and observe `orchestrator` reject new agent runs with a clear, explicit reason — not a silent failure, a queue, or a hang; flood one app past its rate limit and confirm the other app's events are still accepted.
+
+**As built** (notes for later days):
+- Design in ADR-0029. Budgets are **tokens** (input + output) per `app_id`/`agent_id` per UTC day, a Redis hash `budget:{app_id}:{agent_id}:{YYYY-MM-DD}` with `input_tokens`/`output_tokens` apart for Day 24's pricing (no dollar figures: no verified price for `gpt-5.4-mini`). Limit from the agent's manifest `budget.daily_tokens`, else `DAILY_TOKEN_BUDGET` (1,000,000). `orchestrator/app/governance/budget.py`: checked before the run (entry: in `AgentRunner.run`, before memory/prefetch/model; callable: in `explain()`), recorded after each agent's loop. `BudgetExceededError` joins the "not evaluated" exceptions on the Kafka and gRPC paths.
+- Rate limits: `ingestion/app/core/ratelimit.py`, fixed one-minute windows, `ratelimit:{app_id}:{minute}` and `ratelimit:{app_id}:src:{source}:{minute}`, both incremented per event (refused and invalid events count). Limits from the manifest's `rate_limit`, else `RATE_LIMIT_PER_MINUTE` (600) / `RATE_LIMIT_PER_SOURCE_PER_MINUTE` (300); read on every fetch, so a manifest change lands within one TTL. Checked after the app resolves (unknown app stays `404`), before payload validation. No `REDIS_URL` → no rate limiting (unit tests; startup warns).
+- `registry` accepts and serves both fields (`budget` per agent, `rate_limit` per app), strict like the rest of the manifest.
+- Redis down: neither limit is enforced. `ingestion` accepts (warning logged); `orchestrator` runs with the reason "token budget not checked (…); the agent ran without that limit." and logs usage it couldn't record. Short socket timeouts (0.2s / 0.5s).
+- Live: with `it-ops-triage`'s `rate_limit.per_minute` lowered to 5 (PUT to `registry` only), 8 invalid events gave `422` ×5 then `429` ×3 (`Retry-After: 17`, body naming the limit); a `cost-anomaly-triage` event in the same minute got `202`. With `triage-agent`'s `daily_tokens` at 1: the next alert ran (it crossed the limit, 6,184 tokens), the one after was "not evaluated: budget exceeded: agent 'triage-agent' of app 'it-ops-triage' has used 6,184 of its 1 daily tokens (resets at 00:00 UTC)", with no tool or model call. Redis stopped: an event got `202`, and its decision carried the "not checked" reason. `register_app.py` restored the manifest.
+- Tests: `ingestion` 64 (+15, `test_ratelimit.py`), `orchestrator` 231 (+15, `test_budget.py`), `registry` 103 (+9); the rest unchanged. Integration all green.
+- Over-budget callable, live: with `root-cause-summarizer`'s `daily_tokens` at 1, an escalated alert kept its decision, and the reasons said "callable 'root-cause-summarizer' didn't contribute (budget exceeded: … has used 10,538 of its 1 daily tokens …)"; only `triage-agent`'s tool calls were in the trace.
 
 ---
 

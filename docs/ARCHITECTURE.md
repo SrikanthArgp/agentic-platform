@@ -132,6 +132,9 @@ App {
                                  # forbidden on the entry agent): which
                                  # final entry decisions trigger this
                                  # agent, e.g. ["ESCALATE"] (§5)
+    budget: {                   # optional (ADR-0029)
+      daily_tokens: integer     # input + output tokens per UTC day.
+    }                           # Omitted → orchestrator's DAILY_TOKEN_BUDGET
   }]
 
   tools: [{
@@ -167,6 +170,11 @@ App {
     min_confidence: number      # 0–1; below it the decision becomes
   }                             # ESCALATE. Omitted → orchestrator's
                                  # MIN_CONFIDENCE (default 0.6)
+
+  rate_limit: {                 # optional (ADR-0029): events per minute
+    per_minute: integer         # ingestion accepts for this app, and per
+    per_source_per_minute: integer  # alert source within it. Omitted →
+  }                             # ingestion's defaults (600 / 300)
 }
 ```
 
@@ -597,8 +605,8 @@ in Tempo/Mimir/Loki.
 |---|---|
 | `mem:{memory_namespace}:{alert_key}:events` | Sorted set of the key's last 7 days of events (member `{kind}|{ref_id}`, score = event time in ms), trimmed on write and read (§6, ADR-0017). |
 | `mem:{memory_namespace}:{alert_key}:facts` | Hash of all-time facts (`seen`, `confirmed_incident`) plus the `loaded` marker that says the sorted set is complete; TTL'd, rebuilt from Postgres when absent. |
-| `budget:{app_id}:{agent_id}:{date}` | Per-agent token/cost counters (Day 14, §10). |
-| `ratelimit:{app_id}` / `ratelimit:{app_id}:{source}` | `ingestion` rate-limit counters, per app and per alert source within an app (Day 14, §10). |
+| `budget:{app_id}:{agent_id}:{date}` | Hash of the agent's `input_tokens`/`output_tokens` that UTC day (Day 14, §10, ADR-0029); expires after 2 days. |
+| `ratelimit:{app_id}:{minute}` / `ratelimit:{app_id}:src:{source}:{minute}` | `ingestion` rate-limit counters, per app and per alert source within an app (Day 14, §10). |
 | `seen:{app_id}:{alert_id}` | `orchestrator`'s dedupe marker for at-least-once delivery (Day 16, §10), TTL'd (e.g. 24h). Shared across replicas, so any replica skips a duplicate. |
 | Celery broker + results (separate Redis DB index, e.g. `/1`) | Celery's task queue and `celery-beat` schedule (Day 15, §4). Kept in its own DB index so task traffic never mixes with — or gets flushed alongside — memory/budget keys. |
 
@@ -679,17 +687,25 @@ cross-service or cross-app link.
   names the tool in `reasons[]` rather than hang. `orchestrator`'s own
   per-call timeout (`TOOL_CALL_TIMEOUT_S`, 10s) covers `tool-gateway`
   itself hanging.
-- **Cost governance** (Day 14): per-`app_id`/`agent_id` token/cost budget in
-  Redis; over-budget runs are rejected with an explicit reason, never
-  silently dropped or queued. An over-budget **entry** agent means the
-  alert can't be evaluated, so it degrades like any other failure: `alert.decided`
-  is published as `ESCALATE` with a "not evaluated: budget exceeded" reason,
-  so a human still sees it. An over-budget **callable** just doesn't
-  contribute (§5).
-- **Rate limiting** (Day 14): `ingestion` limits per `app_id` and per alert
-  source within an app, returning `429` with `Retry-After` — so one app's
-  flood can't starve the others' share of the shared `orchestrator`, even
-  when each individual source is under its own limit.
+- **Cost governance** (Day 14, ADR-0029): a daily token budget per
+  `app_id`/`agent_id` (manifest `budget.daily_tokens`, else
+  `DAILY_TOKEN_BUDGET`), counted in Redis. It's checked before a run and
+  recorded after it, so the run that crosses the limit finishes and the
+  next is refused. Over-budget runs are rejected with an explicit reason,
+  never silently dropped or queued. An over-budget **entry** agent means
+  the alert can't be evaluated, so it degrades like any other failure:
+  `alert.decided` is published as `ESCALATE` with a "not evaluated: budget
+  exceeded" reason, so a human still sees it. An over-budget **callable**
+  just doesn't contribute (§5). Budgets are in tokens; Day 24 prices them.
+- **Rate limiting** (Day 14, ADR-0029): `ingestion` limits events per
+  minute per `app_id` and per alert source within an app (manifest
+  `rate_limit`, else defaults), in fixed one-minute windows, returning
+  `429` with `Retry-After` — so one app's flood can't starve the others'
+  share of the shared `orchestrator`, even when each individual source is
+  under its own limit.
+- **Redis down** (ADR-0029): neither limit is enforced. `ingestion`
+  accepts events, and `orchestrator` runs agents with a reason saying the
+  budget wasn't checked. Both are logged.
 - **Ingestion reliability** (Days 15–16): outbox + DLQ on `ingestion`'s Kafka
   publish path — a Kafka outage doesn't lose alerts, and repeated publish
   failures land in a DLQ instead of vanishing.

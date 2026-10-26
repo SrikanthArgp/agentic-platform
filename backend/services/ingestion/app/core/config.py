@@ -19,6 +19,10 @@ class Settings:
     manifest_ttl_s: float = 30.0
     # Serialized payload limit: everything in it ends up in an LLM prompt.
     max_payload_bytes: int = 32 * 1024
+    # Rate limits (docs/adr/0029). No REDIS_URL -> no rate limiting.
+    redis_url: str | None = None
+    rate_limit_per_minute: int = 600
+    rate_limit_per_source_per_minute: int = 300
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -30,4 +34,9 @@ class Settings:
             registry_url=env.get("REGISTRY_URL", cls.registry_url),
             manifest_ttl_s=float(env.get("MANIFEST_TTL_S", cls.manifest_ttl_s)),
             max_payload_bytes=int(env.get("MAX_PAYLOAD_BYTES", cls.max_payload_bytes)),
+            redis_url=env.get("REDIS_URL") or None,
+            rate_limit_per_minute=int(env.get("RATE_LIMIT_PER_MINUTE", cls.rate_limit_per_minute)),
+            rate_limit_per_source_per_minute=int(
+                env.get("RATE_LIMIT_PER_SOURCE_PER_MINUTE", cls.rate_limit_per_source_per_minute)
+            ),
         )

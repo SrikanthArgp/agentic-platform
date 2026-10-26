@@ -360,3 +360,39 @@ def test_prefetch_tool_that_needs_arguments_is_rejected(client):
 
 def test_prefetch_tools_must_not_repeat(registered):
     assert registered.put(APP_URL, json=_with_prefetch(["lookup_runbook", "lookup_runbook"])).status_code == 422
+
+
+# --- budgets and rate limits (ADR-0029) ---
+
+
+def test_budget_and_rate_limit_are_stored_and_served(registered):
+    m = manifest(rate_limit={"per_minute": 600, "per_source_per_minute": 120})
+    m["agents"][0]["budget"] = {"daily_tokens": 50000}
+    assert registered.put(APP_URL, json=m).status_code == 201
+
+    app = registered.get(APP_URL).json()
+    assert app["rate_limit"] == {"per_minute": 600, "per_source_per_minute": 120}
+    assert app["agents"][0]["budget"] == {"daily_tokens": 50000}
+    assert app["agents"][1]["budget"] is None
+
+
+def test_budget_and_rate_limit_are_optional(registered):
+    registered.put(APP_URL, json=manifest())
+    app = registered.get(APP_URL).json()
+    assert app["rate_limit"] is None
+    assert all(a["budget"] is None for a in app["agents"])
+
+
+@pytest.mark.parametrize(
+    "rate_limit",
+    [{"per_minute": 0}, {"per_source_per_minute": -1}, {"per_minute": "lots"}, {"per_hour": 10}],
+)
+def test_bad_rate_limit_is_rejected(registered, rate_limit):
+    assert registered.put(APP_URL, json=manifest(rate_limit=rate_limit)).status_code == 422
+
+
+@pytest.mark.parametrize("budget", [{"daily_tokens": -1}, {"daily_tokens": 1.5}, {"tokens": 10}])
+def test_bad_budget_is_rejected(registered, budget):
+    m = manifest()
+    m["agents"][0]["budget"] = budget
+    assert registered.put(APP_URL, json=m).status_code == 422

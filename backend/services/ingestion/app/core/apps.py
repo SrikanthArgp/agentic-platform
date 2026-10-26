@@ -12,12 +12,13 @@ platform problem (`AppConfigError`) that fails that app's events explicitly.
 """
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
 from jsonschema import Draft202012Validator
 
+from app.core.ratelimit import Limits
 from registry_client import AppNotFoundError, RegistryUnavailableError
 
 
@@ -38,6 +39,8 @@ class AppEventSpec:
     app_id: str
     alert_key_fields: tuple[str, ...]
     validator: Draft202012Validator
+    # The manifest's rate_limit, read on every fetch (not part of the cache key).
+    limits: Limits = field(default_factory=Limits)
 
     def payload_errors(self, payload: dict[str, Any]) -> list[dict[str, str]]:
         """Schema violations as `{path, message}`, in a stable order; empty if valid."""
@@ -74,10 +77,10 @@ class AppStore:
         if not isinstance(schema_ref, str) or not fields or not all(isinstance(f, str) and f for f in fields):
             raise AppConfigError(f"App '{app_id}': manifest lacks event_schema_ref or alert_key_fields.")
         key = (app_id, schema_ref, tuple(fields))
-        if spec := self._specs.get(key):
-            return spec
-        spec = self._specs[key] = self._load_spec(app_id, schema_ref, tuple(fields))
-        return spec
+        spec = self._specs.get(key)
+        if spec is None:
+            spec = self._specs[key] = self._load_spec(app_id, schema_ref, tuple(fields))
+        return replace(spec, limits=Limits.from_manifest(app.get("rate_limit")))
 
     def _load_spec(self, app_id: str, schema_ref: str, fields: tuple[str, ...]) -> AppEventSpec:
         app_dir = self._apps_dir / app_id

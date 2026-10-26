@@ -35,6 +35,13 @@ class AgentTool(BaseModel):
     input_schema: dict[str, Any]
 
 
+class AgentBudget(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    # None: orchestrator's DAILY_TOKEN_BUDGET (ADR-0029).
+    daily_tokens: int | None = Field(default=None, ge=0)
+
+
 class AgentSpec(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -47,8 +54,13 @@ class AgentSpec(BaseModel):
     # Called with no arguments before the agent's loop (ADR-0028); each is
     # on the allowlist (registry checks), and runs only if it's in `tools`.
     prefetch_tools: list[str] = []
+    budget: AgentBudget | None = None
     # The tools this agent is offered: computed by registry (§3).
     tools: list[AgentTool] = []
+
+    @property
+    def daily_tokens(self) -> int | None:
+        return self.budget.daily_tokens if self.budget else None
 
 
 class EscalateRule(BaseModel):

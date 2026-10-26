@@ -73,6 +73,19 @@ class ToolEnabledIn(_Strict):
 # --------------------------------------------------------------- manifest
 
 
+class BudgetIn(_Strict):
+    # Tokens (input + output) per UTC day; omitted -> orchestrator's
+    # DAILY_TOKEN_BUDGET (ADR-0029). 0 stops the agent.
+    daily_tokens: int | None = Field(default=None, ge=0)
+
+
+class RateLimitIn(_Strict):
+    # Events per minute that ingestion accepts for the app, and per alert
+    # source within it; omitted -> ingestion's defaults (ADR-0029).
+    per_minute: int | None = Field(default=None, ge=1)
+    per_source_per_minute: int | None = Field(default=None, ge=1)
+
+
 class AgentIn(_Strict):
     agent_id: str = Field(pattern=SLUG)
     version: str = Field(pattern=VERSION)
@@ -83,6 +96,7 @@ class AgentIn(_Strict):
     # Tools orchestrator calls with no arguments before this agent's loop,
     # results in its first message (ADR-0028). Each must be on its allowlist.
     prefetch_tools: list[str] = []
+    budget: BudgetIn | None = None
 
 
 class ToolRefIn(_Strict):
@@ -118,6 +132,7 @@ class ManifestIn(_Strict):
     memory_namespace: str = Field(pattern=SLUG)
     escalate_when: list[EscalateRuleIn] = []
     supervisor: SupervisorIn | None = None
+    rate_limit: RateLimitIn | None = None
 
     def stored(self) -> dict[str, Any]:
         """The JSON document kept in the `apps` row."""
@@ -147,6 +162,8 @@ class ResolvedAgent(BaseModel):
     invoke_on: list[str]
     # Manifests stored before ADR-0028 have none.
     prefetch_tools: list[str] = []
+    # Manifests stored before ADR-0029 have none.
+    budget: dict[str, Any] | None = None
     # Computed here, once, so orchestrator (tool definitions) and
     # tool-gateway (per-call re-check) can't disagree about it.
     tools: list[EffectiveTool]
@@ -175,6 +192,7 @@ class ResolvedApp(BaseModel):
     memory_namespace: str
     escalate_when: list[dict[str, Any]]
     supervisor: dict[str, Any] | None = None
+    rate_limit: dict[str, Any] | None = None
     updated_at: datetime | None = None
 
 

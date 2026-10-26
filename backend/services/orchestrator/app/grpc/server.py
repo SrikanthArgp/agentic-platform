@@ -13,6 +13,7 @@ import grpc
 from app.agent.llm import LLMError
 from app.agent.loop import AgentRunner, not_evaluated_response
 from app.core.manifest import ManifestUnavailableError, ResolutionError
+from app.governance.budget import BudgetExceededError
 from app.tools.gateway import GatewayUnavailableError
 from proto_gen import agent_pb2, agent_pb2_grpc
 
@@ -32,7 +33,7 @@ class AgentServicer(agent_pb2_grpc.AgentServicer):
             await context.abort(grpc.StatusCode.NOT_FOUND, str(e))
         except LLMError as e:
             return not_evaluated_response(request, f"LLM unavailable ({e})")
-        except (ManifestUnavailableError, GatewayUnavailableError) as e:
+        except (ManifestUnavailableError, GatewayUnavailableError, BudgetExceededError) as e:
             return not_evaluated_response(request, str(e))
         except Exception:
             logger.exception("RunAgent failed for %s/%s", request.app_id, request.alert_id)

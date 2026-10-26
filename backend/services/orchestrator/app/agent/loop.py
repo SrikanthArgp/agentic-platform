@@ -18,8 +18,12 @@ moves toward ESCALATE, never away from it (§13.4):
   supervisor caps confidence so it escalates;
 - a callable that fails or times out -> a "didn't contribute" reason, the
   decision unchanged;
-- anything that stops the run (LLM down, unknown app) raises; callers turn
-  that into `not_evaluated_response()`.
+- the entry agent is over its daily token budget -> `BudgetExceededError`
+  before anything runs (ADR-0029); a callable over its budget doesn't
+  contribute. Budgets that can't be checked (Redis down) don't stop the
+  run; a reason says so;
+- anything that stops the run (LLM down, unknown app, budget exceeded)
+  raises; callers turn that into `not_evaluated_response()`.
 
 The agent is offered exactly the tools `registry` resolved for it
 (`AgentSpec.tools`: allowlisted, declared, enabled); a call for anything
@@ -28,8 +32,6 @@ else is refused before `tool-gateway`, which checks the same list again.
 Exactly one response per run: callables' own answers are never returned
 or published on their own; their reasons and tool calls are folded into it
 (ADR-0023), and it echoes the request as `alert`.
-
-Not yet: budgets (Day 14).
 """
 
 import logging
@@ -40,6 +42,7 @@ from opentelemetry import trace
 from app.agent.graph import RunDeps, build_callable_graph, build_graph
 from app.agent.react import REASON_PREFIX
 from app.core.manifest import ManifestStore
+from app.governance.budget import BudgetUnavailableError, TokenBudget
 from app.memory.client import ContextSource
 from app.tools.gateway import ToolGateway
 from proto_gen import agent_pb2
@@ -61,7 +64,9 @@ class AgentRunner:
         max_tool_rounds: int = 5,
         min_confidence: float = 0.6,
         callable_timeout_s: float = 30.0,
+        budget: TokenBudget | None = None,
     ):
+        self._budget = budget
         self._manifests = manifests
         self._gateway = gateway
         self._model = model
@@ -76,6 +81,15 @@ class AgentRunner:
         manifest = await self._manifests.get(request.app_id)
         agent = manifest.agent(request.agent_id)
         app_prompt = self._manifests.prompt(manifest, agent)
+        platform_reasons = []
+        if self._budget is not None and agent.role == "entry":
+            try:
+                await self._budget.check(manifest.app_id, agent.agent_id, agent.daily_tokens)
+            except BudgetUnavailableError as e:
+                logger.warning("budget for %s/%s not checked: %s", manifest.app_id, agent.agent_id, e)
+                platform_reasons.append(
+                    REASON_PREFIX + f"token budget not checked ({e}); the agent ran without that limit."
+                )
         context = RunContext(
             app_id=manifest.app_id, agent_id=agent.agent_id, alert_id=request.alert_id, alert_key=request.alert_key
         )
@@ -94,6 +108,7 @@ class AgentRunner:
                     max_tool_rounds=self._max_tool_rounds,
                     default_min_confidence=self._min_confidence,
                     callable_timeout_s=self._callable_timeout_s,
+                    budget=self._budget,
                 )
                 graph = self._callable_graph if agent.role == "callable" else self._graph
                 state = await graph.ainvoke(
@@ -103,7 +118,7 @@ class AgentRunner:
                         "agent": agent,
                         "app_prompt": app_prompt,
                         "run_context": context,
-                        "platform_reasons": [],
+                        "platform_reasons": platform_reasons,
                     },
                     context=deps,
                 )

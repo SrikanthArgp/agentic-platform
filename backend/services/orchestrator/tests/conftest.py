@@ -265,9 +265,10 @@ def make_runner(
     memory: FakeMemory | None = None,
     min_confidence: float = 0.6,
     callable_timeout_s: float = 30.0,
+    budget=None,
 ):
     manifests = ManifestStore(registry or FakeRegistry(), apps_dir)
     return AgentRunner(
         manifests, gateway or FakeGateway(), llm, memory or FakeMemory(), max_tool_rounds, min_confidence,
-        callable_timeout_s,
+        callable_timeout_s, budget,
     )

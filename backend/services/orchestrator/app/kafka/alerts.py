@@ -21,6 +21,7 @@ from google.protobuf.message import DecodeError
 from app.agent.loop import AgentRunner, not_evaluated_response
 from app.agent.llm import LLMError
 from app.core.manifest import ManifestUnavailableError, ResolutionError
+from app.governance.budget import BudgetExceededError
 from app.tools.gateway import GatewayUnavailableError
 from proto_gen import agent_pb2
 
@@ -56,7 +57,7 @@ async def handle_alert(raw: bytes, runner: AgentRunner) -> tuple[bytes, agent_pb
         why = str(e)
     except LLMError as e:
         why = f"LLM unavailable ({e})"
-    except (ManifestUnavailableError, GatewayUnavailableError) as e:
+    except (ManifestUnavailableError, GatewayUnavailableError, BudgetExceededError) as e:
         why = str(e)
     except Exception:
         logger.exception("agent run failed for %s/%s", request.app_id, request.alert_id)

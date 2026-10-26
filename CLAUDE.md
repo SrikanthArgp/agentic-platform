@@ -30,14 +30,14 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Days 1–13 of `docs/plan.md` are done (infra, contracts, skeletons;
+Days 1–14 of `docs/plan.md` are done (infra, contracts, skeletons;
 `tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core;
 `ingestion` and the end-to-end hot path; `registry` + App Manifest;
 `memory-store`; context, supervisor and guardrails in `orchestrator`;
 callable agents; `review-console`; the verdict feedback loop; the Week 2
 integration pass; `tool-gateway` resilience; tool versions, the global
-`similar-past-case-lookup` and app #2's first cut); Day 14 (rate & cost
-governance) is next. As-built notes for each day are in `docs/plan.md`.
+`similar-past-case-lookup` and app #2's first cut; token budgets and rate
+limits); Day 15 (outbox + Celery relay, for alerts and verdicts) is next. As-built notes for each day are in `docs/plan.md`.
 
 - All 6 services have a FastAPI skeleton (`app/main.py`, `/healthz`),
   a `pyproject.toml`, a committed `uv.lock`, a `Dockerfile`, and passing
@@ -75,7 +75,9 @@ governance) is next. As-built notes for each day are in `docs/plan.md`.
 - `ingestion`: `POST /apps/{app_id}/events` (envelope + `payload`)
   validates the payload against that app's `event_schema_ref`, builds
   `alert_key` from its `alert_key_fields`, publishes `alert.received`,
-  returns `202`; unknown app `404`. It reads nothing back; decisions are
+  returns `202`; unknown app `404`; over the app's or source's per-minute
+  rate limit `429` with `Retry-After` (manifest `rate_limit`, Redis,
+  ADR-0029; Redis down → accepted). It reads nothing back; decisions are
   seen on `review-console` (escalations) or the `alert.decided` topic.
 - `tool-gateway` serves MCP (stateless Streamable HTTP) at `POST /mcp`. At
   startup it loads app tools from `backend/apps/*/tools/` (`app/core/loader.py`;
@@ -106,7 +108,11 @@ governance) is next. As-built notes for each day are in `docs/plan.md`.
   the agent the history as a data block (ADR-0019), then calls the
   agent's manifest `prefetch_tools` with no arguments and adds their
   results the same way (ADR-0028; both apps prefetch
-  `similar-past-case-lookup`). After it, in order:
+  `similar-past-case-lookup`). Each agent has a daily token budget
+  (manifest `budget.daily_tokens`, else `DAILY_TOKEN_BUDGET`; Redis
+  `budget:{app_id}:{agent_id}:{date}`, ADR-0029): an entry agent over it
+  isn't run ("not evaluated: budget exceeded"), a callable over it doesn't
+  contribute. After it, in order:
   the supervisor (agent's `confidence`, capped by fixed rules, below the
   manifest's `supervisor.min_confidence` / default 0.6 → `ESCALATE`,
   ADR-0020), then the manifest's `escalate_when` guardrails (`alert.*`,

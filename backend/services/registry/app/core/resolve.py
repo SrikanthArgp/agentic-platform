@@ -54,5 +54,6 @@ def resolve_app(record: AppRecord, tools: Mapping[str, Tool]) -> ResolvedApp:
         escalate_when=m["escalate_when"],
         # Manifests stored before Day 7 have no supervisor key.
         supervisor=m.get("supervisor"),
+        rate_limit=m.get("rate_limit"),
         updated_at=record.updated_at,
     )

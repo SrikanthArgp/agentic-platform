@@ -2,7 +2,8 @@
 
 The URL chooses the app; nothing infers it (docs/ARCHITECTURE.md §3).
 Validation happens entirely before anything touches Kafka: envelope
-(pydantic, 422), payload size (413), unknown app (404), payload against
+(pydantic, 422), payload size (413), unknown app (404), rate limits per
+app and per source (429 with `Retry-After`, ADR-0029), payload against
 that app's schema and `alert_key` (422).
 """
 
@@ -15,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Path, Request, status
 
 from app.core.apps import AppConfigError, AppStore, AppUnavailableError, UnknownAppError
 from app.core.envelope import AlertKeyError, build_alert_key, build_request, message_key
+from app.core.ratelimit import RateLimited, RateLimiter
 from app.kafka.publisher import ALERT_RECEIVED, PublishError, Publisher
 from app.models.alerts import AlertAccepted, AlertIn
 
@@ -49,6 +51,18 @@ async def post_event(alert: AlertIn, request: Request, app_id: str = Path(max_le
     except AppConfigError:
         logger.exception("app %s is misconfigured", app_id)
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"App '{app_id}' is misconfigured.") from None
+
+    limiter: RateLimiter | None = state.rate_limiter
+    if limiter is not None:
+        try:
+            await limiter.hit(app_id, alert.source, spec.limits)
+        except RateLimited as e:
+            logger.warning("alert refused: %s", e)
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                {"message": str(e), "limit": e.scope, "limit_per_minute": e.limit},
+                headers={"Retry-After": str(e.retry_after_s)},
+            ) from None
 
     if errors := spec.payload_errors(alert.payload):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, {"message": "payload is invalid", "errors": errors})

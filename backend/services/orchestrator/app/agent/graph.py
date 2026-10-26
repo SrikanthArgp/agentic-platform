@@ -16,8 +16,9 @@
 - `callable` (Day 8, ADR-0012): one branch per callable agent whose
   `invoke_on` contains the *final* decision, fanned out with `Send` so they
   run concurrently. Each runs its own tool loop and returns reasons only;
-  a callable that fails or times out (`CALLABLE_TIMEOUT_S`) adds a "didn't
-  contribute" reason instead and never blocks the decision.
+  a callable that fails, times out (`CALLABLE_TIMEOUT_S`) or is over its
+  token budget (ADR-0029) adds a "didn't contribute" reason instead and
+  never blocks the decision.
 - `fold`: callables' reasons, each prefixed with its `agent_id`, in
   manifest order.
 
@@ -54,6 +55,7 @@ from app.agent.llm import LLMError
 from app.agent.react import REASON_PREFIX, RunTools, run_agent
 from app.agent.supervisor import supervise
 from app.core.manifest import AgentSpec, AppManifest, ResolutionError
+from app.governance.budget import BudgetExceededError, BudgetUnavailableError, TokenBudget, Usage
 from app.memory.client import ContextSource, ContextUnavailableError
 from app.tools.gateway import ToolGateway, ToolSession
 from proto_gen import agent_pb2, memory_store_pb2
@@ -76,6 +78,13 @@ class RunDeps:
     # Supervisor threshold for apps whose manifest sets none.
     default_min_confidence: float
     callable_timeout_s: float = 30.0
+    # Daily token budgets (ADR-0029); None in tests that don't exercise them.
+    budget: TokenBudget | None = None
+
+
+async def record_usage(deps: RunDeps, app_id: str, agent_id: str, outcome) -> None:
+    if deps.budget is not None:
+        await deps.budget.record(app_id, agent_id, Usage(outcome.input_tokens, outcome.output_tokens))
 
 
 class CallableFailed(RuntimeError):
@@ -146,6 +155,7 @@ async def agent_node(state: RunState, runtime: Runtime[RunDeps]) -> RunState:
         tools,
         deps.max_tool_rounds,
     )
+    await record_usage(deps, state["manifest"].app_id, state["agent"].agent_id, outcome)
 
     confidence = 0.0
     if outcome.ran_out:
@@ -250,6 +260,13 @@ async def explain(
     """Run a callable agent: (its reasons, its tool trace, tool-failure reasons).
     Raises `CallableFailed`, `DecisionParseError` or `LLMError` when it
     produced nothing usable."""
+    if deps.budget is not None:
+        try:
+            await deps.budget.check(manifest.app_id, agent.agent_id, agent.daily_tokens)
+        except BudgetExceededError as e:
+            raise CallableFailed(str(e)) from None
+        except BudgetUnavailableError as e:
+            logger.warning("budget for callable %s not checked: %s", agent.agent_id, e)
     app_prompt = deps.prompts(manifest, agent)
     run_context = RunContext(
         app_id=manifest.app_id, agent_id=agent.agent_id, alert_id=request.alert_id, alert_key=request.alert_key
@@ -266,6 +283,7 @@ async def explain(
                 tools,
                 deps.max_tool_rounds,
             )
+    await record_usage(deps, manifest.app_id, agent.agent_id, outcome)
     if outcome.ran_out:
         raise CallableFailed(f"no answer within {deps.max_tool_rounds} tool-call rounds")
     failures = [
