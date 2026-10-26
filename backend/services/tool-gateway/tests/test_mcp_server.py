@@ -215,3 +215,16 @@ async def test_breaker_opens_after_consecutive_failed_calls_and_the_handler_stop
     assert "circuit for tool broken opened after 2 consecutive failed calls" in caplog.text
     # One tool's breaker is its own.
     assert not other_tool.is_error
+
+
+# --- version: registry's resolved version must be the one loaded (ADR-0026) ---
+
+
+async def test_a_version_other_than_the_loaded_one_is_refused_before_running(tmp_path):
+    server = build(tmp_path, FakeApps({"app-one": {"triage-agent": ["broken"]}}, versions={"broken": "0.2.0"}))
+    async with Client(server) as client:
+        result = await client.call_tool("broken", {"text": "hi"}, meta=CTX)
+
+    # tool_version_mismatch, not tool_failed: the handler never ran.
+    assert result.structured_content["error"] == "tool_version_mismatch"
+    assert "0.2.0" in result.structured_content["message"]

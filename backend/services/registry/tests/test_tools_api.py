@@ -91,3 +91,21 @@ def test_delete_refuses_a_tool_a_manifest_declares(registered):
     response = registered.delete(URL)
     assert response.status_code == 409
     assert APP_ID in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "field, schema",
+    [
+        ("input_schema", {"type": "no-such-type"}),
+        ("input_schema", {"properties": {"x": {"type": 5}}}),
+        ("output_schema", {"required": "alert_type"}),
+    ],
+)
+def test_malformed_json_schema_is_rejected(client, field, schema):
+    response = client.put("/tools/lookup_runbook/versions/1.0.0", json=tool_body(**{field: schema}))
+
+    assert response.status_code == 422
+    [error] = response.json()["detail"]["errors"]
+    assert error["field"] == field
+    assert "not a valid JSON Schema" in error["message"]
+    assert client.get("/tools/lookup_runbook/versions/1.0.0").status_code == 404

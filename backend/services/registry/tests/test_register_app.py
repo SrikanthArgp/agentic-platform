@@ -36,10 +36,13 @@ def _served_tool(description: str) -> dict:
 
 @pytest.fixture
 def served():
-    """What tool-gateway serves for it-ops-triage: both its tools."""
+    """What tool-gateway serves for it-ops-triage: both its tools, and the global one."""
     return {
         "lookup_runbook": _served_tool("Look up the runbook."),
         "recent-changes-lookup": _served_tool("Recent changes."),
+        "similar-past-case-lookup": {
+            **_served_tool("Past cases."), "version": "1.2.0", "scope": "global", "app_id": None,
+        },
     }
 
 
@@ -47,13 +50,14 @@ def test_checked_in_manifest_registers(client, manifest, served):
     assert register_app.register(manifest, served, client) == [
         "tool lookup_runbook 1.0.0: created",
         "tool recent-changes-lookup 1.0.0: created",
+        "tool similar-past-case-lookup 1.2.0 (latest): created",
         f"app {APP_ID}: created",
     ]
     app = client.get(f"/apps/{APP_ID}").json()
-    tools = {a["agent_id"]: [t["tool_id"] for t in a["tools"]] for a in app["agents"]}
+    tools = {a["agent_id"]: [(t["tool_id"], t["version"]) for t in a["tools"]] for a in app["agents"]}
     assert tools == {
-        "triage-agent": ["lookup_runbook"],
-        "root-cause-summarizer": ["lookup_runbook", "recent-changes-lookup"],
+        "triage-agent": [("lookup_runbook", "1.0.0"), ("similar-past-case-lookup", "1.2.0")],
+        "root-cause-summarizer": [("lookup_runbook", "1.0.0"), ("recent-changes-lookup", "1.0.0")],
     }
 
 
@@ -64,6 +68,7 @@ def test_same_file_twice_changes_nothing(client, manifest, served):
     assert register_app.register(manifest, served, client) == [
         "tool lookup_runbook 1.0.0: unchanged",
         "tool recent-changes-lookup 1.0.0: unchanged",
+        "tool similar-past-case-lookup 1.2.0 (latest): unchanged",
         f"app {APP_ID}: unchanged",
     ]
     assert client.get(f"/apps/{APP_ID}").json() == before
@@ -97,4 +102,19 @@ def test_a_tool_only_one_agent_declares_is_still_required(client, manifest, serv
     """recent-changes-lookup is the summarizer's alone; registering without it still fails."""
     del served["recent-changes-lookup"]
     with pytest.raises(register_app.RegistrationError, match="serves nothing for 'recent-changes-lookup'"):
+        register_app.register(manifest, served, client)
+
+
+def test_a_latest_tool_registers_the_version_tool_gateway_serves_and_moves_with_it(client, manifest, served):
+    register_app.register(manifest, served, client)
+    served["similar-past-case-lookup"]["version"] = "1.3.0"
+
+    assert "tool similar-past-case-lookup 1.3.0 (latest): created" in register_app.register(manifest, served, client)
+    [triage] = [a for a in client.get(f"/apps/{APP_ID}").json()["agents"] if a["agent_id"] == "triage-agent"]
+    assert ("similar-past-case-lookup", "1.3.0") in [(t["tool_id"], t["version"]) for t in triage["tools"]]
+
+
+def test_a_latest_tool_tool_gateway_doesnt_serve_fails(client, manifest, served):
+    del served["similar-past-case-lookup"]
+    with pytest.raises(register_app.RegistrationError, match="serves nothing for 'similar-past-case-lookup'"):
         register_app.register(manifest, served, client)

@@ -204,7 +204,9 @@ async def test_callable_uses_its_own_tools_and_run_context(apps_dir, app_with_ca
     assert [t.name for t in callable_call["tools"]] == ["recent-changes-lookup"]
     [(name, _, ctx)] = gateway.calls
     assert name == "recent-changes-lookup"
-    assert ctx == RunContext(app_id=APP_ID, agent_id="root-cause-summarizer", alert_id="alert-1")
+    assert ctx == RunContext(
+        app_id=APP_ID, agent_id="root-cause-summarizer", alert_id="alert-1", alert_key="disk_full:web-01"
+    )
     # The callable's call is in the response's trace, tagged with its agent (ADR-0023).
     assert [(c.agent_id, c.tool_name) for c in response.tool_calls] == [("root-cause-summarizer", "recent-changes-lookup")]
 

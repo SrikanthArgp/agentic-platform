@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from app.main import MCP_PATH, HealthResponse, app, create_app
 from run_context import RunContext
-from tests.conftest import FakeApps
+from tests.conftest import FakeApps, FakeCases
 
 client = TestClient(app)
 
@@ -32,7 +32,8 @@ HOST = "localhost:8003"
 
 @asynccontextmanager
 async def http_to_app():
-    app = create_app(apps=FakeApps({"it-ops-triage": {"triage-agent": ["lookup_runbook"]}}))
+    apps = FakeApps({"it-ops-triage": {"triage-agent": ["lookup_runbook"]}}, versions={"lookup_runbook": "1.0.0"})
+    app = create_app(apps=apps, cases=FakeCases([]))
     async with app.router.lifespan_context(app):
         transport = httpx2.ASGITransport(app=app)
         async with httpx2.AsyncClient(transport=transport, base_url=f"http://{HOST}") as http:

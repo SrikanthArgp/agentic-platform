@@ -6,8 +6,10 @@ expose `app_id`, so text injected into a prompt can't make the LLM call a
 tool on another app's behalf (docs/ARCHITECTURE.md §3, §13 T4).
 
 `tool-gateway` reads it back with `from_meta()` and refuses any call without
-it, or for a tool the agent may not call (Day 5); Day 13 also uses it to
-scope global tools.
+it, or for a tool the agent may not call (Day 5). Global tools read their
+scope from it too: `similar-past-case-lookup` looks up the run's own
+`app_id` + `alert_key`, so no tool argument chooses what it reads
+(ADR-0027).
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ _PREFIX = "agentic-platform/"
 APP_ID_KEY = _PREFIX + "app_id"
 AGENT_ID_KEY = _PREFIX + "agent_id"
 ALERT_ID_KEY = _PREFIX + "alert_id"
+ALERT_KEY_KEY = _PREFIX + "alert_key"
 
 
 @dataclass(frozen=True)
@@ -27,9 +30,15 @@ class RunContext:
     app_id: str
     agent_id: str
     alert_id: str = ""
+    alert_key: str = ""
 
     def to_meta(self) -> dict[str, str]:
-        return {APP_ID_KEY: self.app_id, AGENT_ID_KEY: self.agent_id, ALERT_ID_KEY: self.alert_id}
+        return {
+            APP_ID_KEY: self.app_id,
+            AGENT_ID_KEY: self.agent_id,
+            ALERT_ID_KEY: self.alert_id,
+            ALERT_KEY_KEY: self.alert_key,
+        }
 
 
 def from_meta(meta: Mapping[str, Any] | None) -> RunContext | None:
@@ -41,4 +50,10 @@ def from_meta(meta: Mapping[str, Any] | None) -> RunContext | None:
     if not isinstance(app_id, str) or not app_id or not isinstance(agent_id, str) or not agent_id:
         return None
     alert_id = meta.get(ALERT_ID_KEY)
-    return RunContext(app_id=app_id, agent_id=agent_id, alert_id=alert_id if isinstance(alert_id, str) else "")
+    alert_key = meta.get(ALERT_KEY_KEY)
+    return RunContext(
+        app_id=app_id,
+        agent_id=agent_id,
+        alert_id=alert_id if isinstance(alert_id, str) else "",
+        alert_key=alert_key if isinstance(alert_key, str) else "",
+    )

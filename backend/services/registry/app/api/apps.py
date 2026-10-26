@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from app.core.models import SLUG, AppRecord, ManifestIn, ResolvedApp, Tool, UpsertResult
 from app.core.resolve import resolve_app
 from app.core.validation import validate_manifest
+from app.core.versions import resolve_ref
 from app.db.repository import Repository
 
 router = APIRouter(tags=["apps"])
@@ -41,12 +42,12 @@ def _repo(request: Request) -> Repository:
     return request.app.state.repo
 
 
-async def _declared_tools(repo: Repository, manifest: dict) -> dict[tuple[str, str], Tool]:
+async def _declared_tools(repo: Repository, manifest: dict) -> dict[str, Tool]:
+    """tool_id -> the registered tool each declared reference resolves to."""
     found = {}
     for ref in manifest["tools"]:
-        key = (ref["tool_id"], ref["version"])
-        if tool := await repo.get_tool(*key):
-            found[key] = tool
+        if tool := resolve_ref(ref["version"], await repo.list_tool_versions(ref["tool_id"])):
+            found[ref["tool_id"]] = tool
     return found
 
 
@@ -57,7 +58,7 @@ async def put_app(
     repo = _repo(request)
     stored = body.stored()
     tools = await _declared_tools(repo, stored)
-    if errors := validate_manifest(body, app_id, lambda tool_id, version: tools.get((tool_id, version))):
+    if errors := validate_manifest(body, app_id, lambda tool_id, version: tools.get(tool_id)):
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             {"message": "manifest is invalid", "errors": [{"field": e.field, "message": e.message} for e in errors]},

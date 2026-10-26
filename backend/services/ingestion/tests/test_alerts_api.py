@@ -119,6 +119,73 @@ def test_real_it_ops_app_accepts_a_realistic_alert():
     assert publisher.sent[0][1] == b"it-ops-triage:disk_full:web-01"
 
 
+COST_APP = "cost-anomaly-triage"
+SPIKE = {
+    "account": "123456789012",
+    "service": "ml-platform",
+    "region": "eu-west-1",
+    "tags": {"team": "ml"},
+    "window_start": "2026-10-05T00:00:00Z",
+    "window_end": "2026-10-06T00:00:00Z",
+    "baseline_cost": 303.4,
+    "observed_cost": 6594.84,
+}
+
+
+def _real_cost_app() -> tuple[TestClient, FakePublisher]:
+    manifest = yaml.safe_load((DEFAULT_APPS_DIR / COST_APP / "manifest.yaml").read_text())
+    publisher = FakePublisher()
+    client_ = TestClient(create_app(
+        Settings(apps_dir=DEFAULT_APPS_DIR, kafka_enabled=False), publisher=publisher,
+        apps=FakeRegistry({COST_APP: manifest}),
+    ))
+    return client_, publisher
+
+
+def test_real_cost_app_accepts_a_spend_spike_keyed_by_service_and_region():
+    client_, publisher = _real_cost_app()
+    response = client_.post(f"/apps/{COST_APP}/events", json=alert_body(payload=SPIKE))
+
+    assert response.status_code == 202, response.text
+    assert publisher.sent[0][1] == b"cost-anomaly-triage:ml-platform:eu-west-1"
+    message = agent_pb2.RunAgentRequest.FromString(publisher.sent[0][2])
+    assert (message.app_id, message.alert_key) == (COST_APP, "ml-platform:eu-west-1")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"service": None},
+        {"region": None},
+        {"observed_cost": None},
+        {"window_start": None},
+        {"region": "EU-West-1"},
+        {"service": "ML Platform"},
+        {"observed_cost": -5},
+        {"observed_cost": "6594.84"},
+        {"window_end": "2026-10-06"},
+        {"window_end": "2026-10-06T00:00:00"},
+        {"tags": {"team": 5}},
+    ],
+    ids=lambda c: next(iter(c)) + ("-missing" if next(iter(c.values())) is None else "-invalid"),
+)
+def test_real_cost_app_rejects_a_malformed_spike(change):
+    payload = {**SPIKE, **change}
+    payload = {k: v for k, v in payload.items() if v is not None}
+    client_, publisher = _real_cost_app()
+    response = client_.post(f"/apps/{COST_APP}/events", json=alert_body(payload=payload))
+
+    assert response.status_code == 422, response.text
+    assert publisher.sent == []
+
+
+def test_an_it_ops_payload_is_rejected_by_the_cost_app():
+    client_, publisher = _real_cost_app()
+    it_ops = {"alert_type": "disk_full", "host": "web-01"}
+    assert client_.post(f"/apps/{COST_APP}/events", json=alert_body(payload=it_ops)).status_code == 422
+    assert publisher.sent == []
+
+
 def test_unknown_app_is_404_before_kafka(client, publisher):
     response = client.post("/apps/made-up-app/events", json=alert_body())
     assert response.status_code == 404

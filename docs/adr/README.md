@@ -47,3 +47,6 @@ Rules:
 | [0023](0023-decision-carries-alert-and-full-tool-trace.md) | `alert.decided` carries the alert and every agent's tool calls | Accepted |
 | [0024](0024-verdicts-through-the-outbox.md) | `review-console` writes verdicts to its own outbox, drained by the ADR-0008 relay | Accepted |
 | [0025](0025-tool-resilience-in-tool-gateway.md) | Tool timeout, retry and circuit breaker live in `tool-gateway`, per tool | Accepted |
+| [0026](0026-tool-version-resolution.md) | Tool versions are pinned or `latest`; `tool-gateway` refuses a version it didn't load | Accepted |
+| [0027](0027-global-tools-scoped-by-run-context.md) | Global tools read their scope from the run context; `alert_key` joins it | Accepted |
+| [0028](0028-prefetched-tools.md) | Manifest-declared `prefetch_tools`, run by `orchestrator` before the agent's loop | Accepted |

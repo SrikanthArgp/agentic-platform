@@ -8,8 +8,12 @@ platform-specific is around it:
   context in MCP `_meta` (never as an argument, §13 T4), comes back to
   the model inside a data block (§13 T1/T2), and is recorded in the trace.
   Infrastructure failures (`tool_failed`, `tool_timeout`,
-  `tool_unavailable`, `registry_unavailable`, `gateway_unreachable`) are
-  collected: the caller escalates on them.
+  `tool_unavailable`, `tool_version_mismatch`, `registry_unavailable`,
+  `gateway_unreachable`) are collected: the caller escalates on them.
+- `prefetch()`: the agent's `prefetch_tools`, called by the platform with
+  no arguments before the loop (ADR-0028), through the same `call()`: run
+  context, data block, trace, infra failures. A prefetched tool the agent
+  isn't offered right now (disabled) is skipped without a call.
 - Middleware: a call to a tool the agent wasn't offered is answered
   `tool_not_allowed` and never reaches `tool-gateway`; after
   `max_tool_rounds` rounds of tool calls the loop stops (`ran_out`); any
@@ -45,7 +49,10 @@ tracer = trace.get_tracer(__name__)
 # Tool failures that mean "we couldn't look", not "the agent asked wrong":
 # the agent's decision can't be trusted, so the run escalates.
 INFRA_TOOL_ERRORS = frozenset(
-    {"tool_failed", "tool_timeout", "tool_unavailable", "registry_unavailable", GATEWAY_UNREACHABLE}
+    {
+        "tool_failed", "tool_timeout", "tool_unavailable", "tool_version_mismatch",
+        "registry_unavailable", GATEWAY_UNREACHABLE,
+    }
 )
 TOOL_NOT_ALLOWED = "tool_not_allowed"
 RESULT_SUMMARY_CHARS = 300
@@ -70,6 +77,11 @@ class RunTools:
         return StructuredTool.from_function(
             coroutine=call, name=spec.tool_id, description=spec.description, args_schema=spec.input_schema
         )
+
+    async def prefetch(self, tool_ids: Sequence[str]) -> list[str]:
+        """Each offered tool in `tool_ids`, called with `{}`, as data blocks for the first message."""
+        offered = {t.name for t in self.tools}
+        return [await self.call(name, {}) for name in tool_ids if name in offered]
 
     async def call(self, name: str, arguments: dict[str, Any]) -> str:
         with tracer.start_as_current_span("agent.tool_call", attributes={"tool_name": name}):

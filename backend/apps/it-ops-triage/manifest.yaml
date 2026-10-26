@@ -15,6 +15,11 @@ agents:
     prompt_ref: prompts/triage-agent.md
     tool_allowlist:
       - lookup_runbook
+      - similar-past-case-lookup
+    # Run by orchestrator before the agent's loop, results in its first
+    # message (ADR-0028): the agent doesn't have to remember to look.
+    prefetch_tools:
+      - similar-past-case-lookup
 
   # Callable (Day 8, ADR-0012): runs after the final decision is ESCALATE,
   # adds a probable root cause to reasons[]; never changes the decision.
@@ -38,6 +43,12 @@ tools:
   - tool_id: recent-changes-lookup
     version: 1.0.0
     scope: app
+  # Global (platform code in tool-gateway, ADR-0027). "latest": whatever
+  # version registry has newest, so a platform upgrade needs no edit here
+  # (ADR-0026). App-owned tools stay pinned: they ship with this folder.
+  - tool_id: similar-past-case-lookup
+    version: latest
+    scope: global
 
 # Prefix of every memory-store key for this app (§3, §6).
 memory_namespace: it-ops-triage

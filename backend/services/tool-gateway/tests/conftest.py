@@ -86,14 +86,20 @@ class FakeApps:
     """`RegistryClient.get_app` for the allowlist check: {app_id: {agent_id: [tool_id, ...]}}.
 
     Each tool's registered `input_schema` is `schemas[tool_id]`, else `{}`
-    (accepts anything, leaving validation to the tool's own model)."""
+    (accepts anything, leaving validation to the tool's own model), and its
+    resolved version `versions[tool_id]`, else the echo tools' 0.1.0."""
 
     def __init__(
-        self, allowed: dict[str, dict[str, list[str]]], down: bool = False, schemas: dict | None = None
+        self,
+        allowed: dict[str, dict[str, list[str]]],
+        down: bool = False,
+        schemas: dict | None = None,
+        versions: dict | None = None,
     ):
         self.allowed = allowed
         self.down = down
         self.schemas = schemas or {}
+        self.versions = versions or {}
 
     async def get_app(self, app_id: str) -> dict:
         if self.down:
@@ -103,7 +109,34 @@ class FakeApps:
         return {
             "app_id": app_id,
             "agents": [
-                {"agent_id": agent_id, "tools": [{"tool_id": t, "input_schema": self.schemas.get(t, {})} for t in tools]}
+                {"agent_id": agent_id, "tools": [self._tool(t) for t in tools]}
                 for agent_id, tools in self.allowed[app_id].items()
             ],
         }
+
+    def _tool(self, tool_id: str) -> dict:
+        return {
+            "tool_id": tool_id,
+            "version": self.versions.get(tool_id, "0.1.0"),
+            "input_schema": self.schemas.get(tool_id, {}),
+        }
+
+
+class FakeCases:
+    """`similar_past_cases.CaseSource`: serves `rows` as review-console would
+    (it filters by app_id + alert_key itself unless `unfiltered`)."""
+
+    def __init__(self, rows: list[dict], *, unfiltered: bool = False, down: bool = False):
+        self.rows = rows
+        self.unfiltered = unfiltered
+        self.down = down
+        self.queries: list[tuple[str, str, int]] = []
+
+    async def resolved_cases(self, app_id: str, alert_key: str, limit: int) -> list[dict]:
+        self.queries.append((app_id, alert_key, limit))
+        if self.down:
+            raise ConnectionError("review-console unreachable")
+        rows = self.rows if self.unfiltered else [
+            r for r in self.rows if r["app_id"] == app_id and r["alert_key"] == alert_key
+        ]
+        return rows[:limit]

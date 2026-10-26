@@ -44,6 +44,9 @@ class AgentSpec(BaseModel):
     prompt_ref: str
     tool_allowlist: list[str] = []
     invoke_on: list[str] = []
+    # Called with no arguments before the agent's loop (ADR-0028); each is
+    # on the allowlist (registry checks), and runs only if it's in `tools`.
+    prefetch_tools: list[str] = []
     # The tools this agent is offered: computed by registry (§3).
     tools: list[AgentTool] = []
 

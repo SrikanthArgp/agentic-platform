@@ -49,14 +49,14 @@ async def test_tool_call_then_decision(apps_dir):
     assert [name for name, _, _ in gateway.calls] == ["lookup_runbook"]
 
 
-async def test_tool_calls_carry_app_id_in_context_never_in_arguments(apps_dir):
+async def test_tool_calls_carry_app_id_and_alert_key_in_context_never_in_arguments(apps_dir):
     llm = FakeChatModel(responses=[tool_call(alert_type="disk_full"), final()])
     gateway = FakeGateway()
 
     await make_runner(apps_dir, llm, gateway).run(make_request())
 
     [(_, arguments, context)] = gateway.calls
-    assert context == RunContext(app_id=APP_ID, agent_id="triage-agent", alert_id="alert-1")
+    assert context == RunContext(app_id=APP_ID, agent_id="triage-agent", alert_id="alert-1", alert_key="disk_full:web-01")
     assert arguments == {"alert_type": "disk_full"}
 
 
@@ -158,7 +158,7 @@ async def test_tool_results_go_back_to_the_llm_as_data_blocks(apps_dir):
     assert f"<<<DATA {nonce} kind=...>>>" in llm.calls[1]["system"]
 
 
-@pytest.mark.parametrize("code", ["tool_failed", "tool_timeout", "tool_unavailable"])
+@pytest.mark.parametrize("code", ["tool_failed", "tool_timeout", "tool_unavailable", "tool_version_mismatch"])
 async def test_infra_tool_failure_forces_escalate(apps_dir, code):
     gateway = FakeGateway(results={"lookup_runbook": ToolResult(True, {"error": code})})
     llm = FakeChatModel(responses=[tool_call(), final("SUPPRESS", "looks benign")])

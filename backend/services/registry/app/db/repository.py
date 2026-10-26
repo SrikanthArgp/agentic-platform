@@ -17,6 +17,8 @@ class Repository(Protocol):
 
     async def list_tools(self) -> list[Tool]: ...
 
+    async def list_tool_versions(self, tool_id: str) -> list[Tool]: ...
+
     async def upsert_tool(self, tool: Tool) -> UpsertResult:
         """Insert or update a tool's definition; never touches `enabled`."""
         ...
@@ -44,6 +46,9 @@ class InMemoryRepository:
 
     async def list_tools(self) -> list[Tool]:
         return [self._tools[k] for k in sorted(self._tools)]
+
+    async def list_tool_versions(self, tool_id: str) -> list[Tool]:
+        return [t for t in await self.list_tools() if t.tool_id == tool_id]
 
     async def upsert_tool(self, tool: Tool) -> UpsertResult:
         key = (tool.tool_id, tool.version)

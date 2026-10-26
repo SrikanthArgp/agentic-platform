@@ -1,0 +1,1652 @@
+[
+ {
+  "date": "2026-09-28",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk01",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-28",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk02",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-28",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk03",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-28",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "db-checkout-prod",
+  "resource_type": "rds:db.r6g.2xlarge",
+  "cost_usd": 151.2,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-28",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "s3-checkout-receipts",
+  "resource_type": "s3",
+  "cost_usd": 28.75,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-29",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk01",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-29",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk02",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-29",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk03",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-29",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "db-checkout-prod",
+  "resource_type": "rds:db.r6g.2xlarge",
+  "cost_usd": 151.2,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-29",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "s3-checkout-receipts",
+  "resource_type": "s3",
+  "cost_usd": 28.75,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-30",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk01",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-30",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk02",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-30",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk03",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-30",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "db-checkout-prod",
+  "resource_type": "rds:db.r6g.2xlarge",
+  "cost_usd": 151.2,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-30",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "s3-checkout-receipts",
+  "resource_type": "s3",
+  "cost_usd": 28.75,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-01",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk01",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-01",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk02",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-01",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk03",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-01",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "db-checkout-prod",
+  "resource_type": "rds:db.r6g.2xlarge",
+  "cost_usd": 151.2,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-01",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "s3-checkout-receipts",
+  "resource_type": "s3",
+  "cost_usd": 28.75,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-01",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "emr-recon-202610",
+  "resource_type": "emr:cluster",
+  "cost_usd": 1146.9,
+  "tags": {
+   "owner": "finance-data",
+   "job": "monthly-reconciliation",
+   "schedule": "monthly",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-02",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk01",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-02",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk02",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-02",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk03",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-02",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "db-checkout-prod",
+  "resource_type": "rds:db.r6g.2xlarge",
+  "cost_usd": 151.2,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-02",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "s3-checkout-receipts",
+  "resource_type": "s3",
+  "cost_usd": 28.75,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-03",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk01",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-03",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk02",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-03",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk03",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-03",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "db-checkout-prod",
+  "resource_type": "rds:db.r6g.2xlarge",
+  "cost_usd": 151.2,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-03",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "s3-checkout-receipts",
+  "resource_type": "s3",
+  "cost_usd": 28.75,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-04",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk01",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-04",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk02",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-04",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk03",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-04",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "db-checkout-prod",
+  "resource_type": "rds:db.r6g.2xlarge",
+  "cost_usd": 151.2,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-04",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "s3-checkout-receipts",
+  "resource_type": "s3",
+  "cost_usd": 28.75,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-05",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk01",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-05",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk02",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-05",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk03",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-05",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "db-checkout-prod",
+  "resource_type": "rds:db.r6g.2xlarge",
+  "cost_usd": 151.2,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-05",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "s3-checkout-receipts",
+  "resource_type": "s3",
+  "cost_usd": 28.75,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-06",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk01",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-06",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk02",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-06",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk03",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-06",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "db-checkout-prod",
+  "resource_type": "rds:db.r6g.2xlarge",
+  "cost_usd": 151.2,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-06",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "s3-checkout-receipts",
+  "resource_type": "s3",
+  "cost_usd": 28.75,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-07",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk01",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-07",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk02",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-07",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk03",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-07",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "db-checkout-prod",
+  "resource_type": "rds:db.r6g.2xlarge",
+  "cost_usd": 151.2,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-07",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "s3-checkout-receipts",
+  "resource_type": "s3",
+  "cost_usd": 28.75,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-08",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk01",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-08",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk02",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-08",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "i-0chk03",
+  "resource_type": "ec2:m6i.xlarge",
+  "cost_usd": 80.4,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-08",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "db-checkout-prod",
+  "resource_type": "rds:db.r6g.2xlarge",
+  "cost_usd": 151.2,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-08",
+  "service": "checkout-svc",
+  "region": "us-east-1",
+  "resource_id": "s3-checkout-receipts",
+  "resource_type": "s3",
+  "cost_usd": 28.75,
+  "tags": {
+   "owner": "payments",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-28",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "ep-recsys-prod",
+  "resource_type": "sagemaker:ml.g5.2xlarge",
+  "cost_usd": 242.1,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-28",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "s3-ml-features",
+  "resource_type": "s3",
+  "cost_usd": 61.3,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-29",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "ep-recsys-prod",
+  "resource_type": "sagemaker:ml.g5.2xlarge",
+  "cost_usd": 242.1,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-29",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "s3-ml-features",
+  "resource_type": "s3",
+  "cost_usd": 61.3,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-30",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "ep-recsys-prod",
+  "resource_type": "sagemaker:ml.g5.2xlarge",
+  "cost_usd": 242.1,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-30",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "s3-ml-features",
+  "resource_type": "s3",
+  "cost_usd": 61.3,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-01",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "ep-recsys-prod",
+  "resource_type": "sagemaker:ml.g5.2xlarge",
+  "cost_usd": 242.1,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-01",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "s3-ml-features",
+  "resource_type": "s3",
+  "cost_usd": 61.3,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-02",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "ep-recsys-prod",
+  "resource_type": "sagemaker:ml.g5.2xlarge",
+  "cost_usd": 242.1,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-02",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "s3-ml-features",
+  "resource_type": "s3",
+  "cost_usd": 61.3,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-03",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "ep-recsys-prod",
+  "resource_type": "sagemaker:ml.g5.2xlarge",
+  "cost_usd": 242.1,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-03",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "s3-ml-features",
+  "resource_type": "s3",
+  "cost_usd": 61.3,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-04",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "ep-recsys-prod",
+  "resource_type": "sagemaker:ml.g5.2xlarge",
+  "cost_usd": 242.1,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-04",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "s3-ml-features",
+  "resource_type": "s3",
+  "cost_usd": 61.3,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-05",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "ep-recsys-prod",
+  "resource_type": "sagemaker:ml.g5.2xlarge",
+  "cost_usd": 242.1,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-05",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "s3-ml-features",
+  "resource_type": "s3",
+  "cost_usd": 61.3,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-05",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu01",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-05",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu02",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-05",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu03",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-05",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu04",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-05",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu05",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-05",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu06",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-05",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu07",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-05",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu08",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-06",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "ep-recsys-prod",
+  "resource_type": "sagemaker:ml.g5.2xlarge",
+  "cost_usd": 242.1,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-06",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "s3-ml-features",
+  "resource_type": "s3",
+  "cost_usd": 61.3,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-06",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu01",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-06",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu02",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-06",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu03",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-06",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu04",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-06",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu05",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-06",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu06",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-06",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu07",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-06",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu08",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-07",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "ep-recsys-prod",
+  "resource_type": "sagemaker:ml.g5.2xlarge",
+  "cost_usd": 242.1,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-07",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "s3-ml-features",
+  "resource_type": "s3",
+  "cost_usd": 61.3,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-07",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu01",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-07",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu02",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-07",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu03",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-07",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu04",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-07",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu05",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-07",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu06",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-07",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu07",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-07",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu08",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-08",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "ep-recsys-prod",
+  "resource_type": "sagemaker:ml.g5.2xlarge",
+  "cost_usd": 242.1,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-08",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "s3-ml-features",
+  "resource_type": "s3",
+  "cost_usd": 61.3,
+  "tags": {
+   "owner": "ml-recsys",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-08",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu01",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-08",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu02",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-08",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu03",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-08",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu04",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-08",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu05",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-08",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu06",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-08",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu07",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-10-08",
+  "service": "ml-platform",
+  "region": "eu-west-1",
+  "resource_id": "i-0gpu08",
+  "resource_type": "ec2:p4d.24xlarge",
+  "cost_usd": 786.43,
+  "tags": {}
+ },
+ {
+  "date": "2026-09-28",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch01",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-28",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch02",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-28",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "es-search-prod",
+  "resource_type": "opensearch:r6g.large",
+  "cost_usd": 39.5,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-29",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch01",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-29",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch02",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-29",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "es-search-prod",
+  "resource_type": "opensearch:r6g.large",
+  "cost_usd": 39.5,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-30",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch01",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-30",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch02",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-30",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "es-search-prod",
+  "resource_type": "opensearch:r6g.large",
+  "cost_usd": 39.5,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-01",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch01",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-01",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch02",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-01",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "es-search-prod",
+  "resource_type": "opensearch:r6g.large",
+  "cost_usd": 39.5,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-02",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch01",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-02",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch02",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-02",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "es-search-prod",
+  "resource_type": "opensearch:r6g.large",
+  "cost_usd": 39.5,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-03",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch01",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-03",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch02",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-03",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "es-search-prod",
+  "resource_type": "opensearch:r6g.large",
+  "cost_usd": 39.5,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-04",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch01",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-04",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch02",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-04",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "es-search-prod",
+  "resource_type": "opensearch:r6g.large",
+  "cost_usd": 39.5,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-05",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch01",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-05",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch02",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-05",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "es-search-prod",
+  "resource_type": "opensearch:r6g.large",
+  "cost_usd": 39.5,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-06",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch01",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-06",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch02",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-06",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "es-search-prod",
+  "resource_type": "opensearch:r6g.large",
+  "cost_usd": 39.5,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-07",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch01",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-07",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch02",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-07",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "es-search-prod",
+  "resource_type": "opensearch:r6g.large",
+  "cost_usd": 39.5,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-07",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch03",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod",
+   "autoscaling-group": "search-asg",
+   "event": "product-launch"
+  }
+ },
+ {
+  "date": "2026-10-07",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch04",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod",
+   "autoscaling-group": "search-asg",
+   "event": "product-launch"
+  }
+ },
+ {
+  "date": "2026-10-08",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch01",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-08",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "i-0srch02",
+  "resource_type": "ec2:c6i.2xlarge",
+  "cost_usd": 81.6,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-08",
+  "service": "search-api",
+  "region": "us-west-2",
+  "resource_id": "es-search-prod",
+  "resource_type": "opensearch:r6g.large",
+  "cost_usd": 39.5,
+  "tags": {
+   "owner": "search",
+   "env": "prod"
+  }
+ }
+]

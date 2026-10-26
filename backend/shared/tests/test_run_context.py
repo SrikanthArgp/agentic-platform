@@ -4,7 +4,7 @@ from run_context import APP_ID_KEY, AGENT_ID_KEY, RunContext, from_meta
 
 
 def test_meta_round_trip():
-    ctx = RunContext(app_id="it-ops-triage", agent_id="triage-agent", alert_id="a-1")
+    ctx = RunContext(app_id="it-ops-triage", agent_id="triage-agent", alert_id="a-1", alert_key="disk_full:web-01")
     assert from_meta(ctx.to_meta()) == ctx
 
 
@@ -16,6 +16,6 @@ def test_missing_or_malformed_context_is_none(meta):
     assert from_meta(meta) is None
 
 
-def test_alert_id_is_optional_and_other_meta_keys_are_ignored():
+def test_alert_id_and_key_are_optional_and_other_meta_keys_are_ignored():
     ctx = from_meta({APP_ID_KEY: "app", AGENT_ID_KEY: "agent", "progressToken": 7})
-    assert ctx == RunContext(app_id="app", agent_id="agent", alert_id="")
+    assert ctx == RunContext(app_id="app", agent_id="agent", alert_id="", alert_key="")

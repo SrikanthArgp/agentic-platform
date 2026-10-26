@@ -12,7 +12,9 @@
 2. Registers each tool the manifest declares, with the definition the
    running `tool-gateway` serves (description, schemas, `read_only`). A
    declared tool `tool-gateway` doesn't serve, at that version, fails the
-   run: app code ships first, the manifest second (§12).
+   run: app code ships first, the manifest second (§12). A tool declared
+   `version: latest` is registered at whatever version `tool-gateway`
+   serves (ADR-0026).
 3. Upserts the manifest. `registry` validates it in full and rejects it
    with every problem listed.
 
@@ -72,6 +74,8 @@ def register(manifest: dict[str, Any], served: dict[str, dict[str, Any]], http: 
     for ref in manifest.get("tools", []):
         tool_id, version = ref["tool_id"], ref["version"]
         tool = served.get(tool_id)
+        if tool is not None and version == "latest":
+            version = tool.get("version")
         if tool is None or tool.get("version") != version:
             have = f"version {tool.get('version')}" if tool else "nothing"
             raise RegistrationError(
@@ -87,7 +91,8 @@ def register(manifest: dict[str, Any], served: dict[str, dict[str, Any]], http: 
             "read_only": tool.get("read_only", False),
         }
         response = http.put(f"/tools/{tool_id}/versions/{version}", json=body)
-        report.append(f"tool {tool_id} {version}: {_outcome(response)}")
+        latest = " (latest)" if ref["version"] == "latest" else ""
+        report.append(f"tool {tool_id} {version}{latest}: {_outcome(response)}")
 
     response = http.put(f"/apps/{app_id}", json=manifest)
     report.append(f"app {app_id}: {_outcome(response)}")

@@ -7,14 +7,15 @@
     uv run backend/scripts/mcp_call.py                      # list tools
     uv run backend/scripts/mcp_call.py lookup_runbook '{"alert_type": "disk_full"}'
     uv run backend/scripts/mcp_call.py --url http://localhost:8003/mcp lookup_runbook '{"alert_type": "nope"}'
-    uv run backend/scripts/mcp_call.py --app-id cost-anomaly-triage --agent-id cost-triage-agent billing_lookup '{...}'
+    uv run backend/scripts/mcp_call.py --app-id cost-anomaly-triage --agent-id cost-triage-agent billing-lookup '{...}'
+    uv run backend/scripts/mcp_call.py --alert-key disk_full:web-01 similar-past-case-lookup
 
 Calls run as an agent: tool-gateway only serves a call carrying a run
 context (`--app-id`/`--agent-id`, sent in `_meta` like orchestrator does)
 whose agent `registry` allows that tool, so the app must be registered.
 
 Exits 1 when the tool returns an error result (tool_not_allowed,
-registry_unavailable, tool_not_found, invalid_arguments, tool_failed). A runbook that isn't found is a normal
+registry_unavailable, tool_not_found, invalid_arguments, tool_failed, ...). A runbook that isn't found is a normal
 result (found=false), not an error.
 """
 
@@ -35,6 +36,7 @@ async def main() -> int:
     parser.add_argument("--url", default=DEFAULT_URL)
     parser.add_argument("--app-id", default="it-ops-triage")
     parser.add_argument("--agent-id", default="triage-agent")
+    parser.add_argument("--alert-key", default="", help="the run's alert_key (similar-past-case-lookup reads it)")
     parser.add_argument("tool", nargs="?", help="tool_id to call; omit to list tools")
     parser.add_argument("arguments", nargs="?", default="{}", help="tool arguments as a JSON object")
     args = parser.parse_args()
@@ -47,7 +49,7 @@ async def main() -> int:
             return 0
 
         meta = {META_PREFIX + "app_id": args.app_id, META_PREFIX + "agent_id": args.agent_id,
-                META_PREFIX + "alert_id": "mcp_call"}
+                META_PREFIX + "alert_id": "mcp_call", META_PREFIX + "alert_key": args.alert_key}
         result = await client.call_tool(args.tool, json.loads(args.arguments), meta=meta)
         print(json.dumps(result.structured_content, indent=2))
         return 1 if result.is_error else 0

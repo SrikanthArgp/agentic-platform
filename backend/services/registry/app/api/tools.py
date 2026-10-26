@@ -7,8 +7,11 @@ manifest-cache TTL, with no redeploy (docs/plan.md Day 5).
 """
 
 from fastapi import APIRouter, HTTPException, Path, Request, Response, status
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 
 from app.core.models import TOOL_ID, VERSION, Tool, ToolEnabledIn, ToolIn, UpsertResult
+from app.core.versions import LATEST
 from app.db.repository import Repository
 
 router = APIRouter(prefix="/tools", tags=["tools"])
@@ -36,6 +39,15 @@ async def put_tool(
         raise _invalid("read_only", "must be true: every tool is a read-only lookup (ADR-0004).")
     if (body.scope == "app") != (body.app_id is not None):
         raise _invalid("app_id", "is required for scope 'app' and must be absent for scope 'global'.")
+    # tool-gateway validates every call's arguments against input_schema
+    # (ADR-0025), so a schema that can't be compiled must not get in.
+    for field in ("input_schema", "output_schema"):
+        schema = getattr(body, field)
+        try:
+            if schema is not None:
+                Draft202012Validator.check_schema(schema)
+        except SchemaError as e:
+            raise _invalid(field, f"is not a valid JSON Schema: {e.message}") from None
     result = await _repo(request).upsert_tool(Tool(tool_id=tool_id, version=version, **body.model_dump()))
     if result.created:
         response.status_code = status.HTTP_201_CREATED
@@ -66,13 +78,21 @@ async def patch_tool(
 @router.delete("/{tool_id}/versions/{version}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_tool(request: Request, tool_id: str = ToolIdPath, version: str = VersionPath) -> None:
     repo = _repo(request)
+    versions = await repo.list_tool_versions(tool_id)
+    # Refused if an app pins this version, or is on "latest" and this is the
+    # only version left. Deleting the newest of several just moves "latest"
+    # back one: that's how a global tool's upgrade is rolled back (ADR-0026).
     using = [
         a.app_id for a in await repo.list_apps()
-        if any((t["tool_id"], t["version"]) == (tool_id, version) for t in a.manifest["tools"])
+        if any(
+            t["tool_id"] == tool_id
+            and (t["version"] == version or (t["version"] == LATEST and [v.version for v in versions] == [version]))
+            for t in a.manifest["tools"]
+        )
     ]
     if using:
         raise HTTPException(
-            status.HTTP_409_CONFLICT, f"Tool '{tool_id}' version {version} is declared by apps {using}; disable it instead."
+            status.HTTP_409_CONFLICT, f"Tool '{tool_id}' version {version} is used by apps {using}; disable it instead."
         )
     if not await repo.delete_tool(tool_id, version):
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"No tool '{tool_id}' version {version}.")

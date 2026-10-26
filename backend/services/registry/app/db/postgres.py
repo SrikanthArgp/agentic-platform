@@ -49,6 +49,10 @@ class PostgresRepository:
         rows = await self._pool.fetch(f"SELECT {_TOOL_COLUMNS} FROM tools ORDER BY tool_id, version")
         return [_tool(r) for r in rows]
 
+    async def list_tool_versions(self, tool_id: str) -> list[Tool]:
+        rows = await self._pool.fetch(f"SELECT {_TOOL_COLUMNS} FROM tools WHERE tool_id = $1", tool_id)
+        return [_tool(r) for r in rows]
+
     async def upsert_tool(self, tool: Tool) -> UpsertResult:
         d = tool.definition()
         async with self._pool.acquire() as conn, conn.transaction():

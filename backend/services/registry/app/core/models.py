@@ -18,6 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field
 SLUG = r"^[a-z][a-z0-9-]{0,62}$"
 TOOL_ID = r"^[a-z][a-z0-9_-]{0,63}$"
 VERSION = r"^\d+\.\d+\.\d+$"
+# A manifest's tool version: pinned, or "latest" (core/versions.py, ADR-0026).
+VERSION_REF = r"^(\d+\.\d+\.\d+|latest)$"
 
 Scope = Literal["app", "global"]
 Scalar = str | int | float | bool
@@ -78,11 +80,14 @@ class AgentIn(_Strict):
     prompt_ref: str = Field(min_length=1)
     tool_allowlist: list[str] = []
     invoke_on: list[str] = []
+    # Tools orchestrator calls with no arguments before this agent's loop,
+    # results in its first message (ADR-0028). Each must be on its allowlist.
+    prefetch_tools: list[str] = []
 
 
 class ToolRefIn(_Strict):
     tool_id: str = Field(pattern=TOOL_ID)
-    version: str = Field(pattern=VERSION)
+    version: str = Field(pattern=VERSION_REF)
     scope: Scope
 
 
@@ -126,6 +131,7 @@ class EffectiveTool(BaseModel):
     """A tool an agent may call right now: allowlisted, declared, enabled."""
 
     tool_id: str
+    # Always a concrete version: "latest" is resolved before serving.
     version: str
     scope: Scope
     description: str
@@ -139,6 +145,8 @@ class ResolvedAgent(BaseModel):
     prompt_ref: str
     tool_allowlist: list[str]
     invoke_on: list[str]
+    # Manifests stored before ADR-0028 have none.
+    prefetch_tools: list[str] = []
     # Computed here, once, so orchestrator (tool definitions) and
     # tool-gateway (per-call re-check) can't disagree about it.
     tools: list[EffectiveTool]
@@ -146,7 +154,11 @@ class ResolvedAgent(BaseModel):
 
 class ResolvedToolRef(BaseModel):
     tool_id: str
-    version: str
+    # The registered version the manifest's reference resolves to; None if
+    # none is registered any more.
+    version: str | None
+    # What the manifest says: a version, or "latest".
+    requested_version: str
     scope: Scope
     enabled: bool
 

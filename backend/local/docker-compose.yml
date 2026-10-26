@@ -226,6 +226,8 @@ services:
     # (app/core/faults.py), e.g. TOOL_FAULTS=lookup_runbook=error.
     environment:
       <<: *default-env
+      # similar-past-case-lookup reads past cases through its API (ADR-0027).
+      REVIEW_CONSOLE_URL: http://review-console:8000
       TOOL_FAULTS: ${TOOL_FAULTS:-}
     volumes:
       - ../apps:/repo/backend/apps:ro

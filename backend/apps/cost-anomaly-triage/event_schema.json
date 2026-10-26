@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cost-anomaly-triage/event_schema.json",
+  "title": "cost-anomaly-triage event payload",
+  "description": "The app-specific part of a cloud spend-spike alert from an external cost-anomaly detector (RunAgentRequest.payload). The envelope (source, severity, message, timestamp) is validated by ingestion, not here. Extra fields are allowed and passed to the agent as data.",
+  "type": "object",
+  "required": ["account", "service", "region", "window_start", "window_end", "baseline_cost", "observed_cost"],
+  "properties": {
+    "account": {
+      "description": "Cloud account the spend is billed to.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "service": {
+      "description": "Service the spend is attributed to; with region, the alert_key and what billing-lookup is asked about.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,62}$"
+    },
+    "region": {
+      "description": "Cloud region, e.g. us-east-1.",
+      "type": "string",
+      "pattern": "^[a-z]{2}-[a-z]+-[0-9]$"
+    },
+    "tags": {
+      "description": "Cost-allocation tags the detector attached. Set by whoever created the resources: claims, not proof.",
+      "type": "object",
+      "additionalProperties": { "type": "string", "maxLength": 256 }
+    },
+    "window_start": {
+      "description": "Start of the flagged window, ISO 8601 with a UTC offset.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "window_end": {
+      "description": "End of the flagged window, ISO 8601 with a UTC offset.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "baseline_cost": {
+      "description": "What the detector expected for the window, in USD.",
+      "type": "number",
+      "minimum": 0
+    },
+    "observed_cost": {
+      "description": "What was actually spent in the window, in USD.",
+      "type": "number",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": true
+}

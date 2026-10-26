@@ -10,6 +10,9 @@ failure (docs/ARCHITECTURE.md §10, §12):
 - `registry_unavailable`: the allowlist couldn't be checked (registry down,
   nothing cached). The call is refused: this fails closed.
 - `tool_not_found`: no tool with that name was loaded.
+- `tool_version_mismatch`: `registry` resolved the agent's tool to a
+  version other than the one loaded here (ADR-0026). Refused rather than
+  run code the manifest didn't ask for.
 - `invalid_arguments`: arguments failed the tool's input schema: first the
   one registered in `registry` for that agent's tool, then the loaded
   tool's own model. Never retried, never counted by the circuit breaker.
@@ -125,12 +128,23 @@ async def call_tool(
         # this holds even if tool ids were reused across apps.
         return _error("tool_not_allowed", f"'{name}' belongs to another app.", tool_id=name)
 
-    # The registered schema is the contract the agent was offered; checked
-    # before the loaded tool's own model, so a tool loaded at a different
-    # version can't accept what registry would reject.
     registered = allowed[name]
+    if registered.get("version") != tool.version:
+        logger.error(
+            "tools/call %s refused: registry resolved version %r, tool-gateway loaded %s",
+            name, registered.get("version"), tool.version,
+        )
+        return _error(
+            "tool_version_mismatch",
+            f"registry resolved '{name}' to version {registered.get('version')}; this tool-gateway serves {tool.version}.",
+            tool_id=name,
+        )
+
+    # The registered schema is the contract the agent was offered; checked
+    # before the loaded tool's own model.
+    schema = registered.get("input_schema")
     try:
-        validator = schemas.validator(registered) if isinstance(registered, dict) else None
+        validator = schemas.validator(schema) if isinstance(schema, dict) else None
     except SchemaError:
         validator = None
     if validator is None:
@@ -146,7 +160,7 @@ async def call_tool(
         return _error("invalid_arguments", f"Invalid arguments for '{name}'.", tool_id=name, details=errors)
 
     try:
-        output = await runner.run(name, lambda: tool.run(args))
+        output = await runner.run(name, lambda: tool.run(args, context))
     except CircuitOpenError:
         logger.warning("tools/call %s refused: circuit open", name)
         return _error("tool_unavailable", f"Tool '{name}' is failing; not called.", tool_id=name)
@@ -164,15 +178,15 @@ async def call_tool(
     )
 
 
-async def _allowed_tools(apps: AppSource, context: RunContext) -> dict[str, Any]:
-    """The agent's tools as registry resolves them: tool_id -> registered input schema."""
+async def _allowed_tools(apps: AppSource, context: RunContext) -> dict[str, dict[str, Any]]:
+    """The agent's tools as registry resolves them: tool_id -> that tool (version, input_schema, ...)."""
     try:
         app = await apps.get_app(context.app_id)
     except AppNotFoundError:
         return {}
     for agent in app.get("agents", []):
         if agent.get("agent_id") == context.agent_id:
-            return {t["tool_id"]: t.get("input_schema") for t in agent.get("tools", [])}
+            return {t["tool_id"]: t for t in agent.get("tools", [])}
     return {}
 
 

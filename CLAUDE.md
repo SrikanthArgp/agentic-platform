@@ -30,14 +30,14 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Days 1–12 of `docs/plan.md` are done (infra, contracts, skeletons;
+Days 1–13 of `docs/plan.md` are done (infra, contracts, skeletons;
 `tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core;
 `ingestion` and the end-to-end hot path; `registry` + App Manifest;
 `memory-store`; context, supervisor and guardrails in `orchestrator`;
 callable agents; `review-console`; the verdict feedback loop; the Week 2
-integration pass; `tool-gateway` resilience); Day 13 (`registry`
-versioning, a global tool, app #2) is next. As-built notes for each day
-are in `docs/plan.md`.
+integration pass; `tool-gateway` resilience; tool versions, the global
+`similar-past-case-lookup` and app #2's first cut); Day 14 (rate & cost
+governance) is next. As-built notes for each day are in `docs/plan.md`.
 
 - All 6 services have a FastAPI skeleton (`app/main.py`, `/healthz`),
   a `pyproject.toml`, a committed `uv.lock`, a `Dockerfile`, and passing
@@ -65,7 +65,9 @@ are in `docs/plan.md`.
 - `registry` (Postgres `tools`/`apps`, asyncpg) stores tool registrations
   and App Manifests, validates manifests on `PUT /apps/{app_id}`, and
   serves `GET /apps/{app_id}` resolved: each agent's `tools` = allowlisted,
-  declared, enabled. `PATCH /tools/{id}/versions/{v} {"enabled": false}`
+  declared, enabled. A manifest tool `version` is pinned or `latest`
+  (highest registered, resolved on every read, ADR-0026); a tool whose
+  schemas aren't valid JSON Schema is rejected. `PATCH /tools/{id}/versions/{v} {"enabled": false}`
   turns a tool off for every agent within one TTL. Register an app with
   `uv run backend/scripts/register_app.py {app_id}` (needs the stack up;
   idempotent). `ingestion`, `orchestrator`, `tool-gateway` read it through
@@ -81,7 +83,12 @@ are in `docs/plan.md`.
   docstring). Every call must carry a run context and be in that agent's
   `registry`-resolved tools, else `tool_not_allowed` (`registry_unavailable`
   if it can't check). Arguments must pass that tool's `input_schema` as
-  registered, then its own model (`invalid_arguments`). Each call has one
+  registered, then its own model (`invalid_arguments`); a version other
+  than the loaded one is `tool_version_mismatch` (ADR-0026). Global tools
+  live in its own `app/tools/`: `similar-past-case-lookup` reads
+  `review-console`'s resolved cases for the run's `app_id` + `alert_key`
+  from the run context, never from arguments (`REVIEW_CONSOLE_URL`,
+  ADR-0027). Each call has one
   deadline (`TOOL_TIMEOUT_S`, 5s) covering retries, and each tool a circuit
   breaker (`app/core/resilience.py`, ADR-0025). Other failures:
   `tool_not_found`/`tool_failed`/`tool_timeout`/`tool_unavailable`
@@ -96,7 +103,10 @@ are in `docs/plan.md`.
   tools are our own `StructuredTool`s over MCP (`app/agent/react.py`); the same run is exposed as gRPC `RunAgent`
   (`:50051`, host `:50052`). Before the loop it calls `memory-store`'s
   `GetContext` once (one shared channel, `MEMORY_STORE_TARGET`) and gives
-  the agent the history as a data block (ADR-0019). After it, in order:
+  the agent the history as a data block (ADR-0019), then calls the
+  agent's manifest `prefetch_tools` with no arguments and adds their
+  results the same way (ADR-0028; both apps prefetch
+  `similar-past-case-lookup`). After it, in order:
   the supervisor (agent's `confidence`, capped by fixed rules, below the
   manifest's `supervisor.min_confidence` / default 0.6 → `ESCALATE`,
   ADR-0020), then the manifest's `escalate_when` guardrails (`alert.*`,
@@ -118,8 +128,8 @@ are in `docs/plan.md`.
   `uv run backend/scripts/publish_alert.py` publishes straight to Kafka
   (bypassing `ingestion`) and prints the decision. Unit tests use a scripted LangChain fake chat model; none call the
   real one.
-- Run context (`app_id`/`agent_id`/`alert_id`) travels in MCP `_meta` via
-  `ap-shared`'s `run_context` module, never as a tool argument.
+- Run context (`app_id`/`agent_id`/`alert_id`/`alert_key`) travels in MCP
+  `_meta` via `ap-shared`'s `run_context` module, never as a tool argument.
 - `backend/local/docker-compose.yml` runs the full stack: Kafka (KRaft),
   Redis, Postgres, OTel Collector, Loki, Mimir, Tempo, Grafana, and the 6
   services — all with health checks. The one-shot `kafka-init` service
@@ -127,7 +137,7 @@ are in `docs/plan.md`.
   `backend/local/postgres/init.sql` creates `cases`, `memory_events`,
   `tools`, `apps`; it's idempotent, so on an existing volume pipe it into
   `docker compose exec -T postgres psql -U platform -d platform`.
-  After `down -v`, re-run `register_app.py it-ops-triage`.
+  After `down -v`, re-run `register_app.py` for both apps.
 - Services log JSON to stdout and drop spans; nothing exports to the
   collector until Day 23. Don't set `OTEL_EXPORTER_OTLP_ENDPOINT` on a
   service before then — FastAPI >=0.142 auto-attaches OTLP exporters when
@@ -139,6 +149,11 @@ are in `docs/plan.md`.
   absolute timestamps around 2026-10-05, so set an alert's `timestamp` near
   one to see a change cited), a complete `manifest.yaml` (guardrail `alert.severity in
   [critical]`, `supervisor.min_confidence: 0.6`), `event_schema.json`, `prompts/triage-agent.md` and `prompts/root-cause-summarizer.md` (callable, `invoke_on: [ESCALATE]`).
+- `backend/apps/cost-anomaly-triage/` (app #2, first cut; finished Day 17):
+  `cost-triage-agent` with `billing-lookup` (`tools/billing.json`, daily
+  line items around 2026-10-01..08 for `checkout-svc`/`us-east-1`,
+  `ml-platform`/`eu-west-1`, `search-api`/`us-west-2`) and the global
+  `similar-past-case-lookup`; `alert_key` is `service:region`.
 
 ## Commands
 

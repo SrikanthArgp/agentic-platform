@@ -22,6 +22,7 @@ verdicts are (§13 T3).
 import json
 from datetime import UTC, datetime
 import secrets
+from collections.abc import Sequence
 from typing import Any
 
 from google.protobuf.json_format import MessageToDict
@@ -67,7 +68,10 @@ the platform (same alert_key), over the last 1h, 24h and 7d:
 - If the block says the context is unavailable, decide without it.
 
 Tools: they are read-only lookups. Call them as the app instructions say.
-Never invent tool results.
+Never invent tool results. Some results may already be in your first
+message, under "Looked up before you started": the platform ran those
+tools for you. Use them like any other tool result, and don't call those
+tools again.
 
 """
 
@@ -153,14 +157,23 @@ def context_data(context: memory_store_pb2.GetContextResponse | None) -> dict[st
 
 
 def alert_message(
-    request: agent_pb2.RunAgentRequest, context: memory_store_pb2.GetContextResponse | None, nonce: str
+    request: agent_pb2.RunAgentRequest,
+    context: memory_store_pb2.GetContextResponse | None,
+    nonce: str,
+    prefetched: Sequence[str] = (),
 ) -> str:
     return (
         "Triage this alert.\n\n"
         + data_block("alert", alert_data(request), nonce)
         + "\n\nThis alert_key's history on the platform:\n\n"
         + data_block("memory_context", context_data(context), nonce)
+        + _prefetched(prefetched)
     )
+
+
+def _prefetched(blocks: Sequence[str]) -> str:
+    """Prefetched tool results (ADR-0028), already data blocks from `tool_result_message`."""
+    return "\n\nLooked up before you started:\n\n" + "\n\n".join(blocks) if blocks else ""
 
 
 def explain_message(
@@ -168,14 +181,17 @@ def explain_message(
     context: memory_store_pb2.GetContextResponse | None,
     entry: dict[str, Any] | None,
     nonce: str,
+    prefetched: Sequence[str] = (),
 ) -> str:
-    """A callable agent's first message: the alert, its history, and (when
-    run by delegation) the entry agent's final decision and reasons."""
+    """A callable agent's first message: the alert, its history, any
+    prefetched tool results, and (when run by delegation) the entry agent's
+    final decision and reasons."""
     message = (
         "Explain this alert.\n\n"
         + data_block("alert", alert_data(request), nonce)
         + "\n\nThis alert_key's history on the platform:\n\n"
         + data_block("memory_context", context_data(context), nonce)
+        + _prefetched(prefetched)
     )
     if entry is not None:
         message += "\n\nThe triage decision, final:\n\n" + data_block("triage_decision", entry, nonce)

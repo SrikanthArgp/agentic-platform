@@ -11,16 +11,15 @@ from collections.abc import Mapping
 from app.core.models import AppRecord, EffectiveTool, ResolvedAgent, ResolvedApp, ResolvedToolRef, Tool
 
 
-def resolve_app(record: AppRecord, tools: Mapping[tuple[str, str], Tool]) -> ResolvedApp:
-    """`tools` maps (tool_id, version) to the registered tool, for the
-    manifest's declared tools. A declared tool missing from it (deleted since
-    registration) counts as disabled."""
+def resolve_app(record: AppRecord, tools: Mapping[str, Tool]) -> ResolvedApp:
+    """`tools` maps each declared tool_id to the registered tool its version
+    reference resolves to (`versions.resolve_ref`; "latest" already
+    resolved). A declared tool missing from it (deleted since registration)
+    counts as disabled."""
     m = record.manifest
-    declared = {t["tool_id"]: (t["tool_id"], t["version"]) for t in m["tools"]}
 
     def enabled(tool_id: str) -> Tool | None:
-        key = declared.get(tool_id)
-        tool = tools.get(key) if key else None
+        tool = tools.get(tool_id)
         return tool if tool is not None and tool.enabled else None
 
     agents = []
@@ -40,7 +39,13 @@ def resolve_app(record: AppRecord, tools: Mapping[tuple[str, str], Tool]) -> Res
         display_name=record.display_name,
         agents=agents,
         tools=[
-            ResolvedToolRef(**t, enabled=enabled(t["tool_id"]) is not None)
+            ResolvedToolRef(
+                tool_id=t["tool_id"],
+                version=tool.version if (tool := tools.get(t["tool_id"])) else None,
+                requested_version=t["version"],
+                scope=t["scope"],
+                enabled=enabled(t["tool_id"]) is not None,
+            )
             for t in m["tools"]
         ],
         event_schema_ref=m["event_schema_ref"],

@@ -82,7 +82,9 @@ def test_disabling_a_tool_changes_the_next_read_without_re_registering(registere
     app = registered.get(APP_URL).json()
     assert app["agents"][0]["tools"] == []
     assert app["agents"][0]["tool_allowlist"] == ["lookup_runbook"]  # the manifest itself is unchanged
-    assert app["tools"] == [{"tool_id": "lookup_runbook", "version": "1.0.0", "scope": "app", "enabled": False}]
+    assert app["tools"] == [
+        {"tool_id": "lookup_runbook", "version": "1.0.0", "requested_version": "1.0.0", "scope": "app", "enabled": False}
+    ]
 
     registered.patch(TOOL_URL, json={"enabled": True})
     assert [t["tool_id"] for t in registered.get(APP_URL).json()["agents"][0]["tools"]] == ["lookup_runbook"]
@@ -232,3 +234,129 @@ def test_supervisor_is_optional_and_served_as_null(registered):
 @pytest.mark.parametrize("supervisor", [{"min_confidence": 1.5}, {"min_confidence": -0.1}, {"threshold": 0.5}])
 def test_bad_supervisor_is_rejected(registered, supervisor):
     assert registered.put(APP_URL, json=manifest(supervisor=supervisor)).status_code == 422
+
+
+# --- version resolution: pinned or "latest" (ADR-0026) ---
+
+LATEST = [{"tool_id": "lookup_runbook", "version": "latest", "scope": "app"}]
+
+
+def _served_versions(client) -> tuple[str | None, list[str]]:
+    app = client.get(APP_URL).json()
+    return app["tools"][0]["version"], [t["version"] for t in app["agents"][0]["tools"]]
+
+
+def test_latest_resolves_to_the_highest_registered_version_by_number(registered):
+    for version in ("1.9.0", "1.10.0", "1.2.3"):
+        registered.put(f"/tools/lookup_runbook/versions/{version}", json=tool_body())
+    assert registered.put(APP_URL, json=manifest(tools=LATEST)).status_code == 201
+
+    app = registered.get(APP_URL).json()
+    assert app["tools"][0] == {
+        "tool_id": "lookup_runbook", "version": "1.10.0", "requested_version": "latest", "scope": "app", "enabled": True,
+    }
+    assert app["agents"][0]["tools"][0]["version"] == "1.10.0"
+
+
+def test_a_new_version_moves_latest_without_re_registering_the_app(registered):
+    registered.put(APP_URL, json=manifest(tools=LATEST))
+    assert _served_versions(registered) == ("1.0.0", ["1.0.0"])
+
+    registered.put("/tools/lookup_runbook/versions/1.1.0", json=tool_body(description="v1.1"))
+    assert _served_versions(registered) == ("1.1.0", ["1.1.0"])
+    assert registered.get(APP_URL).json()["agents"][0]["tools"][0]["description"] == "v1.1"
+
+
+def test_pinned_version_stays_put_when_a_newer_one_is_registered(registered):
+    registered.put(APP_URL, json=manifest())
+    registered.put("/tools/lookup_runbook/versions/2.0.0", json=tool_body())
+
+    assert _served_versions(registered) == ("1.0.0", ["1.0.0"])
+
+
+def test_disabled_latest_turns_the_tool_off_instead_of_falling_back(registered):
+    registered.put("/tools/lookup_runbook/versions/1.1.0", json=tool_body())
+    registered.put(APP_URL, json=manifest(tools=LATEST))
+    registered.patch("/tools/lookup_runbook/versions/1.1.0", json={"enabled": False})
+
+    app = registered.get(APP_URL).json()
+    assert app["tools"][0]["version"] == "1.1.0"
+    assert app["tools"][0]["enabled"] is False
+    assert app["agents"][0]["tools"] == []
+
+
+def test_latest_with_no_registered_version_is_rejected(client):
+    response = client.put(APP_URL, json=manifest(tools=LATEST))
+
+    assert response.status_code == 422
+    assert "has no registered version" in str(response.json())
+
+
+@pytest.mark.parametrize("version", ["1.0", "v1.0.0", "Latest", "newest", "1.0.0-beta"])
+def test_malformed_version_reference_is_rejected(registered, version):
+    tools = [{"tool_id": "lookup_runbook", "version": version, "scope": "app"}]
+    assert registered.put(APP_URL, json=manifest(tools=tools)).status_code == 422
+
+
+def test_deleting_the_newest_version_moves_latest_back_one(registered):
+    """How a global tool's upgrade is rolled back."""
+    registered.put("/tools/lookup_runbook/versions/1.1.0", json=tool_body())
+    registered.put(APP_URL, json=manifest(tools=LATEST))
+
+    assert registered.delete("/tools/lookup_runbook/versions/1.1.0").status_code == 204
+    assert _served_versions(registered) == ("1.0.0", ["1.0.0"])
+
+
+def test_deleting_the_only_version_latest_has_is_refused(registered):
+    registered.put(APP_URL, json=manifest(tools=LATEST))
+
+    assert registered.delete(TOOL_URL).status_code == 409
+    assert _served_versions(registered) == ("1.0.0", ["1.0.0"])
+
+
+def test_deleting_a_pinned_version_is_refused_even_with_newer_ones(registered):
+    registered.put("/tools/lookup_runbook/versions/1.1.0", json=tool_body())
+    registered.put(APP_URL, json=manifest())
+
+    assert registered.delete(TOOL_URL).status_code == 409
+    assert registered.delete("/tools/lookup_runbook/versions/1.1.0").status_code == 204
+
+
+# --- prefetch_tools (ADR-0028) ---
+
+
+def _with_prefetch(prefetch: list[str], allowlist: list[str] | None = None) -> dict:
+    m = manifest()
+    m["agents"][0]["prefetch_tools"] = prefetch
+    if allowlist is not None:
+        m["agents"][0]["tool_allowlist"] = allowlist
+    return m
+
+
+def test_prefetch_tools_are_stored_and_served(registered):
+    assert registered.put(APP_URL, json=_with_prefetch(["lookup_runbook"])).status_code == 201
+
+    agents = registered.get(APP_URL).json()["agents"]
+    assert agents[0]["prefetch_tools"] == ["lookup_runbook"]
+    assert agents[1]["prefetch_tools"] == []
+
+
+def test_prefetch_tool_not_on_the_allowlist_is_rejected(registered):
+    response = registered.put(APP_URL, json=_with_prefetch(["lookup_runbook"], allowlist=[]))
+
+    assert response.status_code == 422
+    errors = response.json()["detail"]["errors"]
+    assert {"field": "agents[0].prefetch_tools[0]", "message": "'lookup_runbook' is not in this agent's tool_allowlist."} in errors
+
+
+def test_prefetch_tool_that_needs_arguments_is_rejected(client):
+    schema = {"type": "object", "properties": {"alert_type": {"type": "string"}}, "required": ["alert_type"]}
+    client.put("/tools/lookup_runbook/versions/1.0.0", json=tool_body(input_schema=schema))
+    response = client.put(APP_URL, json=_with_prefetch(["lookup_runbook"]))
+
+    assert response.status_code == 422
+    assert "can't be called with no arguments" in str(response.json())
+
+
+def test_prefetch_tools_must_not_repeat(registered):
+    assert registered.put(APP_URL, json=_with_prefetch(["lookup_runbook", "lookup_runbook"])).status_code == 422

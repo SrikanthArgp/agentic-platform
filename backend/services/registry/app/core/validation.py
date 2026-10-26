@@ -2,8 +2,9 @@
 
 Shape errors are pydantic's job (`models.py`); this checks what a single
 field can't: exactly one entry agent, allowlists against declared tools,
-declared tools against registered ones, `invoke_on` values, and
-`escalate_when` field paths. Every problem is reported, each naming its
+declared tools against registered ones, `invoke_on` values, prefetched
+tools against the allowlist and their schema, and `escalate_when` field
+paths. Every problem is reported, each naming its
 field, so one round trip shows everything wrong with a manifest.
 
 Not checked, because the files live in other services' images:
@@ -17,8 +18,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from google.protobuf.descriptor import Descriptor, FieldDescriptor
+from jsonschema import Draft202012Validator
 
 from app.core.models import ManifestIn, Tool
+from app.core.versions import LATEST
 from proto_gen import agent_pb2, memory_store_pb2
 
 # Every Decision except the proto3 zero value.
@@ -35,6 +38,7 @@ class FieldError:
     message: str
 
 
+# (tool_id, version or "latest") -> the registered tool it resolves to.
 ToolLookup = Callable[[str, str], Tool | None]
 
 
@@ -46,6 +50,7 @@ def validate_manifest(manifest: ManifestIn, url_app_id: str, lookup_tool: ToolLo
 
     errors += _check_tools(manifest, lookup_tool)
     errors += _check_agents(manifest)
+    errors += _check_prefetch(manifest, lookup_tool)
 
     if not manifest.alert_key_fields:
         errors.append(FieldError("alert_key_fields", "must list at least one payload field."))
@@ -73,9 +78,8 @@ def _check_tools(manifest: ManifestIn, lookup_tool: ToolLookup) -> list[FieldErr
         seen.add(ref.tool_id)
         tool = lookup_tool(ref.tool_id, ref.version)
         if tool is None:
-            errors.append(
-                FieldError(where, f"tool '{ref.tool_id}' version {ref.version} is not registered in registry.")
-            )
+            what = "has no registered version" if ref.version == LATEST else f"version {ref.version} is not registered"
+            errors.append(FieldError(where, f"tool '{ref.tool_id}' {what} in registry."))
             continue
         if tool.scope != ref.scope:
             errors.append(
@@ -116,6 +120,27 @@ def _check_agents(manifest: ManifestIn) -> list[FieldError]:
                 errors.append(
                     FieldError(f"{where}.invoke_on[{j}]", f"'{decision}' is not one of {sorted(DECISIONS)}.")
                 )
+    return errors
+
+
+def _check_prefetch(manifest: ManifestIn, lookup_tool: ToolLookup) -> list[FieldError]:
+    """Each prefetched tool is on that agent's allowlist and callable with no
+    arguments, since orchestrator calls it with `{}` (ADR-0028)."""
+    errors = []
+    versions = {t.tool_id: t.version for t in manifest.tools}
+    for i, agent in enumerate(manifest.agents):
+        for j, tool_id in enumerate(agent.prefetch_tools):
+            where = f"agents[{i}].prefetch_tools[{j}]"
+            if tool_id not in agent.tool_allowlist:
+                errors.append(FieldError(where, f"'{tool_id}' is not in this agent's tool_allowlist."))
+                continue
+            tool = lookup_tool(tool_id, versions.get(tool_id, ""))
+            if tool is None:
+                continue  # already reported by _check_tools / _check_agents
+            if not Draft202012Validator(tool.input_schema).is_valid({}):
+                errors.append(FieldError(where, f"'{tool_id}' can't be called with no arguments."))
+        if len(set(agent.prefetch_tools)) != len(agent.prefetch_tools):
+            errors.append(FieldError(f"agents[{i}].prefetch_tools", "must not repeat a tool."))
     return errors
 
 

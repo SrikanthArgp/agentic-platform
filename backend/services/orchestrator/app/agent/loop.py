@@ -76,7 +76,9 @@ class AgentRunner:
         manifest = await self._manifests.get(request.app_id)
         agent = manifest.agent(request.agent_id)
         app_prompt = self._manifests.prompt(manifest, agent)
-        context = RunContext(app_id=manifest.app_id, agent_id=agent.agent_id, alert_id=request.alert_id)
+        context = RunContext(
+            app_id=manifest.app_id, agent_id=agent.agent_id, alert_id=request.alert_id, alert_key=request.alert_key
+        )
 
         with tracer.start_as_current_span(
             "agent.run",

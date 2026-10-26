@@ -5,8 +5,8 @@
 
 - `context`: `memory-store` GetContext once, before the agent (ADR-0019).
   Failure isn't fatal: the run goes on without context, with a reason.
-- `agent`: the entry agent's tool-calling loop (`react.py`), then its
-  answer parsed. No answer, an unparseable one, or a failed tool lookup ->
+- `agent`: the entry agent's `prefetch_tools` (ADR-0028), then its
+  tool-calling loop (`react.py`), then its answer parsed. No answer, an unparseable one, or a failed tool lookup ->
   ESCALATE.
 - `supervisor`: confidence, capped by fixed rules, below the app's
   threshold -> ESCALATE (`supervisor.py`, ADR-0020).
@@ -138,10 +138,11 @@ async def agent_node(state: RunState, runtime: Runtime[RunDeps]) -> RunState:
     deps = runtime.context
     nonce = prompt.new_nonce()
     tools = RunTools(state["agent"].tools, deps.tools, state["run_context"], nonce)
+    prefetched = await tools.prefetch(state["agent"].prefetch_tools)
     outcome = await run_agent(
         deps.model,
         prompt.build_system_prompt(state["app_prompt"], nonce),
-        prompt.alert_message(state["request"], state.get("memory_context"), nonce),
+        prompt.alert_message(state["request"], state.get("memory_context"), nonce, prefetched),
         tools,
         deps.max_tool_rounds,
     )
@@ -250,15 +251,18 @@ async def explain(
     Raises `CallableFailed`, `DecisionParseError` or `LLMError` when it
     produced nothing usable."""
     app_prompt = deps.prompts(manifest, agent)
-    run_context = RunContext(app_id=manifest.app_id, agent_id=agent.agent_id, alert_id=request.alert_id)
+    run_context = RunContext(
+        app_id=manifest.app_id, agent_id=agent.agent_id, alert_id=request.alert_id, alert_key=request.alert_key
+    )
     nonce = prompt.new_nonce()
     with tracer.start_as_current_span("agent.callable", attributes={"agent_id": agent.agent_id}):
         async with deps.gateway.connect() as session:
             tools = RunTools(agent.tools, session, run_context, nonce)
+            prefetched = await tools.prefetch(agent.prefetch_tools)
             outcome = await run_agent(
                 deps.model,
                 prompt.build_system_prompt(app_prompt, nonce, role="callable"),
-                prompt.explain_message(request, memory_context, entry, nonce),
+                prompt.explain_message(request, memory_context, entry, nonce, prefetched),
                 tools,
                 deps.max_tool_rounds,
             )

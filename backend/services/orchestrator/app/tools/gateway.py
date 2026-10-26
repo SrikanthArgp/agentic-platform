@@ -7,7 +7,8 @@ tool arguments (docs/ARCHITECTURE.md §13 T4).
 
 Failures come back as `ToolResult(is_error=True)` with an `error` code:
 `tool-gateway`'s own codes (`tool_not_found`, `invalid_arguments`,
-`tool_failed`, `tool_timeout`, `tool_unavailable`, ...), or
+`tool_failed`, `tool_timeout`, `tool_unavailable`, `tool_version_mismatch`,
+...), or
 `gateway_unreachable` when the call itself failed, including no answer
 within `call_timeout_s`. `tool-gateway` bounds each call by its own
 `TOOL_TIMEOUT_S` (ADR-0025); this timeout, set longer, only fires when

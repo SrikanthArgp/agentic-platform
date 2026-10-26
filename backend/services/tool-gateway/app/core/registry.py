@@ -14,6 +14,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+from run_context import RunContext
+
 
 class ToolNotFoundError(LookupError):
     def __init__(self, tool_id: str):
@@ -35,8 +37,13 @@ class ToolSpec:
     app_id: str | None
     input_model: type[BaseModel]
     output_model: type[BaseModel]
-    handler: Callable[[Any], BaseModel | Awaitable[BaseModel]]
+    handler: Callable[..., BaseModel | Awaitable[BaseModel]]
     read_only: bool = True
+    # Global tools only (platform code, `app/tools/`): the handler is called
+    # as handler(args, context) with the call's `RunContext`, which is how
+    # it scopes what it reads to the calling app (ADR-0027). App tools never
+    # see the run context.
+    takes_context: bool = False
 
     def input_schema(self) -> dict[str, Any]:
         return self.input_model.model_json_schema()
@@ -56,14 +63,15 @@ class ToolSpec:
         """Raises pydantic.ValidationError on invalid arguments."""
         return self.input_model.model_validate(arguments)
 
-    async def run(self, args: BaseModel) -> BaseModel:
+    async def run(self, args: BaseModel, context: RunContext | None = None) -> BaseModel:
         """Run the handler on validated `args`; a sync handler runs in a
         worker thread so it can't block the event loop. Raises TypeError if
         it returns something other than the declared output model."""
+        call_args = (args, context) if self.takes_context else (args,)
         if inspect.iscoroutinefunction(self.handler):
-            result = await self.handler(args)
+            result = await self.handler(*call_args)
         else:
-            result = await asyncio.to_thread(self.handler, args)
+            result = await asyncio.to_thread(self.handler, *call_args)
             if inspect.isawaitable(result):
                 result = await result
         if not isinstance(result, self.output_model):

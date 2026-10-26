@@ -68,6 +68,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "ap-shared" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "jsonschema" },
     { name = "mcp" },
     { name = "pydantic" },
@@ -85,6 +86,7 @@ dev = [
 requires-dist = [
     { name = "ap-shared", editable = "../../shared" },
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "jsonschema", specifier = ">=4.23" },
     { name = "mcp", specifier = ">=2.2,<3" },
     { name = "pydantic", specifier = ">=2.9" },

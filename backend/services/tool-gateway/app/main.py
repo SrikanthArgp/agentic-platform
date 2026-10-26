@@ -14,6 +14,8 @@ from app.core.loader import load_app_tools
 from app.core.registry import ToolRegistry
 from app.core.resilience import ResiliencePolicy, ToolRunner
 from app.mcp.server import AppSource, build_mcp_server
+from app.tools import similar_past_cases
+from app.tools.similar_past_cases import CaseSource, ReviewConsoleCases
 from observability import setup_observability
 from registry_client import RegistryClient
 
@@ -27,6 +29,8 @@ DEFAULT_APPS_DIR = Path(__file__).resolve().parents[3] / "apps"
 # access via the published port, and the Compose service name.
 DEFAULT_ALLOWED_HOSTS = "localhost:*,127.0.0.1:*,tool-gateway:*"
 DEFAULT_REGISTRY_URL = "http://localhost:8005"
+# similar-past-case-lookup reads past cases through review-console's API.
+DEFAULT_REVIEW_CONSOLE_URL = "http://localhost:8006"
 
 setup_observability(SERVICE_NAME)
 
@@ -37,16 +41,25 @@ class HealthResponse(BaseModel):
 
 
 def create_app(
-    apps_dir: Path | None = None, allowed_hosts: list[str] | None = None, apps: AppSource | None = None
+    apps_dir: Path | None = None,
+    allowed_hosts: list[str] | None = None,
+    apps: AppSource | None = None,
+    cases: CaseSource | None = None,
 ) -> FastAPI:
-    """`apps` (the source of each agent's allowlist) is injected in tests;
-    otherwise a `RegistryClient` with the platform's manifest TTL."""
+    """`apps` (the source of each agent's allowlist) and `cases` (what
+    `similar-past-case-lookup` reads) are injected in tests; otherwise a
+    `RegistryClient` with the platform's manifest TTL and `review-console`."""
     apps_dir = apps_dir or Path(os.environ.get("APPS_DIR", DEFAULT_APPS_DIR))
     if allowed_hosts is None:
         allowed_hosts = os.environ.get("MCP_ALLOWED_HOSTS", DEFAULT_ALLOWED_HOSTS).split(",")
 
     registry = ToolRegistry()
     load_app_tools(apps_dir, registry)
+    # Global tools: platform code, loaded alongside every app's own (§3).
+    cases_client = None
+    if cases is None:
+        cases = cases_client = ReviewConsoleCases(os.environ.get("REVIEW_CONSOLE_URL", DEFAULT_REVIEW_CONSOLE_URL))
+    registry.add(similar_past_cases.build_tool(cases))
     if faults := os.environ.get("TOOL_FAULTS"):
         registry = apply_faults(faults, registry)
     runner = ToolRunner(ResiliencePolicy.from_env(os.environ))
@@ -74,6 +87,8 @@ def create_app(
             yield
         if registry_client:
             await registry_client.aclose()
+        if cases_client:
+            await cases_client.aclose()
 
     app = FastAPI(title=SERVICE_NAME, lifespan=lifespan)
     app.state.registry = registry

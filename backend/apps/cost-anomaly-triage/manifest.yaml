@@ -1,0 +1,49 @@
+# App Manifest for cost-anomaly-triage (docs/ARCHITECTURE.md §3, ADR-0006).
+# App #2, first cut (docs/plan.md Day 13; finished Day 17).
+#
+# Source of truth; registry holds the runtime copy. After editing, register
+# it (code first, manifest second, §12):
+#
+#   uv run backend/scripts/register_app.py cost-anomaly-triage
+
+app_id: cost-anomaly-triage
+display_name: Cloud cost anomaly triage
+
+agents:
+  - agent_id: cost-triage-agent
+    version: 0.1.0
+    role: entry
+    prompt_ref: prompts/cost-triage-agent.md
+    tool_allowlist:
+      - billing-lookup
+      - similar-past-case-lookup
+    # Run by orchestrator before the agent's loop, results in its first
+    # message (ADR-0028): the agent doesn't have to remember to look.
+    prefetch_tools:
+      - similar-past-case-lookup
+
+event_schema_ref: event_schema.json
+# Joined with ":" into alert_key, e.g. "checkout-svc:us-east-1" (ADR-0007).
+alert_key_fields: [service, region]
+
+tools:
+  - tool_id: billing-lookup
+    version: 1.0.0
+    scope: app
+  # Global (ADR-0027), the same tool it-ops-triage uses; "latest" (ADR-0026).
+  - tool_id: similar-past-case-lookup
+    version: latest
+    scope: global
+
+# Prefix of every memory-store key for this app (§3, §6): keeps
+# "checkout-svc:us-east-1" here apart from any it-ops key with the same text.
+memory_namespace: cost-anomaly-triage
+
+# Deterministic guardrails (ADR-0010): any match forces ESCALATE.
+escalate_when:
+  - field: alert.severity
+    in: [critical]
+
+# Supervisor (ADR-0020): below this confidence, the decision becomes ESCALATE.
+supervisor:
+  min_confidence: 0.6
