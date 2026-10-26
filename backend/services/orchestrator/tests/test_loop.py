@@ -158,15 +158,16 @@ async def test_tool_results_go_back_to_the_llm_as_data_blocks(apps_dir):
     assert f"<<<DATA {nonce} kind=...>>>" in llm.calls[1]["system"]
 
 
-async def test_infra_tool_failure_forces_escalate(apps_dir):
-    gateway = FakeGateway(results={"lookup_runbook": ToolResult(True, {"error": "tool_failed"})})
+@pytest.mark.parametrize("code", ["tool_failed", "tool_timeout", "tool_unavailable"])
+async def test_infra_tool_failure_forces_escalate(apps_dir, code):
+    gateway = FakeGateway(results={"lookup_runbook": ToolResult(True, {"error": code})})
     llm = FakeChatModel(responses=[tool_call(), final("SUPPRESS", "looks benign")])
 
     response = await make_runner(apps_dir, llm, gateway).run(make_request())
 
     assert response.decision == agent_pb2.ESCALATE
     assert response.reasons[0] == "looks benign"
-    assert "tool 'lookup_runbook' failed (tool_failed)" in response.reasons[1]
+    assert f"tool 'lookup_runbook' failed ({code})" in response.reasons[1]
     assert "escalated because a tool lookup failed" in response.reasons[2]
 
 

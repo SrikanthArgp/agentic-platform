@@ -9,6 +9,8 @@ from registry_client import AppNotFoundError, RegistryUnavailableError
 REPO_APPS_DIR = Path(__file__).resolve().parents[3] / "apps"
 
 ECHO_TOOL_MODULE = """
+import asyncio
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -37,6 +39,11 @@ def wrong_shape(args: EchoInput) -> dict:
     return {"echoed": args.text}
 
 
+async def slow(args: EchoInput) -> EchoOutput:
+    await asyncio.sleep(60)
+    return EchoOutput(echoed=args.text)
+
+
 def _tool(handler):
     return {
         "version": "0.1.0",
@@ -53,6 +60,7 @@ TOOLS = {
     "{prefix}async_echo": _tool(async_echo),
     "{prefix}broken": _tool(broken),
     "{prefix}wrong_shape": _tool(wrong_shape),
+    "{prefix}slow": _tool(slow),
 }
 """
 
@@ -75,11 +83,17 @@ def anyio_backend() -> str:
 
 
 class FakeApps:
-    """`RegistryClient.get_app` for the allowlist check: {app_id: {agent_id: [tool_id, ...]}}."""
+    """`RegistryClient.get_app` for the allowlist check: {app_id: {agent_id: [tool_id, ...]}}.
 
-    def __init__(self, allowed: dict[str, dict[str, list[str]]], down: bool = False):
+    Each tool's registered `input_schema` is `schemas[tool_id]`, else `{}`
+    (accepts anything, leaving validation to the tool's own model)."""
+
+    def __init__(
+        self, allowed: dict[str, dict[str, list[str]]], down: bool = False, schemas: dict | None = None
+    ):
         self.allowed = allowed
         self.down = down
+        self.schemas = schemas or {}
 
     async def get_app(self, app_id: str) -> dict:
         if self.down:
@@ -89,7 +103,7 @@ class FakeApps:
         return {
             "app_id": app_id,
             "agents": [
-                {"agent_id": agent_id, "tools": [{"tool_id": t} for t in tools]}
+                {"agent_id": agent_id, "tools": [{"tool_id": t, "input_schema": self.schemas.get(t, {})} for t in tools]}
                 for agent_id, tools in self.allowed[app_id].items()
             ],
         }

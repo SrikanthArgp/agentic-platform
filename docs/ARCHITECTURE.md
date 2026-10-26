@@ -658,9 +658,16 @@ cross-service or cross-app link.
 
 ## 10. Reliability & governance
 
-- **Tool resilience** (Day 12): circuit breaker + retry/backoff around every
-  `tool-gateway` call; a tripped breaker makes `orchestrator` degrade to a
-  safe default (escalate) rather than hang.
+- **Tool resilience** (Day 12, ADR-0025): inside `tool-gateway`, each tool
+  call has one deadline (`TOOL_TIMEOUT_S`, 5s) covering retries with
+  backoff, and each tool has its own circuit breaker (5 consecutive failed
+  calls → fail fast for 30s, then one trial call). Arguments are checked
+  against the input schema `registry` holds for that tool before it runs.
+  A timeout (`tool_timeout`) or an open breaker (`tool_unavailable`) is an
+  infrastructure failure, like `tool_failed`: `orchestrator` escalates and
+  names the tool in `reasons[]` rather than hang. `orchestrator`'s own
+  per-call timeout (`TOOL_CALL_TIMEOUT_S`, 10s) covers `tool-gateway`
+  itself hanging.
 - **Cost governance** (Day 14): per-`app_id`/`agent_id` token/cost budget in
   Redis; over-budget runs are rejected with an explicit reason, never
   silently dropped or queued. An over-budget **entry** agent means the

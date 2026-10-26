@@ -22,7 +22,7 @@ def test_discovers_tools_from_every_app_and_records_owner(tmp_path):
     assert registry.get("one_echo").app_id == "app-one"
     assert registry.get("two_echo").app_id == "app-two"
     assert registry.get("one_echo").scope == "app"
-    assert len(registry) == 8
+    assert len(registry) == 10
 
 
 def test_same_module_name_in_two_apps_does_not_collide(tmp_path):

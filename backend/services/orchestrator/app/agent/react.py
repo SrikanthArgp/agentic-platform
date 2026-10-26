@@ -7,8 +7,9 @@ platform-specific is around it:
   agent, each wrapping the run's MCP `ToolSession`. A call sends the run
   context in MCP `_meta` (never as an argument, §13 T4), comes back to
   the model inside a data block (§13 T1/T2), and is recorded in the trace.
-  Infrastructure failures (`tool_failed`, `registry_unavailable`,
-  `gateway_unreachable`) are collected: the caller escalates on them.
+  Infrastructure failures (`tool_failed`, `tool_timeout`,
+  `tool_unavailable`, `registry_unavailable`, `gateway_unreachable`) are
+  collected: the caller escalates on them.
 - Middleware: a call to a tool the agent wasn't offered is answered
   `tool_not_allowed` and never reaches `tool-gateway`; after
   `max_tool_rounds` rounds of tool calls the loop stops (`ran_out`); any
@@ -43,7 +44,9 @@ tracer = trace.get_tracer(__name__)
 
 # Tool failures that mean "we couldn't look", not "the agent asked wrong":
 # the agent's decision can't be trusted, so the run escalates.
-INFRA_TOOL_ERRORS = frozenset({"tool_failed", "registry_unavailable", GATEWAY_UNREACHABLE})
+INFRA_TOOL_ERRORS = frozenset(
+    {"tool_failed", "tool_timeout", "tool_unavailable", "registry_unavailable", GATEWAY_UNREACHABLE}
+)
 TOOL_NOT_ALLOWED = "tool_not_allowed"
 RESULT_SUMMARY_CHARS = 300
 REASON_PREFIX = "orchestrator: "

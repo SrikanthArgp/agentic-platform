@@ -9,8 +9,10 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel
 from starlette.routing import Route
 
+from app.core.faults import apply_faults
 from app.core.loader import load_app_tools
 from app.core.registry import ToolRegistry
+from app.core.resilience import ResiliencePolicy, ToolRunner
 from app.mcp.server import AppSource, build_mcp_server
 from observability import setup_observability
 from registry_client import RegistryClient
@@ -45,6 +47,9 @@ def create_app(
 
     registry = ToolRegistry()
     load_app_tools(apps_dir, registry)
+    if faults := os.environ.get("TOOL_FAULTS"):
+        registry = apply_faults(faults, registry)
+    runner = ToolRunner(ResiliencePolicy.from_env(os.environ))
     registry_client = None
     if apps is None:
         apps = registry_client = RegistryClient(
@@ -55,7 +60,7 @@ def create_app(
     # Stateless + JSON responses: every tool call is one request/response, so
     # any replica can serve any call (no sticky sessions across rollouts).
     session_manager = StreamableHTTPSessionManager(
-        app=build_mcp_server(registry, apps),
+        app=build_mcp_server(registry, apps, runner),
         json_response=True,
         stateless=True,
         security_settings=TransportSecuritySettings(

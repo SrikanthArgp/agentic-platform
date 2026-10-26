@@ -34,6 +34,9 @@ class Settings:
     max_tool_rounds: int = 5
     # Per callable agent run (Day 8); one that takes longer doesn't contribute.
     callable_timeout_s: float = 30.0
+    # Per MCP tool call; longer than tool-gateway's own TOOL_TIMEOUT_S (5s),
+    # so it fires only if tool-gateway itself hangs (docs/adr/0025).
+    tool_call_timeout_s: float = 10.0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -53,4 +56,5 @@ class Settings:
             llm_model=env.get("LLM_MODEL", cls.llm_model),
             max_tool_rounds=int(env.get("MAX_TOOL_ROUNDS", cls.max_tool_rounds)),
             callable_timeout_s=float(env.get("CALLABLE_TIMEOUT_S", cls.callable_timeout_s)),
+            tool_call_timeout_s=float(env.get("TOOL_CALL_TIMEOUT_S", cls.tool_call_timeout_s)),
         )

@@ -222,6 +222,11 @@ services:
     <<: *service-defaults
     build: { context: .., dockerfile: services/tool-gateway/Dockerfile }
     ports: ["8003:8000"]
+    # Empty unless set in the shell, to break a tool on purpose
+    # (app/core/faults.py), e.g. TOOL_FAULTS=lookup_runbook=error.
+    environment:
+      <<: *default-env
+      TOOL_FAULTS: ${TOOL_FAULTS:-}
     volumes:
       - ../apps:/repo/backend/apps:ro
     depends_on:

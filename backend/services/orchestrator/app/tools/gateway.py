@@ -7,7 +7,11 @@ tool arguments (docs/ARCHITECTURE.md §13 T4).
 
 Failures come back as `ToolResult(is_error=True)` with an `error` code:
 `tool-gateway`'s own codes (`tool_not_found`, `invalid_arguments`,
-`tool_failed`), or `gateway_unreachable` when the call itself failed.
+`tool_failed`, `tool_timeout`, `tool_unavailable`, ...), or
+`gateway_unreachable` when the call itself failed, including no answer
+within `call_timeout_s`. `tool-gateway` bounds each call by its own
+`TOOL_TIMEOUT_S` (ADR-0025); this timeout, set longer, only fires when
+`tool-gateway` itself hangs, so no run waits on a tool forever.
 If the connection can't even be opened, `connect()` raises
 `GatewayUnavailableError` and the run is "not evaluated" (ESCALATE).
 """
@@ -61,10 +65,14 @@ class ToolGateway(Protocol):
     def connect(self) -> AbstractAsyncContextManager[ToolSession]: ...
 
 
+DEFAULT_CALL_TIMEOUT_S = 10.0
+
+
 class MCPToolGateway:
-    def __init__(self, server: Any):
+    def __init__(self, server: Any, call_timeout_s: float = DEFAULT_CALL_TIMEOUT_S):
         """`server` is tool-gateway's MCP URL, or an in-process MCP `Server` in tests."""
         self._server = server
+        self._call_timeout_s = call_timeout_s
 
     @asynccontextmanager
     async def connect(self) -> AsyncIterator["MCPToolSession"]:
@@ -75,12 +83,13 @@ class MCPToolGateway:
                 client = await stack.enter_async_context(Client(self._server))
             except Exception as e:
                 raise GatewayUnavailableError(f"tool-gateway unreachable ({_root_cause(e)})") from e
-            yield MCPToolSession(client)
+            yield MCPToolSession(client, self._call_timeout_s)
 
 
 class MCPToolSession:
-    def __init__(self, client: Client):
+    def __init__(self, client: Client, call_timeout_s: float = DEFAULT_CALL_TIMEOUT_S):
         self._client = client
+        self._call_timeout_s = call_timeout_s
 
     async def list_tools(self) -> list[GatewayTool]:
         tools = []
@@ -100,7 +109,9 @@ class MCPToolSession:
 
     async def call_tool(self, name: str, arguments: dict[str, Any], *, context: RunContext) -> ToolResult:
         try:
-            result = await self._client.call_tool(name, arguments, meta=context.to_meta())
+            result = await self._client.call_tool(
+                name, arguments, read_timeout_seconds=self._call_timeout_s, meta=context.to_meta()
+            )
         except Exception:
             logger.exception("tool-gateway call %s failed", name)
             return ToolResult(is_error=True, content={"error": GATEWAY_UNREACHABLE, "tool_id": name})

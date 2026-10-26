@@ -6,6 +6,7 @@ agent may call which tool is decided per request by its `tool_allowlist`
 (§3), not by what was loaded.
 """
 
+import asyncio
 import inspect
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
@@ -49,10 +50,22 @@ class ToolSpec:
         Raises pydantic.ValidationError on invalid arguments, and TypeError if
         the handler returns something other than the declared output model.
         """
-        args = self.input_model.model_validate(arguments)
-        result = self.handler(args)
-        if inspect.isawaitable(result):
-            result = await result
+        return await self.run(self.validate(arguments))
+
+    def validate(self, arguments: dict[str, Any]) -> BaseModel:
+        """Raises pydantic.ValidationError on invalid arguments."""
+        return self.input_model.model_validate(arguments)
+
+    async def run(self, args: BaseModel) -> BaseModel:
+        """Run the handler on validated `args`; a sync handler runs in a
+        worker thread so it can't block the event loop. Raises TypeError if
+        it returns something other than the declared output model."""
+        if inspect.iscoroutinefunction(self.handler):
+            result = await self.handler(args)
+        else:
+            result = await asyncio.to_thread(self.handler, args)
+            if inspect.isawaitable(result):
+                result = await result
         if not isinstance(result, self.output_model):
             raise TypeError(
                 f"Tool '{self.tool_id}' returned {type(result).__name__}, "

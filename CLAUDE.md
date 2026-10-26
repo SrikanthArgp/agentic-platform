@@ -30,14 +30,14 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Days 1–11 of `docs/plan.md` are done (infra, contracts, skeletons;
+Days 1–12 of `docs/plan.md` are done (infra, contracts, skeletons;
 `tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core;
 `ingestion` and the end-to-end hot path; `registry` + App Manifest;
 `memory-store`; context, supervisor and guardrails in `orchestrator`;
 callable agents; `review-console`; the verdict feedback loop; the Week 2
-integration pass); Day 12 (`tool-gateway` resilience) is next. As-built
-notes for each
-day are in `docs/plan.md`.
+integration pass; `tool-gateway` resilience); Day 13 (`registry`
+versioning, a global tool, app #2) is next. As-built notes for each day
+are in `docs/plan.md`.
 
 - All 6 services have a FastAPI skeleton (`app/main.py`, `/healthz`),
   a `pyproject.toml`, a committed `uv.lock`, a `Dockerfile`, and passing
@@ -80,8 +80,13 @@ day are in `docs/plan.md`.
   the `TOOLS` dict contract, incl. required `read_only: True`, is in its
   docstring). Every call must carry a run context and be in that agent's
   `registry`-resolved tools, else `tool_not_allowed` (`registry_unavailable`
-  if it can't check). Other failures: `tool_not_found`/`invalid_arguments`/
-  `tool_failed`. `uv run backend/scripts/mcp_call.py [tool_id] [json-args]`
+  if it can't check). Arguments must pass that tool's `input_schema` as
+  registered, then its own model (`invalid_arguments`). Each call has one
+  deadline (`TOOL_TIMEOUT_S`, 5s) covering retries, and each tool a circuit
+  breaker (`app/core/resilience.py`, ADR-0025). Other failures:
+  `tool_not_found`/`tool_failed`/`tool_timeout`/`tool_unavailable`
+  (breaker open). `TOOL_FAULTS=lookup_runbook=error` (or `=sleep:30`)
+  breaks a tool on purpose for live tests. `uv run backend/scripts/mcp_call.py [tool_id] [json-args]`
   calls it from the host (`localhost:8003`) as `--app-id`/`--agent-id`
   (default it-ops-triage/triage-agent; the app must be registered).
 - `orchestrator` consumes `alert.received`, runs the app's agents, and

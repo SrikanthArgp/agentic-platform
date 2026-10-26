@@ -319,7 +319,7 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 ---
 
-### Day 12 — `tool-gateway`: resilience + sandboxing
+### Day 12 — `tool-gateway`: resilience + sandboxing ✅
 
 **Goal**: a broken tool degrades the platform predictably instead of hanging or crashing it.
 
@@ -328,6 +328,15 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 - **Unit tests**: circuit breaker opens after N consecutive failures, retry/backoff timing, timeout enforcement.
 
 **Definition of done**: deliberately break a tool (inject a sleep/error), observe the circuit breaker open, and confirm `orchestrator` degrades gracefully (e.g., escalates by default) rather than hanging.
+
+**As built** (notes for later days):
+- Design in ADR-0025. `tool-gateway/app/core/resilience.py` wraps each tool's handler: one deadline per call (`TOOL_TIMEOUT_S`, 5s) covering every attempt; up to 3 attempts with jittered backoff (0.1s doubling, 1s cap); one breaker per `tool_id` (5 consecutive failed calls, after retries and including timeouts → `tool_unavailable` for 30s, then one trial call). New codes `tool_timeout`/`tool_unavailable` are infra failures in `orchestrator`'s `INFRA_TOOL_ERRORS`, so the run escalates naming the tool. Sync handlers now run in a worker thread (`ToolSpec.run`); before, a slow one blocked the gateway's event loop.
+- Arguments are checked against the `input_schema` `registry` resolved for that agent's tool (jsonschema, compiled once per schema), then against the tool's own model. A missing or invalid registered schema is `tool_not_allowed`.
+- `orchestrator` had no timeout on an MCP call; it now has `TOOL_CALL_TIMEOUT_S` (10s) per call → `gateway_unreachable`.
+- `TOOL_FAULTS` (`app/core/faults.py`; passed through by Compose, empty by default) breaks a tool on purpose: `TOOL_FAULTS=lookup_runbook=error docker compose up -d --wait tool-gateway`. Startup logs a WARNING per fault.
+- Live, `lookup_runbook=error`: calls 1–5 `tool_failed` (3 attempts each), call 6 `tool_unavailable` without running the handler; a low-severity alert then escalated in ~5s with `tool 'lookup_runbook' failed (tool_unavailable)` in `reasons[]` for both agents. `lookup_runbook=sleep:30`: each call `tool_timeout` at 5s, the run (two calls, entry + summarizer) escalated in ~16s. Healthy again after restarting without the fault. Arguments violating the registered pattern got `invalid_arguments` with the jsonschema path.
+- Unit tests: `tool-gateway` 101 (+32: `test_resilience.py`, `test_faults.py`, schema and breaker cases in `test_mcp_server.py`), `orchestrator` 209 (+3). Integration: `orchestrator` 6 (after `seed.py`).
+- Not sandboxing in the isolation sense: a hung sync handler keeps its thread after the timeout (bounded by the breaker); process isolation is phase two (ADR-0025).
 
 ---
 

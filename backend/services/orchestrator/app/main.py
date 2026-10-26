@@ -28,7 +28,7 @@ class HealthResponse(BaseModel):
 def build_runner(settings: Settings, registry: RegistryClient, memory: MemoryStoreClient) -> AgentRunner:
     return AgentRunner(
         manifests=ManifestStore(registry, settings.apps_dir),
-        gateway=MCPToolGateway(settings.tool_gateway_url),
+        gateway=MCPToolGateway(settings.tool_gateway_url, settings.tool_call_timeout_s),
         model=build_chat_model(settings.llm_provider, settings.llm_model),
         memory=memory,
         max_tool_rounds=settings.max_tool_rounds,

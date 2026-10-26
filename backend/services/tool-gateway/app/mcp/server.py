@@ -10,8 +10,14 @@ failure (docs/ARCHITECTURE.md §10, §12):
 - `registry_unavailable`: the allowlist couldn't be checked (registry down,
   nothing cached). The call is refused: this fails closed.
 - `tool_not_found`: no tool with that name was loaded.
-- `invalid_arguments`: arguments failed the tool's input schema.
-- `tool_failed`: the tool raised, or returned the wrong shape.
+- `invalid_arguments`: arguments failed the tool's input schema: first the
+  one registered in `registry` for that agent's tool, then the loaded
+  tool's own model. Never retried, never counted by the circuit breaker.
+- `tool_failed`: the tool raised, or returned the wrong shape, on every
+  attempt (`app/core/resilience.py`).
+- `tool_timeout`: the call ran past its deadline (`TOOL_TIMEOUT_S`).
+- `tool_unavailable`: the tool's circuit breaker is open; the handler
+  didn't run.
 
 `orchestrator` sends the run's `app_id`/`agent_id` in each request's
 `_meta` (`run_context`), never as a tool argument (§13 T4). Every call is
@@ -27,11 +33,14 @@ import logging
 from typing import Any, Protocol
 
 import mcp_types as types
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 from mcp.server import Server
 from mcp.server.context import ServerRequestContext
 from pydantic import ValidationError
 
 from app.core.registry import ToolNotFoundError, ToolRegistry, ToolSpec
+from app.core.resilience import CircuitOpenError, ResiliencePolicy, ToolRunner, ToolTimeoutError
 from registry_client import AppNotFoundError, RegistryUnavailableError
 from run_context import RunContext, from_meta
 
@@ -46,7 +55,25 @@ class AppSource(Protocol):
     async def get_app(self, app_id: str) -> dict[str, Any]: ...
 
 
-def build_mcp_server(registry: ToolRegistry, apps: AppSource) -> Server:
+class RegisteredSchemas:
+    """One compiled validator per registered input schema."""
+
+    def __init__(self) -> None:
+        self._validators: dict[str, Draft202012Validator] = {}
+
+    def validator(self, schema: dict[str, Any]) -> Draft202012Validator:
+        """Raises `SchemaError` if `schema` isn't a valid JSON Schema."""
+        key = json.dumps(schema, sort_keys=True)
+        if (v := self._validators.get(key)) is None:
+            Draft202012Validator.check_schema(schema)
+            v = self._validators[key] = Draft202012Validator(schema)
+        return v
+
+
+def build_mcp_server(registry: ToolRegistry, apps: AppSource, runner: ToolRunner | None = None) -> Server:
+    runner = runner or ToolRunner(ResiliencePolicy())
+    schemas = RegisteredSchemas()
+
     async def on_list_tools(
         ctx: ServerRequestContext, params: types.PaginatedRequestParams | None
     ) -> types.ListToolsResult:
@@ -56,7 +83,7 @@ def build_mcp_server(registry: ToolRegistry, apps: AppSource) -> Server:
         ctx: ServerRequestContext, params: types.CallToolRequestParams
     ) -> types.CallToolResult:
         context = from_meta(params.meta)
-        return await call_tool(registry, apps, params.name, params.arguments or {}, context)
+        return await call_tool(registry, apps, runner, schemas, params.name, params.arguments or {}, context)
 
     return Server(SERVER_NAME, on_list_tools=on_list_tools, on_call_tool=on_call_tool)
 
@@ -64,6 +91,8 @@ def build_mcp_server(registry: ToolRegistry, apps: AppSource) -> Server:
 async def call_tool(
     registry: ToolRegistry,
     apps: AppSource,
+    runner: ToolRunner,
+    schemas: RegisteredSchemas,
     name: str,
     arguments: dict[str, Any],
     context: RunContext | None,
@@ -96,11 +125,34 @@ async def call_tool(
         # this holds even if tool ids were reused across apps.
         return _error("tool_not_allowed", f"'{name}' belongs to another app.", tool_id=name)
 
+    # The registered schema is the contract the agent was offered; checked
+    # before the loaded tool's own model, so a tool loaded at a different
+    # version can't accept what registry would reject.
+    registered = allowed[name]
     try:
-        output = await tool.invoke(arguments)
+        validator = schemas.validator(registered) if isinstance(registered, dict) else None
+    except SchemaError:
+        validator = None
+    if validator is None:
+        logger.error("tools/call %s refused: no usable input schema registered", name)
+        return _error("tool_not_allowed", f"'{name}' has no usable input schema in registry.", tool_id=name)
+    if errors := sorted(validator.iter_errors(arguments), key=lambda e: list(map(str, e.absolute_path))):
+        details = [{"path": "".join(f".{p}" for p in e.absolute_path) or ".", "message": e.message} for e in errors]
+        return _error("invalid_arguments", f"Invalid arguments for '{name}'.", tool_id=name, details=details)
+    try:
+        args = tool.validate(arguments)
     except ValidationError as e:
         errors = e.errors(include_url=False, include_context=False, include_input=False)
         return _error("invalid_arguments", f"Invalid arguments for '{name}'.", tool_id=name, details=errors)
+
+    try:
+        output = await runner.run(name, lambda: tool.run(args))
+    except CircuitOpenError:
+        logger.warning("tools/call %s refused: circuit open", name)
+        return _error("tool_unavailable", f"Tool '{name}' is failing; not called.", tool_id=name)
+    except ToolTimeoutError as e:
+        logger.error("tool %s: %s", name, e)
+        return _error("tool_timeout", f"Tool '{name}' timed out.", tool_id=name)
     except Exception:
         logger.exception("tool %s raised", name)
         return _error("tool_failed", f"Tool '{name}' failed.", tool_id=name)
@@ -112,15 +164,16 @@ async def call_tool(
     )
 
 
-async def _allowed_tools(apps: AppSource, context: RunContext) -> set[str]:
+async def _allowed_tools(apps: AppSource, context: RunContext) -> dict[str, Any]:
+    """The agent's tools as registry resolves them: tool_id -> registered input schema."""
     try:
         app = await apps.get_app(context.app_id)
     except AppNotFoundError:
-        return set()
+        return {}
     for agent in app.get("agents", []):
         if agent.get("agent_id") == context.agent_id:
-            return {t["tool_id"] for t in agent.get("tools", [])}
-    return set()
+            return {t["tool_id"]: t.get("input_schema") for t in agent.get("tools", [])}
+    return {}
 
 
 def _to_mcp_tool(tool: ToolSpec) -> types.Tool:

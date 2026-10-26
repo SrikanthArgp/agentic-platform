@@ -1,7 +1,9 @@
 """`MCPToolGateway` against an in-process MCP server standing in for tool-gateway."""
 
 import json
+import time
 
+import anyio
 import mcp_types as types
 import pytest
 from mcp.server import Server
@@ -29,6 +31,8 @@ def fake_tool_gateway(received: list) -> Server:
 
     async def on_call_tool(ctx, params):
         received.append((params.name, params.arguments, from_meta(params.meta)))
+        if params.name == "hang":
+            await anyio.sleep(10)
         if params.name == "boom":
             structured = {"error": "tool_failed", "message": "Tool 'boom' failed."}
             return types.CallToolResult(
@@ -84,6 +88,15 @@ async def test_transport_failure_becomes_gateway_unreachable():
     result = await MCPToolSession(BrokenClient()).call_tool("lookup_runbook", {}, context=CONTEXT)
     assert result.is_error
     assert result.error_code == GATEWAY_UNREACHABLE
+
+
+async def test_a_hung_gateway_call_times_out_as_gateway_unreachable():
+    started = time.monotonic()
+    async with MCPToolGateway(fake_tool_gateway([]), call_timeout_s=0.1).connect() as session:
+        result = await session.call_tool("hang", {}, context=CONTEXT)
+
+    assert result.error_code == GATEWAY_UNREACHABLE
+    assert time.monotonic() - started < 5
 
 
 async def test_unreachable_gateway_fails_to_connect_with_a_typed_error(unused_port):

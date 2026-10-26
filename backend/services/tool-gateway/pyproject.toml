@@ -8,6 +8,7 @@ dependencies = [
     "pydantic>=2.9",
     "ap-shared",
     "mcp>=2.2,<3",
+    "jsonschema>=4.23",
 ]
 
 [tool.uv.sources]

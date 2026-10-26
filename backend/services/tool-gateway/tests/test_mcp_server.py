@@ -5,22 +5,27 @@ from mcp import Client
 
 from app.core.loader import load_app_tools
 from app.core.registry import ToolRegistry
+from app.core.resilience import ResiliencePolicy, ToolRunner
 from app.mcp.server import build_mcp_server
 from run_context import RunContext
 from tests.conftest import FakeApps, echo_module, write_tool_module
 
 pytestmark = pytest.mark.anyio
 
-ALL_ECHO_TOOLS = ["echo", "async_echo", "broken", "wrong_shape"]
+ALL_ECHO_TOOLS = ["echo", "async_echo", "broken", "wrong_shape", "slow"]
 CTX = RunContext(app_id="app-one", agent_id="triage-agent", alert_id="a-1").to_meta()
 
 
-def build(tmp_path, apps: FakeApps):
+# Fast retries; breaker opens after 2 failed calls.
+FAST = ResiliencePolicy(timeout_s=0.5, max_attempts=3, base_delay_s=0.001, max_delay_s=0.001, failure_threshold=2)
+
+
+def build(tmp_path, apps: FakeApps, policy: ResiliencePolicy = FAST):
     write_tool_module(tmp_path, "app-one", "echo_tools", echo_module())
     write_tool_module(tmp_path, "app-two", "other_tools", echo_module("two_"))
     registry = ToolRegistry()
     load_app_tools(tmp_path, registry)
-    return build_mcp_server(registry, apps)
+    return build_mcp_server(registry, apps, ToolRunner(policy))
 
 
 @pytest.fixture
@@ -141,3 +146,72 @@ async def test_registry_down_fails_closed(tmp_path):
 
     assert result.is_error
     assert result.structured_content["error"] == "registry_unavailable"
+
+
+# --- registered input schema (registry), checked before the tool's own model ---
+
+STRICT_ECHO_SCHEMA = {
+    "type": "object",
+    "properties": {"text": {"type": "string", "maxLength": 3}},
+    "required": ["text"],
+    "additionalProperties": False,
+}
+
+
+async def test_arguments_the_registered_schema_rejects_never_reach_the_tool(tmp_path):
+    """The tool's own model accepts any string; registry's schema caps it at 3 chars."""
+    server = build(tmp_path, FakeApps({"app-one": {"triage-agent": ["echo"]}}, schemas={"echo": STRICT_ECHO_SCHEMA}))
+    async with Client(server) as client:
+        ok = await client.call_tool("echo", {"text": "hi"}, meta=CTX)
+        too_long = await client.call_tool("echo", {"text": "hello"}, meta=CTX)
+
+    assert ok.structured_content == {"echoed": "hi"}
+    assert too_long.is_error
+    assert too_long.structured_content["error"] == "invalid_arguments"
+    assert too_long.structured_content["details"] == [{"path": ".text", "message": "'hello' is too long"}]
+
+
+@pytest.mark.parametrize("schema", [None, {"type": "no-such-type"}], ids=["missing", "malformed"])
+async def test_no_usable_registered_schema_fails_closed(tmp_path, schema):
+    apps = FakeApps({"app-one": {"triage-agent": ["echo"]}}, schemas={"echo": schema})
+    server = build(tmp_path, apps)
+    async with Client(server) as client:
+        result = await client.call_tool("echo", {"text": "hi"}, meta=CTX)
+
+    assert result.structured_content["error"] == "tool_not_allowed"
+
+
+async def test_invalid_arguments_dont_count_toward_the_breaker(server):
+    async with Client(server) as client:
+        for _ in range(3):
+            await client.call_tool("echo", {}, meta=CTX)
+        result = await client.call_tool("echo", {"text": "hi"}, meta=CTX)
+
+    assert not result.is_error
+
+
+# --- resilience: timeout, retries, circuit breaker ---
+
+
+async def test_slow_tool_returns_tool_timeout(server):
+    async with Client(server) as client:
+        result = await client.call_tool("slow", {"text": "hi"}, meta=CTX)
+
+    assert result.is_error
+    assert result.structured_content["error"] == "tool_timeout"
+
+
+async def test_breaker_opens_after_consecutive_failed_calls_and_the_handler_stops_running(tmp_path, caplog):
+    caplog.set_level("WARNING")
+    server = build(tmp_path, FakeApps({"app-one": {"triage-agent": ["broken", "echo"]}}))
+    async with Client(server) as client:
+        codes = [(await client.call_tool("broken", {"text": "hi"}, meta=CTX)).structured_content["error"]
+                 for _ in range(3)]
+        other_tool = await client.call_tool("echo", {"text": "hi"}, meta=CTX)
+
+    assert codes == ["tool_failed", "tool_failed", "tool_unavailable"]
+    # 2 failed calls x 3 attempts; the third call never ran the handler.
+    assert caplog.text.count("attempt 1 failed") == 2
+    assert "circuit for tool broken opened after 2 consecutive failed calls" in caplog.text
+    # One tool's breaker is its own.
+    assert not other_tool.is_error
