@@ -1,8 +1,9 @@
 # orchestrator — class diagram
 
-As built through Day 14 of `docs/plan.md` (Day 12: a per-call MCP timeout
+As built through Day 16 of `docs/plan.md` (Day 12: a per-call MCP timeout
 and the new infra tool errors; Day 13: `prefetch_tools` and `alert_key` in
-the run context; Day 14: daily token budgets). `orchestrator` runs the agents.
+the run context; Day 14: daily token budgets; Day 16: duplicate
+`alert.received` deliveries skipped). `orchestrator` runs the agents.
 It takes a `RunAgentRequest` (from Kafka `alert.received`, or the gRPC
 `RunAgent` call) and resolves the app's manifest from `registry` and the
 prompts from its image. An entry agent over its daily token budget isn't
@@ -105,6 +106,7 @@ classDiagram
             +tool_call_timeout_s: float
             +redis_url: str
             +daily_token_budget: int
+            +seen_ttl_s: int
             +from_env()$ Settings
         }
     }
@@ -112,14 +114,22 @@ classDiagram
     namespace transports {
         class AlertPipeline {
             -_runner: AgentRunner
+            -_seen: SeenAlerts?
             -_received_topic, _decided_topic, _group_id
             +start() None
             +stop() None
         }
         class kafka_alerts {
             <<module: app.kafka.alerts>>
-            +handle_alert(raw, runner) tuple?
+            +handle_alert(raw, runner, seen) tuple?
             +message_key(app_id, alert_key) bytes
+        }
+        class SeenAlerts {
+            <<app.kafka.dedupe>>
+            -_redis: Redis
+            -_ttl_s: int
+            +seen(app_id, alert_id) bool
+            +mark(app_id, alert_id) None
         }
         class AgentServicer {
             <<grpc servicer>>
@@ -460,6 +470,8 @@ classDiagram
 
     %% transports
     AlertPipeline ..> kafka_alerts : handle_alert
+    AlertPipeline ..> SeenAlerts : mark() after publishing
+    kafka_alerts ..> SeenAlerts : seen() before the run
     kafka_alerts ..> AgentRunner : run
     kafka_alerts ..> loop : not_evaluated_response
     AgentServicer --> AgentRunner
@@ -627,6 +639,14 @@ These are unchanged by LangGraph: both call `AgentRunner.run()`.
   `not_evaluated_response()`, so every decodable alert gets exactly one
   `alert.decided`.
 - `AlertPipeline` commits only after publishing.
+- **Duplicates** (Day 16): delivery is at-least-once, so `handle_alert()`
+  returns `None` for an alert whose `seen:{app_id}:{alert_id}` marker
+  exists (`SeenAlerts.seen`), without running anything. `AlertPipeline`
+  sets the marker (`SeenAlerts.mark`, TTL `SEEN_TTL_S`, 24h) only after
+  `alert.decided` is published, so a crash mid-run re-runs the alert
+  instead of losing it. Redis errors are logged: `seen()` says "not seen"
+  (the alert runs) and `mark()` does nothing. The gRPC `RunAgent` path
+  isn't deduped.
 - `AgentServicer` returns `NOT_FOUND` for an unknown app or agent, and
   "not evaluated" for other failures.
 
@@ -811,7 +831,6 @@ on the allowlist and callable with `{}`) and `budget`
 
   Fakes stand in for the gateway, registry and memory, and no test calls a
   real LLM.
-- **Next changes**: Day 16 dedupes at-least-once deliveries on `alert_id`
-  (`seen:{app_id}:{alert_id}` in Redis); Day 19 adds `/readyz`, a graceful
+- **Next changes**: Day 19 adds `/readyz`, a graceful
   drain on SIGTERM and one MCP reconnect-and-retry on a dropped
   connection; Day 24 prices the recorded tokens.

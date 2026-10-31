@@ -33,6 +33,14 @@ its daily token budget isn't run, and `orchestrator` publishes `ESCALATE`
 an analyst as in diagram 2 (without the summarizer's contribution if it is
 over budget too).
 
+Two delivery cases aren't drawn either (Day 16, `ARCHITECTURE.md` §10). A
+second delivery of an `alert.received` that was already decided (the
+relay re-publishing after a crash) is skipped by `orchestrator` before any
+run: its `seen:{app_id}:{alert_id}` marker in Redis is set once the
+decision is published. And an outbox row Kafka refuses five times (e.g.
+too large) goes `DEAD` instead of reaching `orchestrator`; an alert row is
+copied to `alert.received.dlq` for a human to inspect.
+
 ---
 
 ## 1. Auto-resolve / suppress — no human involved

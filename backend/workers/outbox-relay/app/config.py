@@ -11,6 +11,8 @@ class Settings:
     # Idle wait between empty polls; a full batch loops straight away.
     poll_interval_s: float = 0.5
     batch_size: int = 100
+    # Rejections of one message before its row is DEAD (Day 16).
+    max_attempts: int = 5
     # SENT rows older than this are deleted, checked every prune_interval_s.
     retention_h: float = 24.0
     prune_interval_s: float = 300.0
@@ -25,6 +27,7 @@ class Settings:
             kafka_bootstrap_servers=env.get("KAFKA_BOOTSTRAP_SERVERS", cls.kafka_bootstrap_servers),
             poll_interval_s=float(env.get("RELAY_POLL_INTERVAL_S", cls.poll_interval_s)),
             batch_size=int(env.get("RELAY_BATCH_SIZE", cls.batch_size)),
+            max_attempts=int(env.get("RELAY_MAX_ATTEMPTS", cls.max_attempts)),
             retention_h=float(env.get("OUTBOX_RETENTION_H", cls.retention_h)),
             prune_interval_s=float(env.get("OUTBOX_PRUNE_INTERVAL_S", cls.prune_interval_s)),
             lock_key=int(env.get("RELAY_LOCK_KEY", cls.lock_key)),

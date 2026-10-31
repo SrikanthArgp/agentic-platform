@@ -12,6 +12,7 @@ from app.core.manifest import ManifestStore
 from app.governance.budget import TokenBudget
 from app.grpc.server import start_grpc_server
 from app.kafka.alerts import AlertPipeline
+from app.kafka.dedupe import SeenAlerts
 from app.memory.client import MemoryStoreClient
 from app.tools.gateway import MCPToolGateway
 from observability import setup_observability
@@ -57,7 +58,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     budget = TokenBudget(redis, default_daily_tokens=settings.daily_token_budget)
     runner = build_runner(settings, registry, memory, budget)
     grpc_server = await start_grpc_server(runner, settings.grpc_port)
-    pipeline = AlertPipeline(runner, settings.kafka_bootstrap_servers) if settings.kafka_enabled else None
+    seen = SeenAlerts(redis, ttl_s=settings.seen_ttl_s)
+    pipeline = AlertPipeline(runner, settings.kafka_bootstrap_servers, seen=seen) if settings.kafka_enabled else None
     if pipeline:
         pipeline.start()
     try:

@@ -52,6 +52,7 @@ def create_app(settings: Settings | None = None, relay: Relay | None = None, sta
             PostgresDatabase(settings.postgres_dsn, settings.lock_key),
             producer,
             batch_size=settings.batch_size,
+            max_attempts=settings.max_attempts,
             poll_interval_s=settings.poll_interval_s,
             retention_h=settings.retention_h,
             prune_interval_s=settings.prune_interval_s,

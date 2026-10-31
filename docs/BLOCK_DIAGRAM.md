@@ -121,7 +121,8 @@ target app's `event_schema_ref` (from `registry`'s App Manifest, 30s TTL
 cache), writes it to the Postgres `outbox` table, and returns `202` once
 that row commits — it does not wait for a decision, and has no Kafka
 client. The `outbox-relay` worker publishes the row to `alert.received`
-(DLQ after repeated message failures, Day 16), so a Kafka outage doesn't
+(`DEAD` and a copy on `alert.received.dlq` after 5 rejections of the same
+message), so a Kafka outage doesn't
 drop or refuse alerts; Postgres down → `503`. Enforces rate limits per `app_id` and
 per source within it (fixed one-minute Redis counters, limits from the
 manifest's `rate_limit`, `429` + `Retry-After`, ADR-0029), so one app's
@@ -157,8 +158,9 @@ every callable agent whose `invoke_on` matches, in parallel (e.g.
 (`docs/ARCHITECTURE.md` §3/§5). One level, one direction, scoped to one
 app's own manifest — not cross-app A2A. Owns token-budget enforcement per
 `app_id`/agent (an over-budget callable just doesn't contribute), a
-timeout on every MCP call, and, from Day 16, dedupe of at-least-once
-deliveries. Retries and circuit breakers around tools live in
+timeout on every MCP call, and dedupe of at-least-once deliveries (a
+`seen:{app_id}:{alert_id}` marker in Redis, set once the decision is
+published). Retries and circuit breakers around tools live in
 `tool-gateway`, not here.
 
 ### `tool-gateway`
@@ -225,8 +227,8 @@ a verdict; only Postgres being down does (`503`).
 `similar-past-case-lookup`.
 
 ### `outbox-relay` worker
-One small asyncio process (`backend/workers/outbox-relay/`, built Day 15,
-failure handling Day 16, ADR-0030), not a platform service: no API beyond
+One small asyncio process (`backend/workers/outbox-relay/`, ADR-0030), not
+a platform service: no API beyond
 `/healthz` and `/readyz` (role `active` or `standby`). It publishes pending `outbox` rows to
 `alert.received`, or to `alert.received.dlq` after repeated
 message-specific failures, and pending `verdict_outbox` rows to
@@ -263,7 +265,7 @@ not five disjoint ones.
 (`mem:{memory_namespace}:{alert_key}:events`, a 7-day sorted set, plus
 `:facts`), `orchestrator`'s
 per-app/agent daily token counters (`budget:{app_id}:{agent_id}:{date}`)
-and, from Day 16, dedupe markers (`seen:{app_id}:{alert_id}`),
+dedupe markers (`seen:{app_id}:{alert_id}`),
 `ingestion`'s per-minute rate-limit counters
 (`ratelimit:{app_id}:{minute}`, `…:src:{source}:{minute}`). Budgets
 and rate limits aren't enforced while Redis is down; the run or event

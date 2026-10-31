@@ -3,12 +3,15 @@
 Both payloads are the `agent.proto` messages, protobuf-encoded (§5); both
 are keyed `{app_id}:{alert_key}` (ADR-0002). One message at a time, and the
 offset is committed only after `alert.decided` is published, so a crash
-re-runs the alert rather than losing it (duplicate handling is Day 16).
+re-runs the alert rather than losing it. Delivery is at-least-once, so an
+alert whose decision was already published is skipped (`SeenAlerts`,
+`seen:{app_id}:{alert_id}` in Redis, Day 16).
 
 Every alert that decodes gets exactly one `alert.decided`, even when the run
 fails: a failed run publishes ESCALATE with a "not evaluated" reason so a
 human still sees it (§10). An undecodable message has no `alert_id` to
-answer for; it's logged and skipped (DLQ: Day 16).
+answer for; it's logged and skipped. (The `alert.received.dlq` topic is for
+rows the `outbox-relay` couldn't publish, not for this consumer.)
 """
 
 import asyncio
@@ -22,6 +25,7 @@ from app.agent.loop import AgentRunner, not_evaluated_response
 from app.agent.llm import LLMError
 from app.core.manifest import ManifestUnavailableError, ResolutionError
 from app.governance.budget import BudgetExceededError
+from app.kafka.dedupe import SeenAlerts
 from app.tools.gateway import GatewayUnavailableError
 from proto_gen import agent_pb2
 
@@ -37,9 +41,12 @@ def message_key(app_id: str, alert_key: str) -> bytes:
     return f"{app_id}:{alert_key}".encode()
 
 
-async def handle_alert(raw: bytes, runner: AgentRunner) -> tuple[bytes, agent_pb2.RunAgentResponse] | None:
+async def handle_alert(
+    raw: bytes, runner: AgentRunner, seen: SeenAlerts | None = None
+) -> tuple[bytes, agent_pb2.RunAgentResponse] | None:
     """Decide one `alert.received` message: the `alert.decided` key and value
-    to publish, or None when there's nothing to publish."""
+    to publish, or None when there's nothing to publish (undecodable, or a
+    duplicate of an alert already decided)."""
     request = agent_pb2.RunAgentRequest()
     try:
         request.ParseFromString(raw)
@@ -48,6 +55,9 @@ async def handle_alert(raw: bytes, runner: AgentRunner) -> tuple[bytes, agent_pb
         return None
     if not request.app_id or not request.alert_id:
         logger.error("skipping alert.received message without app_id/alert_id")
+        return None
+    if seen is not None and await seen.seen(request.app_id, request.alert_id):
+        logger.info("skipping duplicate alert %s/%s: already decided", request.app_id, request.alert_id)
         return None
 
     key = message_key(request.app_id, request.alert_key)
@@ -76,11 +86,13 @@ class AlertPipeline:
         runner: AgentRunner,
         bootstrap_servers: str,
         *,
+        seen: SeenAlerts | None = None,
         received_topic: str = ALERT_RECEIVED,
         decided_topic: str = ALERT_DECIDED,
         group_id: str = CONSUMER_GROUP,
     ):
         self._runner = runner
+        self._seen = seen
         self._bootstrap_servers = bootstrap_servers
         self._received_topic = received_topic
         self._decided_topic = decided_topic
@@ -123,10 +135,12 @@ class AlertPipeline:
             try:
                 logger.info("consuming %s", self._received_topic)
                 async for msg in consumer:
-                    decided = await handle_alert(msg.value, self._runner)
+                    decided = await handle_alert(msg.value, self._runner, self._seen)
                     if decided is not None:
                         key, response = decided
                         await producer.send_and_wait(self._decided_topic, value=response.SerializeToString(), key=key)
+                        if self._seen is not None:
+                            await self._seen.mark(response.app_id, response.alert_id)
                     await consumer.commit()
             finally:
                 await consumer.stop()

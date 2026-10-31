@@ -17,7 +17,9 @@ from app.relay import TABLES, DatabaseUnavailable, OutboxRow, OutboxTable
 CONNECT_TIMEOUT_S = 5.0
 # Table names go into SQL text, so only the known ones are accepted.
 _KNOWN_TABLES = {t.name for t in TABLES}
-_ERRORS = (OSError, TimeoutError, asyncpg.PostgresError, asyncpg.InterfaceError)
+# InternalClientError: what asyncpg can raise when the server kills the
+# connection mid-operation (seen with pg_terminate_backend).
+_ERRORS = (OSError, TimeoutError, asyncpg.PostgresError, asyncpg.InterfaceError, asyncpg.InternalClientError)
 
 
 def _table(table: OutboxTable) -> str:
@@ -35,6 +37,17 @@ class _Claim:
     async def mark_sent(self, ids: Sequence[int]) -> None:
         await self._conn.execute(
             f"UPDATE {self._table} SET status = 'SENT', sent_at = now() WHERE id = ANY($1::bigint[])", list(ids)
+        )
+
+    async def mark_failed(self, row_id: int, error: str, attempts: int) -> None:
+        await self._conn.execute(
+            f"UPDATE {self._table} SET attempts = $2, last_error = $3 WHERE id = $1", row_id, attempts, error
+        )
+
+    async def mark_dead(self, row_id: int, error: str, attempts: int) -> None:
+        await self._conn.execute(
+            f"UPDATE {self._table} SET status = 'DEAD', attempts = $2, last_error = $3 WHERE id = $1",
+            row_id, attempts, error,
         )
 
 
@@ -55,7 +68,7 @@ class PostgresSession:
         try:
             async with self._conn.transaction():
                 records = await self._conn.fetch(
-                    f"SELECT id, topic, kafka_key, payload, headers, created_at FROM {name} "
+                    f"SELECT id, topic, kafka_key, payload, headers, created_at, attempts FROM {name} "
                     "WHERE status = 'PENDING' ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED",
                     limit,
                 )

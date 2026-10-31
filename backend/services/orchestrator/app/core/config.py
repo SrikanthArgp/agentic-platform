@@ -41,6 +41,8 @@ class Settings:
     # agent for manifests that set none.
     redis_url: str = "redis://localhost:6379/0"
     daily_token_budget: int = 1_000_000
+    # How long `seen:{app_id}:{alert_id}` says "already decided" (Day 16).
+    seen_ttl_s: int = 24 * 3600
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -63,4 +65,5 @@ class Settings:
             tool_call_timeout_s=float(env.get("TOOL_CALL_TIMEOUT_S", cls.tool_call_timeout_s)),
             redis_url=env.get("REDIS_URL", cls.redis_url),
             daily_token_budget=int(env.get("DAILY_TOKEN_BUDGET", cls.daily_token_budget)),
+            seen_ttl_s=int(env.get("SEEN_TTL_S", cls.seen_ttl_s)),
         )

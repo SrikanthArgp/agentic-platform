@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.relay import DatabaseUnavailable, KafkaUnavailable, OutboxRow, OutboxTable
+from app.relay import DatabaseUnavailable, KafkaUnavailable, MessageRejected, OutboxRow, OutboxTable
 
 T0 = datetime(2026, 10, 31, 12, 0, tzinfo=UTC)
 
@@ -32,6 +32,7 @@ class FakeRow:
     status: str = "PENDING"
     attempts: int = 0
     sent_at: datetime | None = None
+    last_error: str | None = None
 
 
 class FakeDatabase:
@@ -68,13 +69,21 @@ class _Claim:
     def __init__(self, rows: list[FakeRow]):
         self.rows = [
             OutboxRow(id=r.id, topic=r.topic, kafka_key=r.kafka_key, payload=r.payload,
-                      headers=dict(r.headers), created_at=r.created_at)
+                      headers=dict(r.headers), created_at=r.created_at, attempts=r.attempts)
             for r in rows
         ]
         self.marked: list[int] = []
+        # row id -> (status, attempts, last_error), applied on commit
+        self.updates: dict[int, tuple[str, int, str]] = {}
 
     async def mark_sent(self, ids: Sequence[int]) -> None:
         self.marked.extend(ids)
+
+    async def mark_failed(self, row_id: int, error: str, attempts: int) -> None:
+        self.updates[row_id] = ("PENDING", attempts, error)
+
+    async def mark_dead(self, row_id: int, error: str, attempts: int) -> None:
+        self.updates[row_id] = ("DEAD", attempts, error)
 
 
 class FakeSession:
@@ -111,6 +120,8 @@ class FakeSession:
         for row in self._db.tables[table.name]:
             if row.id in claim.marked:
                 row.status, row.sent_at = "SENT", self._db.now
+            if row.id in claim.updates:
+                row.status, row.attempts, row.last_error = claim.updates[row.id]
 
     async def prune(self, table: OutboxTable, retention_h: float) -> int:
         self._check()
@@ -139,9 +150,17 @@ class FakeProducer:
     down: bool = False
     # Accept this many more sends, then go down.
     fail_after: int | None = None
+    # Payloads Kafka refuses (MessageRejected), on any topic.
+    reject: set[bytes] = field(default_factory=set)
+    # Topics that refuse every non-empty payload (a DLQ that's too small too).
+    reject_payloads_on: set[str] = field(default_factory=set)
+    rejected: list[Sent] = field(default_factory=list)
 
     async def send(self, topic, key, value, headers, timestamp_ms) -> None:
         await asyncio.sleep(0)
+        if not self.down and (value in self.reject or (value and topic in self.reject_payloads_on)):
+            self.rejected.append(Sent(topic, key, value, headers, timestamp_ms))
+            raise MessageRejected("MessageSizeTooLargeError: too large")
         if self.fail_after is not None:
             if self.fail_after == 0:
                 self.down = True

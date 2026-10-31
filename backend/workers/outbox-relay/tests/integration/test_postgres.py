@@ -157,3 +157,28 @@ async def test_prune_deletes_only_sent_rows_past_retention(schema):
         await session.close()
     left = await conn.fetch(f"SELECT payload FROM {name}.outbox ORDER BY id")
     assert [bytes(r["payload"]) for r in left] == [b"recent-sent", b"pending", b"old-dead"]
+
+
+async def test_rejections_count_attempts_then_dead_with_last_error(schema):
+    name, conn = schema
+    await insert(conn, name, "app:k", b"bad")
+    await insert(conn, name, "app:k", b"next")
+    producer = FakeProducer(reject={b"bad"}, reject_payloads_on={"alert.received.dlq"})
+    relay = Relay(db_for(name), producer, max_attempts=2)
+    session = await db_for(name).connect()
+    try:
+        await session.try_lock()
+        from app.relay import MessageRejected
+
+        with pytest.raises(MessageRejected):
+            await relay.drain_table(session, OUTBOX)
+        row = await conn.fetchrow(f"SELECT status, attempts, last_error FROM {name}.outbox WHERE payload = 'bad'")
+        assert (row["status"], row["attempts"]) == ("PENDING", 1) and "too large" in row["last_error"]
+
+        await relay.drain_table(session, OUTBOX)  # 2nd rejection: DEAD, then 'next' goes out
+    finally:
+        await session.close()
+    rows = await conn.fetch(f"SELECT payload, status, attempts FROM {name}.outbox ORDER BY id")
+    assert [(bytes(r["payload"]), r["status"], r["attempts"]) for r in rows] == [
+        (b"bad", "DEAD", 2), (b"next", "SENT", 0),
+    ]

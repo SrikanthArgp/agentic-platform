@@ -234,3 +234,24 @@ async def test_pruning_runs_once_per_interval(db, producer):
 def test_tables_and_their_timestamps():
     assert (OUTBOX.name, OUTBOX.timestamp_from_created_at) == ("outbox", False)
     assert (VERDICT_OUTBOX.name, VERDICT_OUTBOX.timestamp_from_created_at) == ("verdict_outbox", True)
+
+
+async def test_an_unexpected_error_ends_the_session_not_the_worker(db, producer):
+    db.add("outbox", "app:k", b"m0")
+    r = relay(db, producer)
+    calls = {"n": 0}
+    orig = db.connect
+
+    async def connect():
+        session = await orig()
+        calls["n"] += 1
+        if calls["n"] == 1:
+            async def boom():
+                raise RuntimeError("driver bug")
+            session.try_lock = boom
+        return session
+
+    db.connect = connect
+    async with running(r):
+        await wait_for(lambda: db.status("outbox") == ["SENT"])
+    assert calls["n"] >= 2

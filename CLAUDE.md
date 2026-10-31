@@ -30,14 +30,16 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Days 1–15 of `docs/plan.md` are done (infra, contracts, skeletons;
+Days 1–16 of `docs/plan.md` are done (infra, contracts, skeletons;
 `tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core;
 `ingestion` and the end-to-end hot path; `registry` + App Manifest;
 `memory-store`; context, supervisor and guardrails in `orchestrator`;
 callable agents; `review-console`; the verdict feedback loop; the Week 2
 integration pass; `tool-gateway` resilience; tool versions, the global
 `similar-past-case-lookup` and app #2's first cut; token budgets and rate
-limits; the outbox + the `outbox-relay` worker, for alerts and verdicts); Day 16 (DLQ, dedupe, Kafka-outage test) is next. As-built notes for each day are in `docs/plan.md`.
+limits; the outbox + the `outbox-relay` worker, for alerts and verdicts;
+DLQ, dedupe and the Kafka-outage test); Day 17 (finish app #2 +
+platform-core review) is next. As-built notes for each day are in `docs/plan.md`.
 
 - All 6 services and the `outbox-relay` worker have a FastAPI app
   (`app/main.py`, `/healthz`), a `pyproject.toml`, a committed `uv.lock`,
@@ -51,8 +53,20 @@ limits; the outbox + the `outbox-relay` worker, for alerts and verdicts); Day 16
   `PENDING` rows in `id` order with their stored key and headers, verdicts
   timestamped by `created_at`; idle poll `RELAY_POLL_INTERVAL_S` (0.5s);
   `SENT` rows pruned after `OUTBOX_RETENTION_H` (24h). Kafka down → rows
-  wait, intake and verdicts still succeed. Every send failure counts as
-  Kafka down until Day 16 (attempts, `DEAD`, DLQ).
+  wait (no attempt counted), intake and verdicts still succeed. A message
+  Kafka refuses (too large, corrupt, invalid topic; Day 16) counts an
+  attempt and holds its table; after 5 (`RELAY_MAX_ATTEMPTS`) the row is
+  `DEAD`, an alert row is copied to `alert.received.dlq` (headers
+  `outbox_id`/`attempts`/`last_error`), and the relay moves on.
+  `uv run backend/scripts/replay_dead.py` lists `DEAD` rows and
+  (`--table T --id N`) sets one back to `PENDING`.
+- Delivery is at-least-once, so consumers dedupe on `alert_id`:
+  `orchestrator` skips an alert whose `seen:{app_id}:{alert_id}` Redis
+  marker exists (set after its `alert.decided` is published, 24h
+  `SEEN_TTL_S`; Redis down → it runs); `review-console` and `memory-store`
+  rely on their unique keys. `uv run backend/scripts/burst.py send --out F`
+  posts a burst through `ingestion`; `burst.py check F` verifies each alert
+  was decided exactly once.
 - `review-console` (`:8006`) consumes `alert.decided` (own group) and turns
   each `ESCALATE` into an `OPEN` row in `cases` (with `reasons`,
   `tool_calls`, `confidence`; unique `(app_id, alert_id)`). `GET /cases`
@@ -172,6 +186,29 @@ limits; the outbox + the `outbox-relay` worker, for alerts and verdicts); Day 16
   line items around 2026-10-01..08 for `checkout-svc`/`us-east-1`,
   `ml-platform`/`eu-west-1`, `search-api`/`us-west-2`) and the global
   `similar-past-case-lookup`; `alert_key` is `service:region`.
+
+## How each day's work is done
+
+Every `docs/plan.md` day follows the same routine, tracked as a task list:
+
+1. **Start with a checklist.** Read the day in `docs/plan.md` (and the ADRs
+   it cites), then post a task list grouped as: reading, schema/infra, each
+   service or worker touched, tests, docs, live check, commit.
+2. **Show progress as you go.** Repost the list with done items checked
+   (`- [x]`) at each milestone and whenever asked. Only check an item once it
+   is actually done and verified (tests run, live check observed); a step
+   that was skipped or failed stays unchecked, with the reason.
+3. **Tests**: `uv run pytest` in every project touched (and the rest, as a
+   regression pass), then `uv run pytest -m integration` with the stack up.
+4. **Live check**: run the day's definition of done against the Compose
+   stack and record what was observed (numbers, ids) in the day's
+   **As built** notes in `docs/plan.md`.
+5. **Docs sweep**: update `docs/ARCHITECTURE.md`, `docs/BLOCK_DIAGRAM.md`,
+   `docs/sequence_diagram.md`, each touched `CLASS_DIAGRAM.md`, this file's
+   status section, and mark the day ✅ in `docs/plan.md`. Then grep for
+   wording that still describes the day as future work ("from Day N",
+   "until Day N", "on Day N … will") outside `plan.md`, and fix it.
+6. **Commit** on a `day-N` branch, only when the user asks.
 
 ## Commands
 

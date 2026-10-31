@@ -2,17 +2,32 @@
 
 Connects in the background, retrying, so the worker starts while Kafka is
 down; until then every send is `KafkaUnavailable` and rows stay `PENDING`.
+
+A send error is `MessageRejected` only when it's about this one message
+(Day 16): too large (aiokafka checks `max_request_size` before sending,
+the broker checks `message.max.bytes`), corrupt, or an invalid topic name.
+Everything else, including errors aiokafka calls non-retriable but that
+would hit every message (e.g. authorization), is `KafkaUnavailable`: the
+rows wait rather than burn attempts and go `DEAD` en masse.
 """
 
 import asyncio
 import logging
 
 from aiokafka import AIOKafkaProducer
-from aiokafka.errors import KafkaError
+from aiokafka.errors import (
+    CorruptRecordException,
+    InvalidTopicError,
+    KafkaError,
+    MessageSizeTooLargeError,
+    RecordListTooLargeError,
+)
 
-from app.relay import KafkaUnavailable
+from app.relay import KafkaUnavailable, MessageRejected
 
 logger = logging.getLogger(__name__)
+
+MESSAGE_ERRORS = (MessageSizeTooLargeError, RecordListTooLargeError, CorruptRecordException, InvalidTopicError)
 
 RECONNECT_DELAY_S = 2.0
 SEND_TIMEOUT_S = 10.0
@@ -63,5 +78,7 @@ class KafkaProducer:
                 self._producer.send_and_wait(topic, value=value, key=key, headers=headers, timestamp_ms=timestamp_ms),
                 SEND_TIMEOUT_S,
             )
+        except MESSAGE_ERRORS as e:
+            raise MessageRejected(f"{type(e).__name__}: {e}") from e
         except (KafkaError, TimeoutError) as e:
             raise KafkaUnavailable(f"{type(e).__name__}") from e

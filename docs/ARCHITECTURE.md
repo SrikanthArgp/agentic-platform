@@ -389,7 +389,7 @@ Steps, app-agnostic:
 
 Two pieces of background work sit off to the side of this flow (ADR-0030):
 
-- **Outbox relay** (Days 15–16, §10): the `outbox-relay` worker, a single
+- **Outbox relay** (§10, ADR-0030): the `outbox-relay` worker, a single
   asyncio loop that publishes pending `outbox` rows to `alert.received`
   and pending `verdict_outbox` rows to `verdict.recorded` (ADR-0024). It's
   the one background piece on the hot path. It adds up to one poll
@@ -612,7 +612,7 @@ in Tempo/Mimir/Loki.
 | `mem:{memory_namespace}:{alert_key}:facts` | Hash of all-time facts (`seen`, `confirmed_incident`) plus the `loaded` marker that says the sorted set is complete; TTL'd, rebuilt from Postgres when absent. |
 | `budget:{app_id}:{agent_id}:{date}` | Hash of the agent's `input_tokens`/`output_tokens` that UTC day (Day 14, §10, ADR-0029); expires after 2 days. |
 | `ratelimit:{app_id}:{minute}` / `ratelimit:{app_id}:src:{source}:{minute}` | `ingestion` rate-limit counters, per app and per alert source within an app (Day 14, §10). |
-| `seen:{app_id}:{alert_id}` | `orchestrator`'s dedupe marker for at-least-once delivery (Day 16, §10), TTL'd (e.g. 24h). Shared across replicas, so any replica skips a duplicate. |
+| `seen:{app_id}:{alert_id}` | `orchestrator`'s dedupe marker for at-least-once delivery (§10), set once the alert's `alert.decided` is published, TTL `SEEN_TTL_S` (24h). Shared across replicas, so any replica skips a duplicate. |
 
 **Kafka topics**:
 
@@ -621,7 +621,7 @@ in Tempo/Mimir/Loki.
 | `alert.received` | `ingestion` (via `outbox` and the `outbox-relay` worker) → `orchestrator` | `{app_id}:{alert_key}` | `RunAgentRequest` (protobuf) |
 | `alert.decided` | `orchestrator` → `review-console`, `memory-store` (separate consumer groups) | `{app_id}:{alert_key}` | `RunAgentResponse` (protobuf) |
 | `verdict.recorded` | `review-console` (via `verdict_outbox` and the `outbox-relay` worker) → `memory-store` | `{app_id}:{alert_key}` | JSON (§9); Kafka timestamp = the row's `created_at` |
-| `alert.received.dlq` | `outbox-relay` worker, from Day 16 (created now, nothing writes it yet) → (human inspection; no automatic consumer) | `{app_id}:{alert_key}` | Same as `alert.received`, plus `last_error`/`attempts` headers (§10) |
+| `alert.received.dlq` | `outbox-relay` worker, when an `outbox` row goes `DEAD` → (human inspection; no automatic consumer) | `{app_id}:{alert_key}` | Same as `alert.received`, plus `outbox_id`/`attempts`/`last_error` headers; an empty body with `payload_dropped: true` if the DLQ refuses the payload too (§10) |
 
 **Partition key rule**: every message on every topic is keyed
 `{app_id}:{alert_key}`. Kafka only orders messages within a partition, and
@@ -710,7 +710,7 @@ cross-service or cross-app link.
 - **Redis down** (ADR-0029): neither limit is enforced. `ingestion`
   accepts events, and `orchestrator` runs agents with a reason saying the
   budget wasn't checked. Both are logged.
-- **Ingestion reliability** (Days 15–16): outbox + DLQ on `ingestion`'s Kafka
+- **Ingestion reliability** (Days 15–16, ADR-0030): outbox + DLQ on `ingestion`'s Kafka
   publish path — a Kafka outage doesn't lose alerts, and repeated publish
   failures land in a DLQ instead of vanishing.
   - `ingestion` writes the validated event to the Postgres `outbox` table
@@ -724,15 +724,25 @@ cross-service or cross-app link.
     0.5s when idle; `SENT` rows are pruned after 24h.
   - **Kafka unreachable** → rows stay `PENDING`, attempts are *not*
     counted; they drain when Kafka returns. **Message-specific failure**
-    (e.g., oversized/rejected payload) → `attempts` increments; after 5,
-    the row is marked `DEAD` and published to `alert.received.dlq` for
-    inspection. The `outbox` row is the durable record either way.
+    → `attempts` increments and `last_error` is kept; the batch stops at
+    that row (so nothing for its key overtakes it) and retries after a
+    pause. After 5 (`RELAY_MAX_ATTEMPTS`) the row is marked `DEAD`, copied
+    to `alert.received.dlq` for inspection, and the relay moves on. A
+    failure counts as message-specific only if it's about that one message:
+    too large, corrupt, or an invalid topic. Everything else, including
+    errors that would hit every message (e.g. authorization), counts as
+    Kafka unreachable, so a misconfiguration never sends every row `DEAD`.
+    The `outbox` row is the durable record either way; nothing consumes
+    the DLQ automatically. `backend/scripts/replay_dead.py` lists `DEAD`
+    rows and sets one back to `PENDING` once its cause is fixed (it then
+    goes out after any later rows for its key that were already sent).
   - **Verdicts** (ADR-0024) use the same mechanism: `review-console` writes
     `verdict_outbox` in the transaction that resolves the case, and the
     relay drains it in the same loop, under the same lock, publishing each
     row with its `created_at` as the Kafka timestamp (`memory-store` times
     verdicts by it). `POST /cases/{id}/verdict` returns `200` during a Kafka
-    outage; `503` means only that Postgres was unavailable.
+    outage; `503` means only that Postgres was unavailable. A `DEAD`
+    verdict row is logged at ERROR and kept; there is no verdict DLQ topic.
   - The relay holds a Postgres session advisory lock on the connection it
     drains with; a second instance waits as `standby` (`/readyz` reports
     the role). If that connection drops, the lock goes with it and draining
@@ -740,9 +750,13 @@ cross-service or cross-app link.
     a batch at the failing row, commits the rows already sent, and backs
     off, so no row is published ahead of an earlier one for its key.
   - Delivery is **at-least-once**: a relay crash between publish and
-    marking `SENT` re-publishes. `orchestrator` and `review-console`
-    therefore dedupe on `alert_id` — a duplicate never produces a second
-    decision or a second case.
+    marking `SENT` re-publishes. Consumers dedupe on `alert_id`, so a
+    duplicate never produces a second decision or a second case.
+    `orchestrator` checks `seen:{app_id}:{alert_id}` (Redis) before a run
+    and sets it only after `alert.decided` is published, so a crash mid-run
+    re-runs the alert rather than losing it. Redis down → the alert runs.
+    `review-console` relies on the `cases` unique constraint and
+    `memory-store` on its event log's unique key (ADR-0017).
 
 All of these are app-agnostic platform mechanics — no per-app configuration
 beyond the `app_id` that budgets, rate limits, and traces are already

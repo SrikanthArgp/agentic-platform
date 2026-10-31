@@ -14,11 +14,20 @@ Written once over a table and its rows' topics, and run over both
   `kafka_key` and headers, and mark the published ones `SENT` in the same
   transaction. A full batch on either table loops straight away; otherwise
   sleep `poll_interval_s`.
-- **Kafka unreachable.** Publishing stops at the first failure. Rows
-  already published in that batch are marked `SENT`, the rest stay
-  `PENDING` with no attempt counted, and the loop backs off. Day 16 tells
-  a message-specific failure apart (attempts, `DEAD`, the DLQ); until
-  then every send failure is treated as Kafka being unreachable.
+- **Kafka unreachable** (`KafkaUnavailable`). Publishing stops at the
+  first failure. Rows already published in that batch are marked `SENT`,
+  the rest stay `PENDING` with no attempt counted, and the loop backs off.
+- **Message rejected** (`MessageRejected`: Kafka took the request and
+  refused this message, e.g. too large; Day 16). The row's `attempts` goes
+  up and `last_error` is kept. Below `max_attempts` (5) the batch stops
+  there too, so no later row for its key overtakes it, and the loop backs
+  off. At `max_attempts` the row is `DEAD` and the loop moves on. A table
+  with a `dlq_topic` (`outbox` → `alert.received.dlq`) first gets a copy
+  there, with `outbox_id`/`attempts`/`last_error` headers (an empty body
+  with `payload_dropped` if the DLQ refuses the payload too).
+  `verdict_outbox` has none (ADR-0024): its `DEAD` row is logged at ERROR
+  and kept. `backend/scripts/replay_dead.py` puts a `DEAD` row back to
+  `PENDING` once its cause is fixed.
 - **Timestamps.** A table with `timestamp_from_created_at` (verdicts) is
   published with the row's `created_at` as the Kafka timestamp, because
   `memory-store` times a verdict by it; alerts keep the producer's time.
@@ -46,9 +55,11 @@ logger = logging.getLogger(__name__)
 class OutboxTable:
     name: str
     timestamp_from_created_at: bool = False
+    # Where a DEAD row's message is copied; None = log and keep only.
+    dlq_topic: str | None = None
 
 
-OUTBOX = OutboxTable("outbox")
+OUTBOX = OutboxTable("outbox", dlq_topic="alert.received.dlq")
 VERDICT_OUTBOX = OutboxTable("verdict_outbox", timestamp_from_created_at=True)
 TABLES = (OUTBOX, VERDICT_OUTBOX)
 
@@ -61,6 +72,7 @@ class OutboxRow:
     payload: bytes
     headers: dict[str, str]
     created_at: datetime
+    attempts: int = 0
 
 
 class DatabaseUnavailable(RuntimeError):
@@ -71,10 +83,21 @@ class KafkaUnavailable(RuntimeError):
     """Kafka didn't take a message; nothing after it is published."""
 
 
+class MessageRejected(RuntimeError):
+    """Kafka is up but refused this message (too large, corrupt, bad topic).
+    Retrying the same bytes fails the same way, so it counts an attempt."""
+
+
 class Claim(Protocol):
     rows: Sequence[OutboxRow]
 
     async def mark_sent(self, ids: Sequence[int]) -> None: ...
+
+    async def mark_failed(self, row_id: int, error: str, attempts: int) -> None:
+        """Still `PENDING`, with `attempts` and `last_error` updated."""
+        ...
+
+    async def mark_dead(self, row_id: int, error: str, attempts: int) -> None: ...
 
 
 class Session(Protocol):
@@ -101,7 +124,8 @@ class Producer(Protocol):
     async def send(
         self, topic: str, key: bytes, value: bytes, headers: list[tuple[str, bytes]], timestamp_ms: int | None
     ) -> None:
-        """Raises `KafkaUnavailable` if the message wasn't acknowledged."""
+        """Raises `MessageRejected` if Kafka refused this message, or
+        `KafkaUnavailable` for anything else (unreachable, timed out)."""
         ...
 
 
@@ -120,6 +144,7 @@ class Relay:
         *,
         tables: Sequence[OutboxTable] = TABLES,
         batch_size: int = 100,
+        max_attempts: int = 5,
         poll_interval_s: float = 0.5,
         retention_h: float = 24.0,
         prune_interval_s: float = 300.0,
@@ -133,6 +158,7 @@ class Relay:
         self._producer = producer
         self._tables = tables
         self._batch_size = batch_size
+        self._max_attempts = max_attempts
         self._poll_interval_s = poll_interval_s
         self._retention_h = retention_h
         self._prune_interval_s = prune_interval_s
@@ -157,6 +183,11 @@ class Relay:
                 await self.run_session(session)
             except DatabaseUnavailable as e:
                 self._set_role(Role.DISCONNECTED, f"session lost, draining stopped ({e})")
+            except Exception:
+                # Anything unexpected ends this session, never the worker:
+                # closing the connection releases the lock, and we start over.
+                logger.exception("relay session failed; reconnecting")
+                self._set_role(Role.DISCONNECTED, "session failed")
             finally:
                 await session.close()
             await self._sleep(self._reconnect_s)
@@ -176,6 +207,10 @@ class Relay:
                 logger.warning("Kafka unavailable (%s); rows stay PENDING, retrying in %.0fs", e, self._kafka_backoff_s)
                 await self._sleep(self._kafka_backoff_s)
                 continue
+            except MessageRejected:
+                # Already logged and counted; retry the same row after a pause.
+                await self._sleep(self._kafka_backoff_s)
+                continue
             if not full:
                 await self._sleep(self._poll_interval_s)
 
@@ -188,22 +223,36 @@ class Relay:
 
     async def drain_table(self, session: Session, table: OutboxTable) -> int:
         """Publish one batch in order; returns how many rows were claimed."""
-        failure: KafkaUnavailable | None = None
+        failure: Exception | None = None
+        sent: list[int] = []
+        dead: list[int] = []
         async with session.claim(table, self._batch_size) as claim:
-            sent: list[int] = []
             for row in claim.rows:
                 try:
-                    await self._producer.send(
-                        row.topic,
-                        row.kafka_key.encode(),
-                        row.payload,
-                        [(k, v.encode()) for k, v in row.headers.items()],
-                        int(row.created_at.timestamp() * 1000) if table.timestamp_from_created_at else None,
-                    )
+                    await self._send(row, table)
                 except KafkaUnavailable as e:
                     # Stop here: publishing a later row would reorder its key.
                     failure = e
                     break
+                except MessageRejected as e:
+                    error, attempts = str(e)[:1000], row.attempts + 1
+                    if attempts < self._max_attempts:
+                        await claim.mark_failed(row.id, error, attempts)
+                        logger.warning(
+                            "%s row %d rejected (attempt %d of %d): %s",
+                            table.name, row.id, attempts, self._max_attempts, error,
+                        )
+                        failure = e
+                        break
+                    try:
+                        await self._dead_letter(row, table, error, attempts)
+                    except KafkaUnavailable as down:
+                        # Kafka went away mid-way: no attempt counted, retry later.
+                        failure = down
+                        break
+                    await claim.mark_dead(row.id, error, attempts)
+                    dead.append(row.id)
+                    continue
                 sent.append(row.id)
             if sent:
                 await claim.mark_sent(sent)
@@ -212,6 +261,46 @@ class Relay:
         if failure is not None:
             raise failure
         return len(claim.rows)
+
+    async def _send(self, row: OutboxRow, table: OutboxTable) -> None:
+        await self._producer.send(
+            row.topic,
+            row.kafka_key.encode(),
+            row.payload,
+            [(k, v.encode()) for k, v in row.headers.items()],
+            int(row.created_at.timestamp() * 1000) if table.timestamp_from_created_at else None,
+        )
+
+    async def _dead_letter(self, row: OutboxRow, table: OutboxTable, error: str, attempts: int) -> None:
+        """Copy a row that's about to be `DEAD` to its table's DLQ, if any.
+        The row itself stays the durable record either way."""
+        if table.dlq_topic is None:
+            logger.error(
+                "%s row %d DEAD after %d attempts, kept for inspection (no DLQ): %s",
+                table.name, row.id, attempts, error,
+            )
+            return
+        headers = [(k, v.encode()) for k, v in row.headers.items()] + [
+            ("outbox_id", str(row.id).encode()),
+            ("attempts", str(attempts).encode()),
+            ("last_error", error.encode()),
+        ]
+        key = row.kafka_key.encode()
+        try:
+            await self._producer.send(table.dlq_topic, key, row.payload, headers, None)
+            copied = "copied"
+        except MessageRejected:
+            # The DLQ refuses the payload too (e.g. it's what's too large):
+            # send the headers alone; the row still holds the payload.
+            try:
+                await self._producer.send(table.dlq_topic, key, b"", headers + [("payload_dropped", b"true")], None)
+                copied = "copied without its payload"
+            except MessageRejected as e:
+                copied = f"not copied ({e})"
+        logger.error(
+            "%s row %d DEAD after %d attempts, %s to %s: %s",
+            table.name, row.id, attempts, copied, table.dlq_topic, error,
+        )
 
     async def prune_if_due(self, session: Session) -> None:
         if self._next_prune is not None and self._clock() < self._next_prune:

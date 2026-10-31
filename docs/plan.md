@@ -1,6 +1,6 @@
 # Build Plan: 27-Day Sequence
 
-Status: Days 1–15 done; Day 16 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
+Status: Days 1–16 done; Day 17 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
 
 Service map this plan assumes (see `docs/ARCHITECTURE.md` for full rationale): `ingestion`, `orchestrator`, `memory-store`, `review-console`, `registry`, `tool-gateway`, plus the `outbox-relay` worker (Day 15, ADR-0030). The platform is multi-app: three configurable use cases (products) run on the same shared core, each registered as an **App Manifest** in `registry` (introduced Day 5) rather than hardcoded. App #1 / reference domain adapter: IT ops alert triage (`it-ops-triage`; `ingestion` accepts alerts; `orchestrator`'s agent decides auto-resolve / escalate / suppress-as-noise). App #2 is **cloud cost-anomaly triage** (`cost-anomaly-triage`): a spend-spike alert from a cloud billing/cost tool. App #3 is **security alert triage** (`security-alert-triage`): SIEM/EDR alerts. All three use the same `AUTO_RESOLVE` / `ESCALATE` / `SUPPRESS` decision enum from `agent.proto` — apps that need a different decision vocabulary would require a proto change and are out of scope. App #2 gets a first cut on Day 13 and is finished Day 17; a local Kubernetes cluster is stood up on Days 18–19 (ADR-0014), and app #3 is built Day 20 and shipped to it by rolling update. Agent-to-agent (A2A) communication between apps is explicitly out of scope — apps are isolated tenants sharing infrastructure (Kafka/gRPC/REST/MCP transports), not a mesh. A "tenant" is an app; there is no per-customer tenancy in this build.
 
@@ -419,7 +419,7 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 ## Week 4 — Reliability, Kubernetes, app #3
 
-### Day 16 — Reliability, part 2: DLQ, dedupe, Kafka-outage test
+### Day 16 — Reliability, part 2: DLQ, dedupe, Kafka-outage test ✅
 
 **Goal**: no alert is silently lost or decided twice when Kafka is briefly unavailable.
 
@@ -429,6 +429,26 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 - **Unit tests**: Kafka-down keeps rows `PENDING` without burning attempts, DLQ routing after 5 injected message failures, `orchestrator`/`review-console` ignore a duplicate `alert_id`.
 
 **Definition of done**: kill Kafka briefly during a burst, restore it, and confirm every alert is eventually published (outbox drains) and decided exactly once; induced message failures land in `alert.received.dlq` rather than vanishing.
+
+**As built** (notes for later days):
+- **Which failures count** (`outbox-relay/app/kafka.py`): `MessageRejected` only for errors about that one message: `MessageSizeTooLargeError` (aiokafka checks `max_request_size`, 1 MB, before sending), `RecordListTooLargeError`, `CorruptRecordException`, `InvalidTopicError`. Everything else is `KafkaUnavailable`, including errors aiokafka marks non-retriable but that would hit every row (e.g. `TopicAuthorizationFailedError`). So a misconfiguration makes rows wait instead of sending them all `DEAD`.
+- **A rejection** sets `attempts + 1` and `last_error`. The batch stops at that row (nothing for its key overtakes it), and the loop retries after the 2s backoff. At `RELAY_MAX_ATTEMPTS` (5) the row is `DEAD` and the batch continues. An `outbox` row is first copied to `alert.received.dlq`, same key and headers plus `outbox_id`/`attempts`/`last_error`. If the DLQ refuses the payload too (the usual case for "too large"), the copy is an empty body with `payload_dropped: true`. A Kafka outage during that copy counts no attempt. A `verdict_outbox` row is logged at ERROR and kept.
+- **Found and fixed live**: when Postgres kills the relay's connection mid-query, asyncpg can raise `InternalClientError`, which wasn't mapped and would have ended `Relay.run()`, stopping the worker for good. It's now mapped to `DatabaseUnavailable`, and `run()` also turns any unexpected session error into "reconnect". The integration test that hit it (`pg_terminate_backend`) was timing-dependent; green 5/5 after the fix.
+- `orchestrator`: `app/kafka/dedupe.py` (`SeenAlerts`). `handle_alert()` skips an alert whose `seen:{app_id}:{alert_id}` exists, before any run. `AlertPipeline` sets it (`SEEN_TTL_S`, 24h) only after `alert.decided` is published, so a crash mid-run re-runs the alert. Redis errors: check says "not seen", mark is dropped (logged). The gRPC path isn't deduped. `review-console` and `memory-store` needed no change: unique `(app_id, alert_id)` on `cases` and the event log's unique key already drop duplicates (existing tests).
+- Scripts: `burst.py send` (it-ops-triage disk alerts on `burst-01..`, accepted ids to a file) and `burst.py check FILE` (waits for every outbox row `SENT` and a decision per alert, then counts `alert.decided` per `alert_id`; exit 0 only if each was decided exactly once). `replay_dead.py` lists `DEAD` rows and sets one (or `--all`) back to `PENDING` with `attempts = 0`. It goes out after any later rows for its key that were already sent.
+- Live, after rebuilding `orchestrator` and `outbox-relay`:
+  - **Outage**: a 20-alert burst, 0.75s apart, with Kafka stopped 3s in and started 20s later. All 20 got `202`, 15 of them while Kafka was down. Every row ended `SENT` with 0 attempts, the longest wait in the outbox was 24s, and `check` reported 20/20 decided exactly once, no duplicates.
+  - **DLQ**: a 1.1 MB row inserted into `outbox` was rejected 4 times (WARNING each), then went `DEAD` at 5 with `MessageSizeTooLargeError` in `last_error`. `alert.received.dlq` got an empty-body copy with `outbox_id: 179`, `attempts: 5`, `payload_dropped: true`. Replaying it unchanged went `DEAD` again after 5. With the payload shrunk (the "fix"), replay sent it.
+  - **Dedupe**: setting an already-decided burst row back to `PENDING` re-published it. `orchestrator` logged "skipping duplicate alert … already decided", and `check` still said 20/20 exactly once.
+  - **Failure paths, live** (until now covered by unit tests only):
+    - Postgres stopped: `ingestion` `503`; a verdict `503` with case 89 still `OPEN`; relay `/readyz` `503 disconnected`. Postgres back: relay `active` in under 8s, intake `202`.
+    - Redis stopped: an alert got `202` and was decided. `orchestrator` logged "dedupe check skipped … running it" and "couldn't mark … as decided".
+    - Two relays: a second relay on the host started as `standby`. With the container stopped it went `active` and relayed a new alert, and gave the lock back when the container returned (container `standby`, then `active` once the host relay stopped).
+    - Pruning, with the host relay at `OUTBOX_RETENTION_H=0.01`: it deleted 29 `SENT` `outbox` and 3 `SENT` `verdict_outbox` rows (old dev rows).
+    - A 1.1 MB `verdict_outbox` row: `DEAD` at 5 attempts, ERROR "kept for inspection (no DLQ)", nothing new on `alert.received.dlq`.
+    - `orchestrator` killed (`docker compose kill`) before an alert's decision was published, then started: the alert was consumed again and decided once, 15s later (`burst.py check`: 1/1 exactly once). Not proven to be mid-LLM-call: the kill was triggered by any recent model call in the logs.
+  - Test data left in place: `outbox` row 179 (`SENT`, pruned after 24h), its two empty-body copies on `alert.received.dlq`, and `verdict_outbox` row 28 (`DEAD`, case 999999, kept: it shows up in `replay_dead.py`).
+- Tests: `outbox-relay` 36 unit (+17: `test_failures.py`, `test_kafka.py`, unexpected session error) + 7 integration (+1, attempts/`DEAD` SQL); `orchestrator` 235 (+4, `test_dedupe.py`); the rest unchanged. Integration green in all six projects.
 
 ---
 
