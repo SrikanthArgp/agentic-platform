@@ -7,8 +7,8 @@ multi-app model see `docs/ARCHITECTURE.md` (this doc is the picture,
 
 **Reading the diagram**: solid arrows are synchronous calls or event
 publishes on the alert path (including the `outbox-relay` worker, which
-carries every alert and every verdict from Day 15; until then `ingestion`
-and `review-console` publish to Kafka directly); dashed arrows are telemetry
+carries every alert and every verdict to Kafka: `ingestion` and
+`review-console` only write outbox rows); dashed arrows are telemetry
 (traces/logs/metrics) or supporting links (Redis counters).
 
 **Deployment**: each block is one container (Compose) or one Deployment
@@ -118,11 +118,11 @@ reach a person (see `review-console` below).
 ### `ingestion`
 The only REST entrypoint for new events. Validates a request against the
 target app's `event_schema_ref` (from `registry`'s App Manifest, 30s TTL
-cache), enqueues it for `alert.received`, and returns `202` immediately — it
-does not wait for a decision. Owns reliability at the edge: from Day 15 of
-`docs/plan.md` it writes each event to the Postgres `outbox` table and the
-`outbox-relay` worker publishes it (DLQ after repeated message failures), so a Kafka
-outage doesn't silently drop alerts. Enforces rate limits per `app_id` and
+cache), writes it to the Postgres `outbox` table, and returns `202` once
+that row commits — it does not wait for a decision, and has no Kafka
+client. The `outbox-relay` worker publishes the row to `alert.received`
+(DLQ after repeated message failures, Day 16), so a Kafka outage doesn't
+drop or refuse alerts; Postgres down → `503`. Enforces rate limits per `app_id` and
 per source within it (fixed one-minute Redis counters, limits from the
 manifest's `rate_limit`, `429` + `Retry-After`, ADR-0029), so one app's
 flood can't take another's allowance; Redis down → events are accepted.
@@ -217,20 +217,23 @@ Exposes `GET /cases` (`app_id` required; filterable by `alert_key`,
 confidence, and every agent's tool calls — ADR-0023), and `POST
 /cases/{id}/verdict` — `CONFIRMED_INCIDENT` / `CONFIRMED_NOISE`,
 `verdict_by`, and optional `resolution_notes` (what actually fixed it) —
-which moves the case `OPEN` → `RESOLVED` once and publishes
-`verdict.recorded` back onto Kafka — from Day 15 by writing a
-`verdict_outbox` row in the same transaction for the `outbox-relay` to
-publish (ADR-0024), so a Kafka outage no longer refuses a verdict.
+which moves the case `OPEN` → `RESOLVED` once and, in the same
+transaction, writes a `verdict_outbox` row that the `outbox-relay`
+publishes as `verdict.recorded` (ADR-0024). A Kafka outage doesn't refuse
+a verdict; only Postgres being down does (`503`).
 `resolution_notes` stays on the case; it reaches future agents via
 `similar-past-case-lookup`.
 
 ### `outbox-relay` worker
-One small asyncio process (Days 15–16, ADR-0030), not a platform service:
-no API beyond health checks. It publishes pending `outbox` rows to
+One small asyncio process (`backend/workers/outbox-relay/`, built Day 15,
+failure handling Day 16, ADR-0030), not a platform service: no API beyond
+`/healthz` and `/readyz` (role `active` or `standby`). It publishes pending `outbox` rows to
 `alert.received`, or to `alert.received.dlq` after repeated
 message-specific failures, and pending `verdict_outbox` rows to
-`verdict.recorded` in the same loop (ADR-0024). A Postgres advisory lock
-keeps exactly one instance draining, so one key's messages stay in order.
+`verdict.recorded` in the same loop (ADR-0024), each verdict timestamped
+with the moment it was recorded. A Postgres session advisory lock keeps
+exactly one instance draining, so one key's messages stay in order; a
+second instance waits as `standby`.
 It's the one background piece on the alert path: it adds up to one poll
 interval (0.5s) of latency per alert when idle, in exchange for no alert
 or verdict being lost during a Kafka outage (`ARCHITECTURE.md` §10). The
@@ -269,9 +272,9 @@ goes ahead.
 ### Postgres
 Single local instance: `cases` (review-console, app-scoped),
 `memory_events` (memory-store's event log, app-scoped), `apps` and `tools`
-(registry's App Manifests and tool registrations), and, from Day 15,
-`outbox` (ingestion's pending Kafka publishes) and `verdict_outbox`
-(review-console's), both drained by the `outbox-relay` worker.
+(registry's App Manifests and tool registrations), `outbox` (ingestion's
+pending Kafka publishes) and `verdict_outbox` (review-console's), both
+drained by the `outbox-relay` worker.
 
 ---
 

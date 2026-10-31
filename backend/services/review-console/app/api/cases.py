@@ -3,7 +3,8 @@
 `GET /cases` always takes `app_id` (every read is app-scoped, §8); it's
 also what Day 13's `similar-past-case-lookup` calls with `alert_key`.
 Verdict errors: unknown case 404, already resolved 409 (with the existing
-verdict), Kafka unreachable 503 (the case stays `OPEN`; retry).
+verdict), Postgres unreachable 503 (nothing committed; retry). Kafka isn't
+on this path: the verdict goes to `verdict_outbox` (ADR-0024).
 """
 
 import logging
@@ -13,7 +14,7 @@ from pydantic import BaseModel
 
 from app.core.cases import Case, CaseAlreadyResolvedError, CaseNotFoundError, CaseStatus, VerdictIn
 from app.core.service import CaseQuery, CaseService
-from app.kafka.publisher import PublishError
+from app.core.outbox import StoreUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ async def post_verdict(case_id: int, verdict: VerdictIn, request: Request) -> Ca
             status.HTTP_409_CONFLICT,
             {"message": str(e), "verdict": e.case.verdict, "verdict_by": e.case.verdict_by},
         ) from None
-    except PublishError as e:
+    except StoreUnavailableError as e:
         logger.warning("verdict on case %d not recorded: %s", case_id, e)
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "Verdicts are temporarily unavailable; retry.",

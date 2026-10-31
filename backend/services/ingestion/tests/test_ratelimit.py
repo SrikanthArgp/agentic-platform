@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from app.core.config import Settings
 from app.core.ratelimit import Limits, RateLimited, RateLimiter
 from app.main import create_app
-from tests.conftest import APP_ID, SCHEMA, FakePublisher, FakeRegistry, alert_body, resolved_app
+from tests.conftest import APP_ID, SCHEMA, FakeOutbox, FakeRegistry, alert_body, resolved_app
 
 pytestmark = pytest.mark.anyio
 
@@ -124,23 +124,23 @@ def two_apps(apps_dir):
 
     def make(rate_limit: dict | None = None, rl: RateLimiter | None = None):
         registry = FakeRegistry({APP_ID: resolved_app(rate_limit=rate_limit), OTHER: resolved_app(OTHER)})
-        publisher = FakePublisher()
-        app = create_app(Settings(apps_dir=apps_dir, kafka_enabled=False), publisher=publisher, apps=registry,
+        outbox = FakeOutbox()
+        app = create_app(Settings(apps_dir=apps_dir), outbox=outbox, apps=registry,
                          rate_limiter=rl or limiter(per_minute=100, per_source=100))
-        return TestClient(app), publisher
+        return TestClient(app), outbox
 
     return make
 
 
 def test_flooding_one_app_gets_429_and_the_other_app_is_still_accepted(two_apps):
-    client, publisher = two_apps(rate_limit={"per_minute": 3})
+    client, outbox = two_apps(rate_limit={"per_minute": 3})
     codes = [client.post(f"/apps/{APP_ID}/events", json=alert_body()).status_code for _ in range(5)]
     other = client.post(f"/apps/{OTHER}/events", json=alert_body())
 
     assert codes == [202, 202, 202, 429, 429]
     assert other.status_code == 202
-    assert [k for _, k, _ in publisher.sent].count(b"other-app:disk_full:web-01") == 1
-    assert len(publisher.sent) == 4  # nothing past the limit reached Kafka
+    assert [r.kafka_key for r in outbox.rows].count("other-app:disk_full:web-01") == 1
+    assert len(outbox.rows) == 4  # nothing past the limit was written
 
 
 def test_429_says_which_limit_and_when_to_retry(two_apps):
@@ -165,6 +165,6 @@ def test_an_unknown_app_is_still_404_not_429(two_apps):
 
 
 def test_redis_down_events_are_accepted(two_apps):
-    client, publisher = two_apps(rl=limiter(down_redis(), per_minute=1, per_source=1))
+    client, outbox = two_apps(rl=limiter(down_redis(), per_minute=1, per_source=1))
     assert [client.post(f"/apps/{APP_ID}/events", json=alert_body()).status_code for _ in range(3)] == [202] * 3
-    assert len(publisher.sent) == 3
+    assert len(outbox.rows) == 3

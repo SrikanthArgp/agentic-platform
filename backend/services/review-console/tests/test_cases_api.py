@@ -12,8 +12,8 @@ from tests.conftest import APP_ID, KEY, decided
 
 
 @pytest.fixture
-def client(store, publisher):
-    with TestClient(create_app(store=store, publisher=publisher)) as c:
+def client(store):
+    with TestClient(create_app(store=store)) as c:
         yield c
 
 
@@ -72,16 +72,17 @@ def test_detail_unknown_case_is_404(client):
 
 
 @pytest.mark.parametrize("notes", [None, "rotated logs on web-01"])
-def test_verdict_resolves_and_publishes(client, store, publisher, notes):
+def test_verdict_resolves_and_writes_the_outbox(client, store, notes):
     add(store)
     body = {"verdict": "CONFIRMED_INCIDENT", "verdict_by": "ana"} | ({"resolution_notes": notes} if notes else {})
     r = client.post("/cases/1/verdict", json=body)
     assert r.status_code == 200
     case = r.json()
     assert (case["status"], case["verdict"], case["resolution_notes"]) == ("RESOLVED", "CONFIRMED_INCIDENT", notes)
-    [(topic, key, value)] = publisher.sent
-    assert topic == "verdict.recorded" and key == f"{APP_ID}:{KEY}".encode()
-    assert json.loads(value)["case_id"] == 1
+    [row] = store.outbox
+    assert row.topic == "verdict.recorded" and row.kafka_key == f"{APP_ID}:{KEY}"
+    assert (row.app_id, row.case_id) == (APP_ID, 1)
+    assert json.loads(row.payload)["case_id"] == 1
 
 
 def test_second_verdict_is_409_with_the_existing_one(client, store):
@@ -98,12 +99,30 @@ def test_verdict_on_unknown_case_is_404(client):
     assert r.status_code == 404
 
 
-def test_kafka_down_is_503_and_the_case_stays_open(client, store, publisher):
+def test_second_verdict_writes_no_outbox_row(client, store):
     add(store)
-    publisher.down = True
+    client.post("/cases/1/verdict", json={"verdict": "CONFIRMED_NOISE", "verdict_by": "ana"})
+    client.post("/cases/1/verdict", json={"verdict": "CONFIRMED_INCIDENT", "verdict_by": "bo"})
+    assert len(store.outbox) == 1
+
+
+def test_postgres_down_is_503_and_nothing_is_written(client, store):
+    add(store)
+    store.down = True
     r = client.post("/cases/1/verdict", json={"verdict": "CONFIRMED_NOISE", "verdict_by": "ana"})
     assert r.status_code == 503 and r.headers["Retry-After"] == "5"
+    store.down = False
     assert client.get("/cases/1").json()["status"] == "OPEN"
+    assert store.outbox == []
+
+
+def test_outbox_insert_failing_rolls_the_resolution_back(client, store):
+    add(store)
+    store.fail_enqueue = True
+    r = client.post("/cases/1/verdict", json={"verdict": "CONFIRMED_NOISE", "verdict_by": "ana"})
+    assert r.status_code == 503
+    assert client.get("/cases/1").json()["status"] == "OPEN"
+    assert store.outbox == []
 
 
 @pytest.mark.parametrize(
@@ -116,10 +135,10 @@ def test_kafka_down_is_503_and_the_case_stays_open(client, store, publisher):
     ],
     ids=["bad-verdict", "no-verdict_by", "blank-verdict_by", "notes-too-long"],
 )
-def test_invalid_verdict_body_is_422(client, store, publisher, body):
+def test_invalid_verdict_body_is_422(client, store, body):
     add(store)
     assert client.post("/cases/1/verdict", json=body).status_code == 422
-    assert publisher.sent == []
+    assert store.outbox == []
 
 
 def test_blank_notes_are_stored_as_none(client, store):

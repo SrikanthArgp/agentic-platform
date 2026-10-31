@@ -378,9 +378,10 @@ sequenceDiagram
   `memory_context` block, the supervisor's input, and what `context.*`
   guardrails read. A failed call doesn't stop the run: the supervisor
   caps confidence at 0.5 instead.
-- **Next changes**: none planned for the service itself. From Day 15
-  verdicts reach it through `review-console`'s outbox, published with the
-  verdict's recorded time as the Kafka timestamp, so it times them as
-  before (ADR-0024); only the docstring that says the publish happens
-  inside the verdict's transaction changes. A retention job for old
-  `memory_events` rows is not in this build (ADR-0017).
+- **Verdict timing** (Day 15, ADR-0024): verdicts reach it through
+  `review-console`'s `verdict_outbox` and the `outbox-relay` worker, which
+  sets the Kafka timestamp to the row's `created_at`. So a verdict held
+  through a Kafka outage is still timed at the moment it was recorded. No
+  code changed here, only the `verdicts.py` docstring.
+- **Next changes**: none planned for the service itself. A retention job
+  for old `memory_events` rows is not in this build (ADR-0017).

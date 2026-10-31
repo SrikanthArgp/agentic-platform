@@ -343,8 +343,9 @@ scope (§11). `similar-past-case-lookup` reads the platform's own `cases`.
                                      └────────┘
 ```
 
-(The diagram shows the logical flow. From Day 15, `ingestion` → Kafka goes
-through the Postgres outbox and the `outbox-relay` worker (§10); the global
+(The diagram shows the logical flow. Physically, `ingestion` → Kafka and
+`review-console` → Kafka both go through Postgres outbox tables and the
+`outbox-relay` worker (§10, ADR-0030); the global
 `similar-past-case-lookup` tool also reads `review-console` over REST (§9).
 `memory-store` also consumes `alert.decided`, for its decision counts
 (ADR-0016), and reads its `memory_namespace` from `registry` (ADR-0018);
@@ -355,9 +356,9 @@ Steps, app-agnostic:
 
 1. `POST /apps/{app_id}/events` (`ingestion`) validates against that app's
    `event_schema_ref`, publishes `alert.received` (payload = `RunAgentRequest`,
-   protobuf-encoded — §5), returns `202` immediately. From Day 15 the
-   publish goes through the outbox (§10): `ingestion` writes an `outbox` row
-   and returns `202`; the `outbox-relay` worker publishes it to Kafka.
+   protobuf-encoded — §5), returns `202` immediately. The publish goes
+   through the outbox (§10): `ingestion` writes an `outbox` row and returns
+   `202`; the `outbox-relay` worker publishes it to Kafka.
 2. `orchestrator` consumes `alert.received`, resolves the app's manifest
    (§3), calls `memory-store.GetContext` (gRPC, §6) for behavioral context
    once, before the loop (ADR-0019), calls the agent's `prefetch_tools`
@@ -379,7 +380,9 @@ Steps, app-agnostic:
    persisted into `cases` (app-scoped), with the alert as it fired and
    every agent's tool calls (ADR-0023). An analyst reviews via REST and
    submits a verdict (once: `OPEN` → `RESOLVED`) (optionally with `resolution_notes` — what actually
-   fixed it, kept on the case, §6/§8), publishing `verdict.recorded`.
+   fixed it, kept on the case, §6/§8). The same transaction writes the
+   `verdict.recorded` event to `verdict_outbox`, and the `outbox-relay`
+   worker publishes it (ADR-0024, §10), so a verdict doesn't depend on Kafka.
 5. `memory-store` consumes `verdict.recorded` and records it as a verdict
    event for that app's `alert_key` (ADR-0017), which shifts that key's
    counts on the next `GetContext` — closing the feedback loop.
@@ -599,6 +602,7 @@ in Tempo/Mimir/Loki.
 | `apps` | `app_id` (PK), `display_name`, `manifest` (jsonb), `created_at`, `updated_at` | `registry`'s App Manifest store (§3) — one row per app, manifest kept as a single jsonb document rather than normalized, since it's read whole and written rarely. |
 | `tools` | (`tool_id`, `version`) (PK), `description`, `scope`, `app_id` (null for global), `input_schema`/`output_schema` (jsonb), `read_only` (`CHECK` true), `enabled`, `created_at`, `updated_at` | `registry`'s tool registrations (§3, §13 T8). A manifest may only declare registered tool versions. `enabled` is the runtime switch: a disabled tool stays registered but is offered to, and callable by, no agent. |
 | `outbox` | `id`, `app_id`, `alert_id`, `topic`, `kafka_key` (`{app_id}:{alert_key}`), `payload` (bytea, protobuf `RunAgentRequest`), `headers` (jsonb, incl. trace context), `status` (`PENDING`\|`SENT`\|`DEAD`), `attempts`, `last_error`, `created_at`, `sent_at` | `ingestion`'s Day 15 outbox (§10). Written by `ingestion`, drained by the `outbox-relay` worker (ADR-0030). `SENT` rows are pruned after a retention window; `DEAD` rows are kept for inspection. |
+| `verdict_outbox` | Same relay columns as `outbox`, with `case_id` in place of `alert_id`; `payload` is the `verdict.recorded` JSON (§9) | `review-console`'s Day 15 outbox (ADR-0024): written in the transaction that resolves the case, so a case is `RESOLVED` with its row or neither. Drained by the same relay, which publishes each row with its `created_at` as the Kafka timestamp. A `DEAD` row is logged and kept; there's no verdict DLQ topic. |
 
 **Redis** (`memory-store`, `orchestrator`, `ingestion`):
 
@@ -614,9 +618,9 @@ in Tempo/Mimir/Loki.
 
 | Topic | Producer → consumer | Message key | Payload |
 |---|---|---|---|
-| `alert.received` | `ingestion` (via the `outbox-relay` worker from Day 15) → `orchestrator` | `{app_id}:{alert_key}` | `RunAgentRequest` (protobuf) |
+| `alert.received` | `ingestion` (via `outbox` and the `outbox-relay` worker) → `orchestrator` | `{app_id}:{alert_key}` | `RunAgentRequest` (protobuf) |
 | `alert.decided` | `orchestrator` → `review-console`, `memory-store` (separate consumer groups) | `{app_id}:{alert_key}` | `RunAgentResponse` (protobuf) |
-| `verdict.recorded` | `review-console` → `memory-store` | `{app_id}:{alert_key}` | JSON (§9) |
+| `verdict.recorded` | `review-console` (via `verdict_outbox` and the `outbox-relay` worker) → `memory-store` | `{app_id}:{alert_key}` | JSON (§9); Kafka timestamp = the row's `created_at` |
 | `alert.received.dlq` | `outbox-relay` worker, from Day 16 (created now, nothing writes it yet) → (human inspection; no automatic consumer) | `{app_id}:{alert_key}` | Same as `alert.received`, plus `last_error`/`attempts` headers (§10) |
 
 **Partition key rule**: every message on every topic is keyed
@@ -656,7 +660,7 @@ the broker default of 1.
 | Link | Protocol | Payload |
 |---|---|---|
 | external client → `ingestion` | REST | app-specific JSON, validated against `event_schema_ref` |
-| `ingestion` → `orchestrator` | Kafka (`alert.received`), via Postgres `outbox` + `outbox-relay` from Day 15 (§10) | `RunAgentRequest` (protobuf) |
+| `ingestion` → `orchestrator` | Kafka (`alert.received`), via Postgres `outbox` + `outbox-relay` (§10) | `RunAgentRequest` (protobuf) |
 | external client → `ingestion` → `registry` | REST | manifest read to validate against `event_schema_ref` (§12) |
 | `orchestrator` → `tool-gateway` | MCP | tool-call / tool-result |
 | `orchestrator` → `memory-store` | gRPC (`GetContext`) | `GetContextRequest`/`Response` (protobuf) |
@@ -664,7 +668,7 @@ the broker default of 1.
 | `tool-gateway` → `registry` | REST | the calling agent's effective tools, re-checked on every tool call (§12) |
 | `orchestrator` → `review-console`, `memory-store` | Kafka (`alert.decided`) | `RunAgentResponse` (protobuf) |
 | `memory-store` → `registry` | REST | the app's `memory_namespace` (ADR-0018) |
-| `review-console` → `memory-store` | Kafka (`verdict.recorded`) | `{app_id, case_id, alert_key, verdict, verdict_by, recorded_at}` (JSON — no gRPC contract needed, one-directional feed) |
+| `review-console` → `memory-store` | Kafka (`verdict.recorded`), via Postgres `verdict_outbox` + `outbox-relay` (§10) | `{app_id, case_id, alert_key, verdict, verdict_by, recorded_at}` (JSON — no gRPC contract needed, one-directional feed) |
 | external client → `review-console` | REST | case list/detail, verdict submission |
 | `tool-gateway` → `review-console` | REST (`GET /cases`) | `similar-past-case-lookup` reads past cases (incl. `resolution_notes`), filtered by the calling agent's `app_id` + `alert_key` — read-only (§2, §6) |
 | entry agent → callable agent (within one app) | In-process (ADR-0012) | Branches of `orchestrator`'s LangGraph run graph (ADR-0022), not a network call; the gRPC `RunAgent` with `agent_id` set runs one callable directly, for tests (§5) |
@@ -723,6 +727,18 @@ cross-service or cross-app link.
     (e.g., oversized/rejected payload) → `attempts` increments; after 5,
     the row is marked `DEAD` and published to `alert.received.dlq` for
     inspection. The `outbox` row is the durable record either way.
+  - **Verdicts** (ADR-0024) use the same mechanism: `review-console` writes
+    `verdict_outbox` in the transaction that resolves the case, and the
+    relay drains it in the same loop, under the same lock, publishing each
+    row with its `created_at` as the Kafka timestamp (`memory-store` times
+    verdicts by it). `POST /cases/{id}/verdict` returns `200` during a Kafka
+    outage; `503` means only that Postgres was unavailable.
+  - The relay holds a Postgres session advisory lock on the connection it
+    drains with; a second instance waits as `standby` (`/readyz` reports
+    the role). If that connection drops, the lock goes with it and draining
+    stops until it reconnects and wins the lock again. A Kafka failure stops
+    a batch at the failing row, commits the rows already sent, and backs
+    off, so no row is published ahead of an earlier one for its key.
   - Delivery is **at-least-once**: a relay crash between publish and
     marking `SENT` re-publishes. `orchestrator` and `review-console`
     therefore dedupe on `alert_id` — a duplicate never produces a second

@@ -4,9 +4,10 @@
 verdict_by, recorded_at}` as JSON (docs/ARCHITECTURE.md §9). Each becomes
 a `verdict:CONFIRMED_INCIDENT` / `verdict:CONFIRMED_NOISE` event with
 `ref_id` = the case id, so a redelivered verdict counts once. Like a
-decision, its time is the Kafka message timestamp: `review-console`
-publishes inside the verdict's transaction, so it's the moment of the
-verdict, and both event kinds are timed by the same clock.
+decision, its time is the Kafka message timestamp. The `outbox-relay`
+worker sets that to the `verdict_outbox` row's `created_at`, which is
+written in the transaction that resolves the case (ADR-0024), so it's the
+moment of the verdict even when Kafka was down and the relay sent it late.
 
 `verdict_by` and `recorded_at` aren't stored: memory holds counts and
 flags, not who said what (ADR-0011).

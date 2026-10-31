@@ -1,8 +1,9 @@
 # review-console — class diagram
 
-As built through Day 14 of `docs/plan.md` (unchanged since Day 9): an `alert.decided` consumer that
-turns escalations into cases, the analyst REST API, and the
-`verdict.recorded` producer. Since Day 13 `GET /cases` has a second
+As built through Day 15 of `docs/plan.md` (Day 15 moved verdicts onto
+`verdict_outbox`, ADR-0024): an `alert.decided` consumer that turns
+escalations into cases, the analyst REST API, and the `verdict_outbox`
+writer that the `outbox-relay` worker publishes as `verdict.recorded`. Since Day 13 `GET /cases` has a second
 reader: `tool-gateway`'s global `similar-past-case-lookup` asks it for
 `status=RESOLVED` cases on the run's `app_id` + `alert_key` (ADR-0027).
 
@@ -11,7 +12,7 @@ classDiagram
     direction LR
     class main {
         <<module: app.main>>
-        +create_app(settings, store, publisher) FastAPI
+        +create_app(settings, store) FastAPI
         +healthz() HealthResponse
     }
     class Settings {
@@ -48,6 +49,17 @@ classDiagram
         <<protocol>>
         +case: Case?
         +resolve(VerdictIn, at) Case
+        +enqueue(VerdictOutboxRow) None
+    }
+    class VerdictOutboxRow {
+        <<dataclass: app.core.outbox>>
+        +app_id, topic, kafka_key
+        +case_id: int
+        +payload: bytes
+        +headers: dict
+    }
+    class StoreUnavailableError {
+        <<exception: app.core.outbox>>
     }
     class DecisionConsumer {
         <<app.kafka.decisions>>
@@ -55,11 +67,6 @@ classDiagram
         +start()
         +stop()
     }
-    class Publisher {
-        <<protocol: app.kafka.publisher>>
-        +publish(topic, key, value)
-    }
-    class KafkaPublisher
     class NewCase {
         <<pydantic: app.core.cases>>
         +app_id, alert_id, alert_key, agent_id
@@ -102,10 +109,11 @@ classDiagram
     cases_api ..> CaseService
     DecisionConsumer ..> CaseService : handle_decided()
     CaseService ..> CaseStore
-    CaseService ..> Publisher : verdict.recorded
+    CaseService ..> VerdictOutboxRow : verdict.recorded event
     PostgresCaseStore ..|> CaseStore
     CaseStore ..> LockedCase : lock()
-    KafkaPublisher ..|> Publisher
+    LockedCase ..> VerdictOutboxRow : same transaction
+    PostgresCaseStore ..> StoreUnavailableError : connection failures
     NewCase <|-- Case
     NewCase *-- AlertSummary
     NewCase *-- ToolCallSummary
@@ -121,16 +129,17 @@ classDiagram
 - **`CaseService.record_verdict`** holds the state machine, under
   `lock()` (`SELECT ... FOR UPDATE`): no case → `CaseNotFoundError` (404),
   `RESOLVED` → `CaseAlreadyResolvedError` (409), else `resolve()` and
-  publish `verdict.recorded` before commit. A `PublishError` rolls back
-  (503; the case stays `OPEN`). A 503 from the send *timeout* may still be
-  delivered once Kafka is back (Day 11). Decided in ADR-0024: on Day 15
-  the verdict is written to a `verdict_outbox` row in the same
-  transaction and relayed by the `outbox-relay` worker (ADR-0030), the Kafka producer goes, and a Kafka
-  outage no longer returns 503.
+  `enqueue()` the `verdict.recorded` event into `verdict_outbox`, in the
+  same transaction (ADR-0024). Both commit or neither does. Kafka isn't on
+  this path: a verdict succeeds during an outage and the `outbox-relay`
+  worker publishes it later, timestamped by the row's `created_at`. Only
+  a Postgres connection failure is `StoreUnavailableError` (503, nothing
+  committed). This closes the Day 11 gap where a timed-out publish could
+  reach `memory-store` for a case that stayed `OPEN`.
 - **`verdict_event()`** builds the `verdict.recorded` body: `{app_id,
   case_id, alert_key, verdict, verdict_by, recorded_at}`, keyed
   `{app_id}:{alert_key}`. `resolution_notes` stays on the case (ADR-0011).
 - **`DecisionConsumer`**: own group, one message at a time, commit after
   handling; unusable messages are skipped, Postgres errors retried.
-- With `KAFKA_ENABLED=false`, `main` uses a publisher that always raises
-  `PublishError`: cases are readable, verdicts get 503.
+- With `KAFKA_ENABLED=false`, `main` doesn't start the consumer; cases and
+  verdicts work as usual (verdict rows wait in `verdict_outbox`).

@@ -1,12 +1,13 @@
-"""`CaseService`: cases in from `alert.decided`, verdicts out to `verdict.recorded`.
+"""`CaseService`: cases in from `alert.decided`, verdicts out through `verdict_outbox`.
 
 The state machine lives here, not in SQL: under the case's row lock, a
 missing case is `CaseNotFoundError`, a resolved one is
 `CaseAlreadyResolvedError`, and an open one is resolved and its
-`verdict.recorded` published before the lock is released. If the publish
-fails the resolution rolls back, so the case stays `OPEN` and the analyst
-can retry. If the commit fails after a publish, the retry publishes again
-with the same `case_id`, which `memory-store` stores once (ADR-0017).
+`verdict.recorded` event written to `verdict_outbox` in the same
+transaction (ADR-0024). Both commit or neither does, so `cases` and
+`memory-store` can't disagree about a verdict, and Kafka being down
+doesn't stop an analyst: the `outbox-relay` worker publishes the row when
+it can (ADR-0030).
 """
 
 import json
@@ -26,7 +27,7 @@ from app.core.cases import (
     case_from_decision,
     verdict_event,
 )
-from app.kafka.publisher import VERDICT_RECORDED, Publisher
+from app.core.outbox import VERDICT_RECORDED, VerdictOutboxRow, message_key, trace_headers
 from proto_gen import agent_pb2
 
 
@@ -47,6 +48,10 @@ class LockedCase(Protocol):
 
     async def resolve(self, verdict: VerdictIn, at: datetime) -> Case: ...
 
+    async def enqueue(self, row: VerdictOutboxRow) -> None:
+        """Insert into `verdict_outbox` in the lock's transaction."""
+        ...
+
 
 class CaseStore(Protocol):
     async def add(self, case: NewCase) -> bool:
@@ -60,25 +65,19 @@ class CaseStore(Protocol):
         ...
 
     def lock(self, case_id: int) -> AbstractAsyncContextManager[LockedCase]:
-        """Commits on a clean exit, rolls back if the block raises."""
+        """Commits on a clean exit, rolls back if the block raises.
+        `StoreUnavailableError` if Postgres can't be reached or fails."""
         ...
-
-
-def message_key(app_id: str, alert_key: str) -> bytes:
-    """Every topic's key (docs/ARCHITECTURE.md §8)."""
-    return f"{app_id}:{alert_key}".encode()
 
 
 class CaseService:
     def __init__(
         self,
         store: CaseStore,
-        publisher: Publisher,
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ):
         self._store = store
-        self._publisher = publisher
         self._clock = clock
 
     async def record_decision(self, response: agent_pb2.RunAgentResponse) -> bool | None:
@@ -104,9 +103,14 @@ class CaseService:
             if locked.case.status is CaseStatus.RESOLVED:
                 raise CaseAlreadyResolvedError(locked.case)
             case = await locked.resolve(verdict, self._clock())
-            await self._publisher.publish(
-                VERDICT_RECORDED,
-                message_key(case.app_id, case.alert_key),
-                json.dumps(verdict_event(case), separators=(",", ":")).encode(),
+            await locked.enqueue(
+                VerdictOutboxRow(
+                    app_id=case.app_id,
+                    case_id=case.id,
+                    topic=VERDICT_RECORDED,
+                    kafka_key=message_key(case.app_id, case.alert_key),
+                    payload=json.dumps(verdict_event(case), separators=(",", ":")).encode(),
+                    headers=trace_headers(),
+                )
             )
         return case

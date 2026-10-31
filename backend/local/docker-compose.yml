@@ -178,7 +178,8 @@ services:
 
   # ------------------------------------------------------------- platform
   # Build context is backend/ so each image can COPY shared/ (and apps/ for
-  # the three services that read app code). Host ports 8001–8006.
+  # the three services that read app code). Host ports 8001–8006; the
+  # outbox-relay worker below is on 8007.
 
   ingestion:
     <<: *service-defaults
@@ -257,6 +258,22 @@ services:
     <<: *service-defaults
     build: { context: .., dockerfile: services/review-console/Dockerfile }
     ports: ["8006:8000"]
+    depends_on:
+      kafka-init: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+
+  # ------------------------------------------------------------- workers
+
+  # Drains outbox + verdict_outbox to Kafka (ADR-0030). One container; a
+  # second instance would wait on the Postgres advisory lock as `standby`.
+  outbox-relay:
+    <<: *service-defaults
+    build: { context: .., dockerfile: workers/outbox-relay/Dockerfile }
+    ports: ["8007:8000"]
+    environment:
+      <<: *default-env
+      RELAY_POLL_INTERVAL_S: "0.5"
+      OUTBOX_RETENTION_H: "24"
     depends_on:
       kafka-init: { condition: service_completed_successfully }
       postgres: { condition: service_healthy }

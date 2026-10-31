@@ -33,9 +33,10 @@ def build_alert_key(payload: dict[str, Any], fields: tuple[str, ...]) -> str:
     return ":".join(parts)
 
 
-def message_key(app_id: str, alert_key: str) -> bytes:
-    """Every message on every topic is keyed `{app_id}:{alert_key}` (ADR-0002)."""
-    return f"{app_id}:{alert_key}".encode()
+def message_key(app_id: str, alert_key: str) -> str:
+    """Every message on every topic is keyed `{app_id}:{alert_key}` (ADR-0002);
+    stored as the outbox row's `kafka_key`."""
+    return f"{app_id}:{alert_key}"
 
 
 def build_request(

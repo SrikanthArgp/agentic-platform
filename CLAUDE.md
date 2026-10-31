@@ -30,18 +30,29 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Days 1–14 of `docs/plan.md` are done (infra, contracts, skeletons;
+Days 1–15 of `docs/plan.md` are done (infra, contracts, skeletons;
 `tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core;
 `ingestion` and the end-to-end hot path; `registry` + App Manifest;
 `memory-store`; context, supervisor and guardrails in `orchestrator`;
 callable agents; `review-console`; the verdict feedback loop; the Week 2
 integration pass; `tool-gateway` resilience; tool versions, the global
 `similar-past-case-lookup` and app #2's first cut; token budgets and rate
-limits); Day 15 (outbox + the `outbox-relay` worker, for alerts and verdicts, ADR-0030) is next. As-built notes for each day are in `docs/plan.md`.
+limits; the outbox + the `outbox-relay` worker, for alerts and verdicts); Day 16 (DLQ, dedupe, Kafka-outage test) is next. As-built notes for each day are in `docs/plan.md`.
 
-- All 6 services have a FastAPI skeleton (`app/main.py`, `/healthz`),
-  a `pyproject.toml`, a committed `uv.lock`, a `Dockerfile`, and passing
-  health-check tests.
+- All 6 services and the `outbox-relay` worker have a FastAPI app
+  (`app/main.py`, `/healthz`), a `pyproject.toml`, a committed `uv.lock`,
+  a `Dockerfile`, and passing tests.
+- Nothing but `orchestrator` publishes to Kafka directly (Day 15,
+  ADR-0030, ADR-0024). `ingestion` writes each accepted alert to Postgres
+  `outbox`, and `review-console` writes each verdict to `verdict_outbox` in
+  the transaction that resolves the case. The `outbox-relay` worker
+  (`backend/workers/outbox-relay/`, host `:8007`, `/readyz` says `active`
+  or `standby`) holds a Postgres session advisory lock and publishes
+  `PENDING` rows in `id` order with their stored key and headers, verdicts
+  timestamped by `created_at`; idle poll `RELAY_POLL_INTERVAL_S` (0.5s);
+  `SENT` rows pruned after `OUTBOX_RETENTION_H` (24h). Kafka down → rows
+  wait, intake and verdicts still succeed. Every send failure counts as
+  Kafka down until Day 16 (attempts, `DEAD`, DLQ).
 - `review-console` (`:8006`) consumes `alert.decided` (own group) and turns
   each `ESCALATE` into an `OPEN` row in `cases` (with `reasons`,
   `tool_calls`, `confidence`; unique `(app_id, alert_id)`). `GET /cases`
@@ -50,9 +61,9 @@ limits); Day 15 (outbox + the `outbox-relay` worker, for alerts and verdicts, AD
   `CONFIRMED_NOISE`, `verdict_by`, optional `resolution_notes`): `OPEN` →
   `RESOLVED` once, else `409`. A case also shows the alert itself and every
   agent's tool calls: `RunAgentResponse.alert` echoes the request and
-  `ToolCall.agent_id` says whose call it was (ADR-0023). The verdict publishes `verdict.recorded`
-  (JSON, no notes) inside the row-lock transaction; Kafka down → `503`,
-  case stays `OPEN`.
+  `ToolCall.agent_id` says whose call it was (ADR-0023). The verdict writes the `verdict.recorded`
+  JSON (no notes) to `verdict_outbox` inside the row-lock transaction;
+  only Postgres down → `503`, nothing committed.
 - `memory-store` serves gRPC `GetContext` (`:50051`, host `:50053`): 1h/24h/7d
   decision and verdict counts plus `is_novel_alert`/
   `has_confirmed_incident_history` per `app_id` + `alert_key`. One consumer
@@ -74,10 +85,11 @@ limits); Day 15 (outbox + the `outbox-relay` worker, for alerts and verdicts, AD
   `ap-shared`'s `registry_client` (30s TTL, `MANIFEST_TTL_S`, 404s cached).
 - `ingestion`: `POST /apps/{app_id}/events` (envelope + `payload`)
   validates the payload against that app's `event_schema_ref`, builds
-  `alert_key` from its `alert_key_fields`, publishes `alert.received`,
-  returns `202`; unknown app `404`; over the app's or source's per-minute
+  `alert_key` from its `alert_key_fields`, writes the `alert.received`
+  message to `outbox`, returns `202`; unknown app `404`; over the app's or source's per-minute
   rate limit `429` with `Retry-After` (manifest `rate_limit`, Redis,
-  ADR-0029; Redis down → accepted). It reads nothing back; decisions are
+  ADR-0029; Redis down → accepted). `202` means the `outbox` row is
+  committed; Postgres down → `503`. It reads nothing back; decisions are
   seen on `review-console` (escalations) or the `alert.decided` topic.
 - `tool-gateway` serves MCP (stateless Streamable HTTP) at `POST /mcp`. At
   startup it loads app tools from `backend/apps/*/tools/` (`app/core/loader.py`;
@@ -137,11 +149,11 @@ limits); Day 15 (outbox + the `outbox-relay` worker, for alerts and verdicts, AD
 - Run context (`app_id`/`agent_id`/`alert_id`/`alert_key`) travels in MCP
   `_meta` via `ap-shared`'s `run_context` module, never as a tool argument.
 - `backend/local/docker-compose.yml` runs the full stack: Kafka (KRaft),
-  Redis, Postgres, OTel Collector, Loki, Mimir, Tempo, Grafana, and the 6
-  services — all with health checks. The one-shot `kafka-init` service
+  Redis, Postgres, OTel Collector, Loki, Mimir, Tempo, Grafana, the 6
+  services and the `outbox-relay` worker — all with health checks. The one-shot `kafka-init` service
   creates the four topics with 12 partitions (broker auto-create is off).
   `backend/local/postgres/init.sql` creates `cases`, `memory_events`,
-  `tools`, `apps`; it's idempotent, so on an existing volume pipe it into
+  `tools`, `apps`, `outbox`, `verdict_outbox`; it's idempotent, so on an existing volume pipe it into
   `docker compose exec -T postgres psql -U platform -d platform`.
   After `down -v`, re-run `register_app.py` for both apps.
 - Services log JSON to stdout and drop spans; nothing exports to the
@@ -177,6 +189,16 @@ uv run uvicorn app.main:app --reload --port 8000   # run locally
 uv run pytest -m integration     # integration tests (orchestrator, ingestion, registry, memory-store, review-console): need the Compose stack up
 ```
 
+The `outbox-relay` worker is another independent `uv` project, tested the
+same way (`uv run pytest -m integration` runs its SQL against the Compose
+Postgres in a throwaway schema):
+
+```bash
+cd backend/workers/outbox-relay
+uv sync
+uv run pytest
+```
+
 `backend/shared` (the `ap-shared` package: proto stubs + `observability`
 module) has its own tests:
 
@@ -200,12 +222,12 @@ Platform-wide check (from `backend/local`):
 ```bash
 docker compose up -d --build --wait   # all containers healthy
 # services on host ports 8001–8006 (ingestion, orchestrator, tool-gateway,
-# memory-store, registry, review-console); Grafana on :3000 (anonymous admin);
+# memory-store, registry, review-console), outbox-relay on 8007; Grafana on :3000 (anonymous admin);
 # Postgres :5432 (platform/platform), Redis :6379, Kafka localhost:29092
 docker compose down -v                # reset volumes (re-runs init.sql)
 ```
 
-then `pytest` green in every service directory.
+then `pytest` green in every service directory and in `backend/workers/outbox-relay`.
 
 ## Architecture essentials
 
@@ -215,7 +237,7 @@ then `pytest` green in every service directory.
   `tool-gateway` (MCP tool server), `memory-store` (gRPC context store),
   `registry` (REST capability/app discovery), `review-console` (REST
   human-in-the-loop), plus one background worker, `outbox-relay` (Day 15,
-  ADR-0030), that drains the outbox tables to Kafka.
+  ADR-0030), that drains the `outbox` and `verdict_outbox` tables to Kafka.
 - **Transport is protocol-per-purpose, not uniform**: Kafka between
   `ingestion`/`orchestrator`/`review-console`/`memory-store` (the event
   backbone: `alert.received`, `alert.decided`, `verdict.recorded`), gRPC for
@@ -269,6 +291,6 @@ then `pytest` green in every service directory.
   rolling update (`rollout_app.sh`: roll the three services, wait, then
   `register_app.py`).
   The `outbox-relay` worker (`backend/workers/outbox-relay/`, one active
-  instance via a Postgres advisory lock, ADR-0030) relays the Day 15
-  outbox tables; there is no Celery. The Day 25 batch eval is a script,
+  instance via a Postgres advisory lock, ADR-0030) relays both outbox
+  tables; there is no Celery. The Day 25 batch eval is a script,
   run nightly by a Kubernetes `CronJob`.

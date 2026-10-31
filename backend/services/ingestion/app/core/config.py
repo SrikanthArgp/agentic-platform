@@ -12,8 +12,8 @@ DEFAULT_APPS_DIR = Path(__file__).resolve().parents[4] / "apps"
 @dataclass(frozen=True)
 class Settings:
     apps_dir: Path = DEFAULT_APPS_DIR
-    kafka_bootstrap_servers: str = "localhost:29092"
-    kafka_enabled: bool = True
+    # The outbox (ADR-0030); ingestion no longer talks to Kafka.
+    postgres_dsn: str = "postgresql://platform:platform@localhost:5432/platform"
     registry_url: str = "http://localhost:8005"
     # Same default as orchestrator and tool-gateway (docs/ARCHITECTURE.md §3).
     manifest_ttl_s: float = 30.0
@@ -29,8 +29,7 @@ class Settings:
         env = os.environ
         return cls(
             apps_dir=Path(env.get("APPS_DIR", DEFAULT_APPS_DIR)),
-            kafka_bootstrap_servers=env.get("KAFKA_BOOTSTRAP_SERVERS", cls.kafka_bootstrap_servers),
-            kafka_enabled=env.get("KAFKA_ENABLED", "true").lower() == "true",
+            postgres_dsn=env.get("POSTGRES_DSN", cls.postgres_dsn),
             registry_url=env.get("REGISTRY_URL", cls.registry_url),
             manifest_ttl_s=float(env.get("MANIFEST_TTL_S", cls.manifest_ttl_s)),
             max_payload_bytes=int(env.get("MAX_PAYLOAD_BYTES", cls.max_payload_bytes)),

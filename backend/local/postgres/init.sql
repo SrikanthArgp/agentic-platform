@@ -1,7 +1,7 @@
 -- Day 1 schema (docs/plan.md Day 1, docs/ARCHITECTURE.md §8).
 -- Runs once, on first start of an empty Postgres volume. Tables are added by
 -- the day that introduces them (`tools`/`apps`: Day 5, `memory_events`: Day 6,
--- `outbox`: Day 15); on
+-- `outbox`/`verdict_outbox`: Day 15); on
 -- an existing volume, apply a new table's block by hand or `down -v`.
 -- Every statement is idempotent, so re-running this file is safe.
 
@@ -90,3 +90,52 @@ CREATE TABLE IF NOT EXISTS apps (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Day 15 transactional outboxes (ADR-0030, ADR-0024, §8, §10). Services
+-- never publish to Kafka directly: they write a row here (ingestion: per
+-- accepted alert; review-console: per verdict, in the transaction that
+-- resolves the case) and the outbox-relay worker publishes PENDING rows in
+-- id order, keyed by kafka_key, then marks them SENT. SENT rows are pruned
+-- after OUTBOX_RETENTION_H; DEAD rows (Day 16) are kept for inspection.
+CREATE TABLE IF NOT EXISTS outbox (
+    id         BIGSERIAL PRIMARY KEY,
+    app_id     TEXT        NOT NULL,
+    alert_id   TEXT        NOT NULL,
+    topic      TEXT        NOT NULL,
+    -- {app_id}:{alert_key}, the partition key (§8).
+    kafka_key  TEXT        NOT NULL,
+    -- Protobuf RunAgentRequest.
+    payload    BYTEA       NOT NULL,
+    -- Kafka headers, incl. trace context: {"traceparent": "..."}.
+    headers    JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    status     TEXT        NOT NULL DEFAULT 'PENDING'
+               CHECK (status IN ('PENDING', 'SENT', 'DEAD')),
+    attempts   INTEGER     NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    sent_at    TIMESTAMPTZ
+);
+
+-- Same relay columns; case_id in place of alert_id, payload is the
+-- verdict.recorded JSON (§9). Owned by review-console, as cases is.
+CREATE TABLE IF NOT EXISTS verdict_outbox (
+    id         BIGSERIAL PRIMARY KEY,
+    app_id     TEXT        NOT NULL,
+    case_id    BIGINT      NOT NULL,
+    topic      TEXT        NOT NULL,
+    kafka_key  TEXT        NOT NULL,
+    payload    BYTEA       NOT NULL,
+    headers    JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    status     TEXT        NOT NULL DEFAULT 'PENDING'
+               CHECK (status IN ('PENDING', 'SENT', 'DEAD')),
+    attempts   INTEGER     NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    sent_at    TIMESTAMPTZ
+);
+
+-- The relay's claim (PENDING in id order) and the pruner (SENT by age).
+CREATE INDEX IF NOT EXISTS outbox_pending_idx ON outbox (id) WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS outbox_sent_idx ON outbox (sent_at) WHERE status = 'SENT';
+CREATE INDEX IF NOT EXISTS verdict_outbox_pending_idx ON verdict_outbox (id) WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS verdict_outbox_sent_idx ON verdict_outbox (sent_at) WHERE status = 'SENT';

@@ -1,11 +1,12 @@
 # ingestion — class diagram
 
-As built through Day 14 of `docs/plan.md` (Day 14 added rate limits per
-app and per source; unchanged on Days 12–13). `ingestion` is the platform's
+As built through Day 15 of `docs/plan.md` (Day 15 replaced the Kafka
+publisher with the Postgres outbox, ADR-0030; Day 14 added rate limits per
+app and per source). `ingestion` is the platform's
 REST front door: it accepts an alert at `POST /apps/{app_id}/events`,
 checks the app's rate limits, validates it against that app's rules (read
-from `registry`), turns it into a `RunAgentRequest`, and publishes it to
-`alert.received`. It never runs an agent and never decides anything.
+from `registry`), turns it into a `RunAgentRequest`, and writes it to the
+`outbox` table; the `outbox-relay` worker publishes it to `alert.received`. It never runs an agent and never decides anything.
 
 Python modules that are plain functions (no class) are drawn as
 `<<module>>` boxes, so every piece of behaviour shows up somewhere.
@@ -19,7 +20,7 @@ classDiagram
         class main {
             <<module>>
             +SERVICE_NAME = "ingestion"
-            +create_app(settings, publisher, apps, rate_limiter) FastAPI
+            +create_app(settings, outbox, apps, rate_limiter) FastAPI
             -lifespan(app) AsyncIterator
             +healthz() HealthResponse
         }
@@ -41,8 +42,7 @@ classDiagram
         class Settings {
             <<frozen dataclass>>
             +apps_dir: Path
-            +kafka_bootstrap_servers: str
-            +kafka_enabled: bool
+            +postgres_dsn: str
             +registry_url: str
             +manifest_ttl_s: float
             +max_payload_bytes: int
@@ -91,7 +91,7 @@ classDiagram
         class envelope {
             <<module: app.core.envelope>>
             +build_alert_key(payload, fields) str
-            +message_key(app_id, alert_key) bytes
+            +message_key(app_id, alert_key) str
             +build_request(app_id, alert_id, alert_key, alert, received_at) RunAgentRequest
         }
         class UnknownAppError {
@@ -126,22 +126,33 @@ classDiagram
         }
     }
 
-    namespace kafka {
-        class Publisher {
+    namespace outbox {
+        class Outbox {
             <<Protocol>>
-            +publish(topic, key, value) None
+            +write(entry: OutboxEntry) None
         }
-        class KafkaPublisher {
-            -_bootstrap_servers: str
-            -_producer: AIOKafkaProducer?
-            -_connect_task: Task?
+        class PostgresOutbox {
+            -_dsn: str
+            -_pool: asyncpg.Pool?
             +start() None
-            -_connect() None
             +stop() None
-            +publish(topic, key, value) None
+            +write(entry: OutboxEntry) None
         }
-        class PublishError {
+        class OutboxEntry {
+            <<frozen dataclass>>
+            +app_id: str
+            +alert_id: str
+            +topic: str
+            +kafka_key: str
+            +payload: bytes
+            +headers: dict~str, str~
+        }
+        class OutboxError {
             <<exception: RuntimeError>>
+        }
+        class writer {
+            <<module: app.outbox.writer>>
+            +trace_headers() dict~str, str~
         }
     }
 
@@ -149,8 +160,8 @@ classDiagram
         class RunAgentRequest {
             <<proto: agent.proto>>
         }
-        class AIOKafkaProducer {
-            <<aiokafka>>
+        class asyncpg {
+            <<asyncpg>>
         }
         class Redis {
             <<redis.asyncio>>
@@ -179,7 +190,7 @@ classDiagram
     main ..> Settings : reads from_env
     main *-- AppStore : app.state.apps
     main *-- RegistryClient : unless apps injected, closed in lifespan
-    main *-- KafkaPublisher : app.state.publisher, unless injected
+    main *-- PostgresOutbox : app.state.outbox, unless injected
     main *-- RateLimiter : app.state.rate_limiter, if REDIS_URL or injected
     main ..> observability : setup at import
     main ..> alerts_router : include_router
@@ -191,13 +202,14 @@ classDiagram
     alerts_router ..> AppStore : get(app_id)
     alerts_router ..> RateLimiter : hit(app_id, source, spec.limits)
     alerts_router ..> RateLimited : 429 + Retry-After
-    alerts_router ..> envelope : alert_key, request, Kafka key
-    alerts_router ..> Publisher : publish alert.received
+    alerts_router ..> envelope : alert_key, request, kafka_key
+    alerts_router ..> Outbox : write alert.received row
+    alerts_router ..> writer : trace_headers()
     alerts_router ..> UnknownAppError : 404
     alerts_router ..> AppUnavailableError : 503
     alerts_router ..> AppConfigError : 500
     alerts_router ..> AlertKeyError : 422
-    alerts_router ..> PublishError : 503
+    alerts_router ..> OutboxError : 503
 
     %% core
     AppStore --> AppSource
@@ -347,7 +359,8 @@ rejects, with `AppConfigError`:
   Missing, empty, or object/array values raise `AlertKeyError`. Because the
   key is built here and never by the agent, the same event always maps to
   the same memory key and Kafka partition (ADR-0007).
-- `message_key()` returns the Kafka key `{app_id}:{alert_key}` (ADR-0002).
+- `message_key()` returns the Kafka key `{app_id}:{alert_key}` (ADR-0002),
+  stored as the outbox row's `kafka_key`.
   Every topic uses it, so all messages for one alert stay in order on one
   partition.
 - `build_request()` builds the `RunAgentRequest` from the envelope fields
@@ -369,20 +382,23 @@ two are set by `ingestion`.
 generated, so the caller can find the decision later (by `alert_id` /
 `alert_key` on `review-console`'s `GET /cases`, if it escalated).
 
-### Kafka — `app/kafka/`
+### Outbox — `app/outbox/writer.py`
 
-**`Publisher`** (`publisher.py`, Protocol): the one-method interface the
-router depends on. Tests inject a fake; production uses `KafkaPublisher`.
-This is the seam Day 15 uses to swap in the Postgres outbox.
+**`Outbox`** (Protocol): the one-method interface the router depends on.
+Tests inject a fake; production uses `PostgresOutbox`.
 
-**`KafkaPublisher`**: wraps an `AIOKafkaProducer` with
-`enable_idempotence=True` and `acks="all"`.
-- `start()` connects in a background task that retries every 2s, so the
-  service (and `/healthz`) comes up even when Kafka is down.
-- `publish()` waits for the broker's ack, with a 10s timeout. It raises
-  `PublishError` if the producer isn't connected yet or the send fails.
+**`PostgresOutbox`**: an asyncpg pool. `start()` creates it but only warns
+if Postgres is down, so the service comes up anyway; `write()` retries the
+pool and inserts one `outbox` row (5s timeout), raising `OutboxError` on
+any connection or database failure.
 
-An alert therefore gets a `202` only once Kafka has stored it.
+**`OutboxEntry`** is the row: topic `alert.received`, `kafka_key`, the
+serialized `RunAgentRequest`, and `headers` from **`trace_headers()`**, the
+W3C trace context of the request's span, which the relay forwards as Kafka
+headers.
+
+An alert therefore gets a `202` once its row is committed, whether or not
+Kafka is up. `ingestion` has no Kafka client at all (ADR-0030).
 
 ## Request flow (`POST /apps/{app_id}/events`)
 
@@ -396,22 +412,22 @@ An alert therefore gets a `202` only once Kafka has stored it.
 4. **`AppEventSpec.payload_errors`** validates the payload, and
    **`envelope.build_alert_key`** builds `alert_key`.
 5. **`envelope.build_request`** builds the **`RunAgentRequest`**.
-6. **`Publisher.publish`** sends it to `alert.received`, keyed by
+6. **`Outbox.write`** inserts it as an `outbox` row keyed by
    **`envelope.message_key`**. The caller gets **`AlertAccepted`** (`202`).
-7. Later, `orchestrator` publishes to `alert.decided`; `ingestion` isn't
-   involved.
+7. The `outbox-relay` worker publishes the row to `alert.received` (up to
+   one 0.5s poll later); later `orchestrator` publishes to `alert.decided`.
+   `ingestion` isn't involved in either.
 
 ## Design notes
 
 - **Dependency injection through `create_app()`**: tests pass `Settings`,
-  a fake `Publisher`, a fake registry (`apps`) and, when they test limits,
-  a `RateLimiter` over fake Redis, so no unit test needs Kafka, Redis or
+  a fake `Outbox`, a fake registry (`apps`) and, when they test limits,
+  a `RateLimiter` over fake Redis, so no unit test needs Postgres, Redis or
   `registry`.
 - **Nothing app-specific in code**: every per-app rule comes from the
   app's manifest in `registry` (key fields, which schema) and its files
   under `backend/apps/{app_id}/` (the schema itself).
-- **Fail before publishing**: all validation happens before the Kafka
+- **Fail before writing**: all validation happens before the outbox
   write, so a bad alert never reaches the agent.
-- **Next changes**: **Day 15**: `KafkaPublisher` is replaced by an
-  outbox write behind the same `Publisher` interface; **Day 19**: `/readyz`
-  (ready when Postgres is reachable) and a graceful drain on SIGTERM.
+- **Next changes**: **Day 19**: `/readyz` (ready when Postgres is
+  reachable) and a graceful drain on SIGTERM.

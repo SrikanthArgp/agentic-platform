@@ -6,7 +6,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
-    "aiokafka>=0.12",
+    "asyncpg>=0.30",
     "ap-shared",
     "jsonschema>=4.23",
     "redis>=5.1",

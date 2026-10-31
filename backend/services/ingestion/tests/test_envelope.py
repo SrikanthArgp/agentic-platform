@@ -1,4 +1,4 @@
-"""alert_key construction, Kafka key, and the RunAgentRequest round trip."""
+"""alert_key construction, the outbox kafka_key, and the RunAgentRequest round trip."""
 
 from datetime import UTC, datetime
 
@@ -30,7 +30,7 @@ def test_alert_key_missing_or_unusable_field_is_an_error(payload):
 
 
 def test_message_key_is_app_id_and_alert_key():
-    assert message_key("it-ops-triage", "disk_full:web-01") == b"it-ops-triage:disk_full:web-01"
+    assert message_key("it-ops-triage", "disk_full:web-01") == "it-ops-triage:disk_full:web-01"
 
 
 def test_request_round_trips_through_kafka_bytes_with_nested_payload():

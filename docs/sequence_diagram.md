@@ -18,11 +18,12 @@ follows the exact same sequence as diagram 1/2 with its own manifest and
 isn't drawn separately; diagram 5 shows how it's *shipped* (the first app
 rolled out on Kubernetes, `docs/plan.md` Day 20, ADR-0014).
 
-All diagrams draw `ingestion → orchestrator` as a single Kafka hop. From
-Day 15 that hop physically goes through the Postgres `outbox` and the
-`outbox-relay` worker (`ARCHITECTURE.md` §10, ADR-0030) — same message,
-same consumer, up to ~0.5s added latency. The same goes for `review-console → memory-store`'s
-`verdict.recorded` (`verdict_outbox`, ADR-0024).
+Diagrams 1 and 2 draw `ingestion → orchestrator` as a single Kafka hop to
+keep them readable. Physically that hop goes through the Postgres `outbox`
+and the `outbox-relay` worker (`ARCHITECTURE.md` §10, ADR-0030) — same
+message, same consumer, up to ~0.5s added latency (126 ms average when
+measured on Day 15). Diagram 2 draws the verdict's path through
+`verdict_outbox` and the relay explicitly (ADR-0024).
 
 Two refusals aren't drawn, because nothing runs after them (ADR-0029):
 an event over its app's or source's per-minute rate limit gets `429` with
@@ -52,7 +53,7 @@ sequenceDiagram
     Client->>Ingestion: POST /apps/{app_id}/events (REST)
     Ingestion->>Ingestion: rate limits (app, source), then validate against event_schema_ref
     Ingestion->>Orchestrator: alert.received (Kafka · RunAgentRequest)
-    Ingestion-->>Client: 202 Accepted (once Kafka has it; from Day 15, once the outbox row commits)
+    Ingestion-->>Client: 202 Accepted (once the outbox row commits; the outbox-relay publishes it)
 
     Orchestrator->>Registry: resolve app_id → manifest (REST, 30s TTL cache)
     Registry-->>Orchestrator: App Manifest
@@ -105,11 +106,12 @@ sequenceDiagram
     participant ToolGateway as tool-gateway
     participant ReviewConsole as review-console
     participant Analyst as analyst (human)
+    participant Relay as outbox-relay (worker)
 
     Client->>Ingestion: POST /apps/{app_id}/events (REST)
     Ingestion->>Ingestion: rate limits (app, source), then validate against event_schema_ref
     Ingestion->>Orchestrator: alert.received (Kafka · RunAgentRequest)
-    Ingestion-->>Client: 202 Accepted (once Kafka has it; from Day 15, once the outbox row commits)
+    Ingestion-->>Client: 202 Accepted (once the outbox row commits; the outbox-relay publishes it)
 
     Orchestrator->>Registry: resolve app_id → manifest (REST, 30s TTL cache)
     Registry-->>Orchestrator: App Manifest
@@ -140,10 +142,12 @@ sequenceDiagram
     Analyst->>ReviewConsole: GET case list/detail (REST)
     ReviewConsole-->>Analyst: case incl. the alert, reasons[], tool_calls[] (explainability trace)
     Analyst->>ReviewConsole: submit verdict + optional resolution_notes (REST)
-    Note over ReviewConsole: OPEN → RESOLVED exactly once (a second verdict is a 409);<br/>verdict.recorded published before the row commits<br/>(from Day 15: a verdict_outbox row in the same transaction, ADR-0024)
+    Note over ReviewConsole: OPEN → RESOLVED exactly once (a second verdict is a 409);<br/>the verdict.recorded event is written to verdict_outbox<br/>in the same transaction (ADR-0024) — no Kafka on this path
     Note over ReviewConsole: resolution_notes stored on the case only —<br/>later surfaced via similar-past-case-lookup
 
-    ReviewConsole->>MemoryStore: verdict.recorded (Kafka · {app_id, case_id, alert_key, verdict, verdict_by, recorded_at})
+    ReviewConsole-->>Analyst: 200 (also while Kafka is down)
+    Relay->>Relay: claim PENDING verdict_outbox rows in id order<br/>(holds the Postgres advisory lock · ADR-0030)
+    Relay->>MemoryStore: verdict.recorded (Kafka · {app_id, case_id, alert_key, verdict, verdict_by, recorded_at};<br/>Kafka timestamp = row created_at)
     MemoryStore->>MemoryStore: record a verdict event in memory_events + Redis<br/>for that alert_key (closes feedback loop)
 ```
 
@@ -159,7 +163,8 @@ sequenceDiagram
 | 8 | `orchestrator` → `review-console` | `alert.decided` (`RunAgentResponse`, ESCALATE) | Kafka |
 | 9 | `orchestrator` → `memory-store` | `alert.decided`, separate consumer group (ADR-0016) | Kafka |
 | 10 | analyst → `review-console` | case read / verdict submit | REST |
-| 11 | `review-console` → `memory-store` | `verdict.recorded` | Kafka |
+| 11 | `review-console` → Postgres `verdict_outbox` | the `verdict.recorded` event, in the case's transaction | SQL |
+| 12 | `outbox-relay` → `memory-store` | `verdict.recorded` (timestamped by the row's `created_at`) | Kafka |
 
 ---
 

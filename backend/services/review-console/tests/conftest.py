@@ -1,4 +1,4 @@
-"""Fakes for unit tests: an in-memory case store and a recording publisher."""
+"""Fakes for unit tests: an in-memory case store with its verdict outbox."""
 
 import asyncio
 import copy
@@ -11,7 +11,7 @@ from google.protobuf.struct_pb2 import Struct
 
 from app.core.cases import Case, CaseStatus, NewCase, VerdictIn
 from app.core.service import CaseQuery, CaseService
-from app.kafka.publisher import PublishError
+from app.core.outbox import StoreUnavailableError, VerdictOutboxRow
 from proto_gen import agent_pb2
 
 APP_ID = "test-app"
@@ -76,13 +76,24 @@ class _Locked:
         )
         return self.case
 
+    async def enqueue(self, row: VerdictOutboxRow) -> None:
+        # Yield, as a real insert does, so concurrent verdicts interleave.
+        await asyncio.sleep(0)
+        if self._store.fail_enqueue:
+            raise StoreUnavailableError("Postgres connection lost")
+        self._store.outbox.append(row)
+
 
 class FakeStore:
     """Mirrors PostgresCaseStore: unique (app_id, alert_id), newest first,
-    and `lock()` serialises verdicts and rolls back on an exception."""
+    and `lock()` serialises verdicts and rolls back cases *and* the outbox
+    on an exception, as one transaction does."""
 
     def __init__(self) -> None:
         self.cases: dict[int, Case] = {}
+        self.outbox: list[VerdictOutboxRow] = []
+        self.down = False
+        self.fail_enqueue = False
         self._lock = asyncio.Lock()
 
     async def add(self, case: NewCase) -> bool:
@@ -109,26 +120,15 @@ class FakeStore:
 
     @asynccontextmanager
     async def lock(self, case_id: int) -> AsyncIterator[_Locked]:
+        if self.down:
+            raise StoreUnavailableError("Postgres down")
         async with self._lock:
-            snapshot = copy.deepcopy(self.cases)
+            snapshot, outbox = copy.deepcopy(self.cases), list(self.outbox)
             try:
                 yield _Locked(self, self.cases.get(case_id))
             except BaseException:
-                self.cases = snapshot
+                self.cases, self.outbox = snapshot, outbox
                 raise
-
-
-class FakePublisher:
-    def __init__(self) -> None:
-        self.sent: list[tuple[str, bytes, bytes]] = []
-        self.down = False
-
-    async def publish(self, topic: str, key: bytes, value: bytes) -> None:
-        # Yield, as a real send does, so concurrent verdicts interleave.
-        await asyncio.sleep(0)
-        if self.down:
-            raise PublishError("Kafka down")
-        self.sent.append((topic, key, value))
 
 
 @pytest.fixture
@@ -137,10 +137,5 @@ def store() -> FakeStore:
 
 
 @pytest.fixture
-def publisher() -> FakePublisher:
-    return FakePublisher()
-
-
-@pytest.fixture
-def service(store, publisher) -> CaseService:
-    return CaseService(store, publisher, clock=lambda: T0 + timedelta(hours=1))
+def service(store) -> CaseService:
+    return CaseService(store, clock=lambda: T0 + timedelta(hours=1))

@@ -1,10 +1,12 @@
 """`POST /apps/{app_id}/events`: alert intake.
 
 The URL chooses the app; nothing infers it (docs/ARCHITECTURE.md §3).
-Validation happens entirely before anything touches Kafka: envelope
+Validation happens entirely before anything is written: envelope
 (pydantic, 422), payload size (413), unknown app (404), rate limits per
 app and per source (429 with `Retry-After`, ADR-0029), payload against
-that app's schema and `alert_key` (422).
+that app's schema and `alert_key` (422). An accepted alert is one `outbox`
+row; the `outbox-relay` worker publishes it to `alert.received` (ADR-0030),
+so `202` doesn't depend on Kafka, and `503` means Postgres didn't take it.
 """
 
 import json
@@ -17,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Path, Request, status
 from app.core.apps import AppConfigError, AppStore, AppUnavailableError, UnknownAppError
 from app.core.envelope import AlertKeyError, build_alert_key, build_request, message_key
 from app.core.ratelimit import RateLimited, RateLimiter
-from app.kafka.publisher import ALERT_RECEIVED, PublishError, Publisher
+from app.outbox.writer import ALERT_RECEIVED, Outbox, OutboxEntry, OutboxError, trace_headers
 from app.models.alerts import AlertAccepted, AlertIn
 
 logger = logging.getLogger(__name__)
@@ -29,7 +31,7 @@ router = APIRouter()
 async def post_event(alert: AlertIn, request: Request, app_id: str = Path(max_length=63)) -> AlertAccepted:
     state = request.app.state
     apps: AppStore = state.apps
-    publisher: Publisher = state.publisher
+    outbox: Outbox = state.outbox
 
     size = len(json.dumps(alert.payload, separators=(",", ":")).encode())
     if size > state.settings.max_payload_bytes:
@@ -74,9 +76,17 @@ async def post_event(alert: AlertIn, request: Request, app_id: str = Path(max_le
     alert_id = str(uuid.uuid4())
     received_at = datetime.now(UTC)
     message = build_request(app_id=app_id, alert_id=alert_id, alert_key=alert_key, alert=alert, received_at=received_at)
+    entry = OutboxEntry(
+        app_id=app_id,
+        alert_id=alert_id,
+        topic=ALERT_RECEIVED,
+        kafka_key=message_key(app_id, alert_key),
+        payload=message.SerializeToString(),
+        headers=trace_headers(),
+    )
     try:
-        await publisher.publish(ALERT_RECEIVED, message_key(app_id, alert_key), message.SerializeToString())
-    except PublishError as e:
+        await outbox.write(entry)
+    except OutboxError as e:
         logger.warning("alert not accepted: %s", e)
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "Alert intake is temporarily unavailable; retry.",

@@ -6,7 +6,7 @@ import json
 import pytest
 
 from app.core.cases import CaseAlreadyResolvedError, CaseNotFoundError, CaseStatus, Verdict, VerdictIn
-from app.kafka.publisher import PublishError
+from app.core.outbox import StoreUnavailableError
 from proto_gen import agent_pb2
 from tests.conftest import APP_ID, KEY, T0, alert, decided
 
@@ -57,14 +57,14 @@ async def test_duplicate_decision_creates_one_case(service, store):
     assert len(store.cases) == 1
 
 
-async def test_verdict_resolves_the_case_and_publishes_once(service, store, publisher):
+async def test_verdict_resolves_the_case_and_writes_one_outbox_row(service, store):
     await service.record_decision(decided())
     case = await service.record_verdict(1, NOISE)
     assert (case.status, case.verdict, case.verdict_by) == (CaseStatus.RESOLVED, Verdict.CONFIRMED_NOISE, "ana")
     assert case.resolved_at is not None
-    [(topic, key, value)] = publisher.sent
-    assert (topic, key) == ("verdict.recorded", f"{APP_ID}:{KEY}".encode())
-    assert json.loads(value) == {
+    [row] = store.outbox
+    assert (row.topic, row.kafka_key, row.app_id, row.case_id) == ("verdict.recorded", f"{APP_ID}:{KEY}", APP_ID, 1)
+    assert json.loads(row.payload) == {
         "app_id": APP_ID,
         "case_id": 1,
         "alert_key": KEY,
@@ -74,17 +74,17 @@ async def test_verdict_resolves_the_case_and_publishes_once(service, store, publ
     }
 
 
-async def test_second_verdict_is_rejected_and_the_first_stands(service, store, publisher):
+async def test_second_verdict_is_rejected_and_the_first_stands(service, store):
     await service.record_decision(decided())
     await service.record_verdict(1, NOISE)
     with pytest.raises(CaseAlreadyResolvedError) as e:
         await service.record_verdict(1, VerdictIn(verdict=Verdict.CONFIRMED_INCIDENT, verdict_by="bo"))
     assert (e.value.case.verdict, e.value.case.verdict_by) == (Verdict.CONFIRMED_NOISE, "ana")
     assert store.cases[1].verdict is Verdict.CONFIRMED_NOISE
-    assert len(publisher.sent) == 1
+    assert len(store.outbox) == 1
 
 
-async def test_concurrent_verdicts_resolve_exactly_once(service, store, publisher):
+async def test_concurrent_verdicts_resolve_exactly_once(service, store):
     await service.record_decision(decided())
     results = await asyncio.gather(
         service.record_verdict(1, NOISE),
@@ -92,29 +92,39 @@ async def test_concurrent_verdicts_resolve_exactly_once(service, store, publishe
         return_exceptions=True,
     )
     assert sum(isinstance(r, CaseAlreadyResolvedError) for r in results) == 1
-    assert len(publisher.sent) == 1
+    assert len(store.outbox) == 1
 
 
-async def test_publish_failure_leaves_the_case_open_for_a_retry(service, store, publisher):
+async def test_resolution_and_outbox_row_roll_back_together(service, store):
     await service.record_decision(decided())
-    publisher.down = True
-    with pytest.raises(PublishError):
+    store.fail_enqueue = True
+    with pytest.raises(StoreUnavailableError):
         await service.record_verdict(1, NOISE)
     assert store.cases[1].status is CaseStatus.OPEN and store.cases[1].verdict is None
+    assert store.outbox == []
 
-    publisher.down = False
+    store.fail_enqueue = False
     assert (await service.record_verdict(1, NOISE)).status is CaseStatus.RESOLVED
+    assert len(store.outbox) == 1
 
 
-async def test_verdict_on_unknown_case(service, publisher):
+async def test_verdict_needs_no_kafka(service, store):
+    """Nothing in the verdict path talks to Kafka (ADR-0024): the service
+    has no producer at all, so an outage can't reach it."""
+    await service.record_decision(decided())
+    assert (await service.record_verdict(1, NOISE)).status is CaseStatus.RESOLVED
+    assert not any("kafka" in name.lower() or "publish" in name.lower() for name in vars(service))
+
+
+async def test_verdict_on_unknown_case(service, store):
     with pytest.raises(CaseNotFoundError):
         await service.record_verdict(99, NOISE)
-    assert publisher.sent == []
+    assert store.outbox == []
 
 
 @pytest.mark.parametrize("notes", [None, "rotated logs, raised disk alert threshold on web-01"])
-async def test_verdict_with_and_without_notes_and_notes_never_published(service, store, publisher, notes):
+async def test_verdict_with_and_without_notes_and_notes_never_published(service, store, notes):
     await service.record_decision(decided())
     case = await service.record_verdict(1, VerdictIn(verdict=Verdict.CONFIRMED_INCIDENT, verdict_by="ana", resolution_notes=notes))
     assert case.resolution_notes == notes
-    assert "resolution_notes" not in json.loads(publisher.sent[0][2])
+    assert "resolution_notes" not in json.loads(store.outbox[0].payload)

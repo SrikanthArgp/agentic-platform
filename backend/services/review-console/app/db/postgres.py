@@ -1,4 +1,4 @@
-"""The Postgres `CaseStore`: the `cases` table (backend/local/postgres/init.sql)."""
+"""The Postgres `CaseStore`: `cases` and `verdict_outbox` (backend/local/postgres/init.sql)."""
 
 import json
 from collections.abc import AsyncIterator
@@ -8,7 +8,13 @@ from datetime import datetime
 import asyncpg
 
 from app.core.cases import Case, NewCase, VerdictIn
+from app.core.outbox import StoreUnavailableError, VerdictOutboxRow
 from app.core.service import CaseQuery
+
+# Connection-level failures: Postgres is down or the connection broke.
+# A verdict then gets a 503 and nothing is committed.
+_UNAVAILABLE = (OSError, TimeoutError, asyncpg.InterfaceError, asyncpg.PostgresConnectionError,
+                asyncpg.CannotConnectNowError)
 
 _COLUMNS = (
     "id, app_id, alert_id, alert_key, agent_id, decision, confidence, reasons, tool_calls, alert, "
@@ -44,6 +50,13 @@ class _LockedRow:
         self.case = _case(row)
         return self.case
 
+    async def enqueue(self, row: VerdictOutboxRow) -> None:
+        await self._conn.execute(
+            "INSERT INTO verdict_outbox (app_id, case_id, topic, kafka_key, payload, headers) "
+            "VALUES ($1, $2, $3, $4, $5, $6)",
+            row.app_id, row.case_id, row.topic, row.kafka_key, row.payload, row.headers,
+        )
+
 
 class PostgresCaseStore:
     def __init__(self, pool: asyncpg.Pool):
@@ -74,6 +87,9 @@ class PostgresCaseStore:
 
     @asynccontextmanager
     async def lock(self, case_id: int) -> AsyncIterator[_LockedRow]:
-        async with self._pool.acquire() as conn, conn.transaction():
-            row = await conn.fetchrow(f"SELECT {_COLUMNS} FROM cases WHERE id = $1 FOR UPDATE", case_id)
-            yield _LockedRow(conn, _case(row) if row else None)
+        try:
+            async with self._pool.acquire() as conn, conn.transaction():
+                row = await conn.fetchrow(f"SELECT {_COLUMNS} FROM cases WHERE id = $1 FOR UPDATE", case_id)
+                yield _LockedRow(conn, _case(row) if row else None)
+        except _UNAVAILABLE as e:
+            raise StoreUnavailableError(f"Postgres unavailable: {type(e).__name__}") from e

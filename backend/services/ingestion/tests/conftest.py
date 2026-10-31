@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
-from app.kafka.publisher import PublishError
+from app.outbox.writer import OutboxEntry, OutboxError
 from app.main import create_app
 from registry_client import AppNotFoundError, RegistryUnavailableError
 
@@ -68,25 +68,25 @@ def registry() -> FakeRegistry:
 
 
 @dataclass
-class FakePublisher:
-    sent: list[tuple[str, bytes, bytes]] = field(default_factory=list)
+class FakeOutbox:
+    rows: list[OutboxEntry] = field(default_factory=list)
     fail: bool = False
 
-    async def publish(self, topic: str, key: bytes, value: bytes) -> None:
+    async def write(self, entry: OutboxEntry) -> None:
         if self.fail:
-            raise PublishError("Kafka down")
-        self.sent.append((topic, key, value))
+            raise OutboxError("Postgres down")
+        self.rows.append(entry)
 
 
 @pytest.fixture
-def publisher() -> FakePublisher:
-    return FakePublisher()
+def outbox() -> FakeOutbox:
+    return FakeOutbox()
 
 
 @pytest.fixture
-def client(apps_dir: Path, publisher: FakePublisher, registry: FakeRegistry) -> TestClient:
-    settings = Settings(apps_dir=apps_dir, kafka_enabled=False, max_payload_bytes=1024)
-    return TestClient(create_app(settings, publisher=publisher, apps=registry))
+def client(apps_dir: Path, outbox: FakeOutbox, registry: FakeRegistry) -> TestClient:
+    settings = Settings(apps_dir=apps_dir, max_payload_bytes=1024)
+    return TestClient(create_app(settings, outbox=outbox, apps=registry))
 
 
 def alert_body(**overrides) -> dict:
