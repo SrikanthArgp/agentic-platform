@@ -344,7 +344,7 @@ scope (§11). `similar-past-case-lookup` reads the platform's own `cases`.
 ```
 
 (The diagram shows the logical flow. From Day 15, `ingestion` → Kafka goes
-through the Postgres outbox and a Celery relay (§10); the global
+through the Postgres outbox and the `outbox-relay` worker (§10); the global
 `similar-past-case-lookup` tool also reads `review-console` over REST (§9).
 `memory-store` also consumes `alert.decided`, for its decision counts
 (ADR-0016), and reads its `memory_namespace` from `registry` (ADR-0018);
@@ -357,7 +357,7 @@ Steps, app-agnostic:
    `event_schema_ref`, publishes `alert.received` (payload = `RunAgentRequest`,
    protobuf-encoded — §5), returns `202` immediately. From Day 15 the
    publish goes through the outbox (§10): `ingestion` writes an `outbox` row
-   and returns `202`; a Celery relay task publishes it to Kafka.
+   and returns `202`; the `outbox-relay` worker publishes it to Kafka.
 2. `orchestrator` consumes `alert.received`, resolves the app's manifest
    (§3), calls `memory-store.GetContext` (gRPC, §6) for behavioral context
    once, before the loop (ADR-0019), calls the agent's `prefetch_tools`
@@ -384,16 +384,17 @@ Steps, app-agnostic:
    event for that app's `alert_key` (ADR-0017), which shifts that key's
    counts on the next `GetContext` — closing the feedback loop.
 
-Celery workers sit off to the side of this flow, with Redis as their
-broker. Two jobs, both scheduled by `celery-beat`, neither triggered by an
-individual event:
+Two pieces of background work sit off to the side of this flow (ADR-0030):
 
-- **Outbox relay** (Days 15–16, §10) — every ~1s, publishes pending `outbox`
-  rows to `alert.received`. This is the one place Celery touches the hot
-  path: it adds up to one relay interval of latency to each alert, in
-  exchange for no alert being lost during a Kafka outage.
-- **Batch re-eval** (Day 25) — runs the agents against the labeled fixture
-  set, nightly and on demand, and reports accuracy regressions.
+- **Outbox relay** (Days 15–16, §10): the `outbox-relay` worker, a single
+  asyncio loop that publishes pending `outbox` rows to `alert.received`
+  and pending `verdict_outbox` rows to `verdict.recorded` (ADR-0024). It's
+  the one background piece on the hot path. It adds up to one poll
+  interval (0.5s) of latency to each alert when idle, in exchange for no
+  alert or verdict being lost during a Kafka outage.
+- **Batch re-eval** (Day 25): a script that runs the agents against the
+  labeled fixture set and reports accuracy regressions. It runs on demand,
+  and nightly as a Kubernetes `CronJob`.
 
 ---
 
@@ -597,9 +598,9 @@ in Tempo/Mimir/Loki.
 | `memory_events` | `id`, `app_id`, `alert_key`, `kind` (`decision:<Decision>` or `verdict:<verdict>`), `ref_id` (`alert_id` / `case_id`), `occurred_at`, `recorded_at` | `memory-store`'s source of truth (§6, ADR-0017): one row per event, unique per (`app_id`, kind family, `ref_id`) so a redelivered event counts once. Redis is rebuilt from it on a miss. Replaces the earlier per-window `memory_history` snapshot design, which couldn't rebuild a sliding window. |
 | `apps` | `app_id` (PK), `display_name`, `manifest` (jsonb), `created_at`, `updated_at` | `registry`'s App Manifest store (§3) — one row per app, manifest kept as a single jsonb document rather than normalized, since it's read whole and written rarely. |
 | `tools` | (`tool_id`, `version`) (PK), `description`, `scope`, `app_id` (null for global), `input_schema`/`output_schema` (jsonb), `read_only` (`CHECK` true), `enabled`, `created_at`, `updated_at` | `registry`'s tool registrations (§3, §13 T8). A manifest may only declare registered tool versions. `enabled` is the runtime switch: a disabled tool stays registered but is offered to, and callable by, no agent. |
-| `outbox` | `id`, `app_id`, `alert_id`, `topic`, `kafka_key` (`{app_id}:{alert_key}`), `payload` (bytea, protobuf `RunAgentRequest`), `headers` (jsonb, incl. trace context), `status` (`PENDING`\|`SENT`\|`DEAD`), `attempts`, `last_error`, `created_at`, `sent_at` | `ingestion`'s Day 15 outbox (§10). Written by `ingestion`, drained by the Celery relay. `SENT` rows are pruned after a retention window; `DEAD` rows are kept for inspection. |
+| `outbox` | `id`, `app_id`, `alert_id`, `topic`, `kafka_key` (`{app_id}:{alert_key}`), `payload` (bytea, protobuf `RunAgentRequest`), `headers` (jsonb, incl. trace context), `status` (`PENDING`\|`SENT`\|`DEAD`), `attempts`, `last_error`, `created_at`, `sent_at` | `ingestion`'s Day 15 outbox (§10). Written by `ingestion`, drained by the `outbox-relay` worker (ADR-0030). `SENT` rows are pruned after a retention window; `DEAD` rows are kept for inspection. |
 
-**Redis** (`memory-store`, `orchestrator`, `ingestion`, Celery):
+**Redis** (`memory-store`, `orchestrator`, `ingestion`):
 
 | Key pattern | Purpose |
 |---|---|
@@ -608,16 +609,15 @@ in Tempo/Mimir/Loki.
 | `budget:{app_id}:{agent_id}:{date}` | Hash of the agent's `input_tokens`/`output_tokens` that UTC day (Day 14, §10, ADR-0029); expires after 2 days. |
 | `ratelimit:{app_id}:{minute}` / `ratelimit:{app_id}:src:{source}:{minute}` | `ingestion` rate-limit counters, per app and per alert source within an app (Day 14, §10). |
 | `seen:{app_id}:{alert_id}` | `orchestrator`'s dedupe marker for at-least-once delivery (Day 16, §10), TTL'd (e.g. 24h). Shared across replicas, so any replica skips a duplicate. |
-| Celery broker + results (separate Redis DB index, e.g. `/1`) | Celery's task queue and `celery-beat` schedule (Day 15, §4). Kept in its own DB index so task traffic never mixes with — or gets flushed alongside — memory/budget keys. |
 
 **Kafka topics**:
 
 | Topic | Producer → consumer | Message key | Payload |
 |---|---|---|---|
-| `alert.received` | `ingestion` (via the Celery outbox relay from Day 15) → `orchestrator` | `{app_id}:{alert_key}` | `RunAgentRequest` (protobuf) |
+| `alert.received` | `ingestion` (via the `outbox-relay` worker from Day 15) → `orchestrator` | `{app_id}:{alert_key}` | `RunAgentRequest` (protobuf) |
 | `alert.decided` | `orchestrator` → `review-console`, `memory-store` (separate consumer groups) | `{app_id}:{alert_key}` | `RunAgentResponse` (protobuf) |
 | `verdict.recorded` | `review-console` → `memory-store` | `{app_id}:{alert_key}` | JSON (§9) |
-| `alert.received.dlq` | Celery outbox relay, from Day 16 (created now, nothing writes it yet) → (human inspection; no automatic consumer) | `{app_id}:{alert_key}` | Same as `alert.received`, plus `last_error`/`attempts` headers (§10) |
+| `alert.received.dlq` | `outbox-relay` worker, from Day 16 (created now, nothing writes it yet) → (human inspection; no automatic consumer) | `{app_id}:{alert_key}` | Same as `alert.received`, plus `last_error`/`attempts` headers (§10) |
 
 **Partition key rule**: every message on every topic is keyed
 `{app_id}:{alert_key}`. Kafka only orders messages within a partition, and
@@ -635,9 +635,9 @@ Holding that order end to end needs three more rules:
 
 - **Producers**: idempotent Kafka producer (`enable.idempotence=true`), so
   retries can't reorder or duplicate within a partition.
-- **Outbox relay**: one relay run at a time (a Redis lock, so a slow run
-  never overlaps the next `celery-beat` tick), publishing `PENDING` rows in
-  `id` order (§10).
+- **Outbox relay**: one relay draining at a time (a Postgres advisory
+  lock held by the `outbox-relay` worker, ADR-0030), publishing `PENDING`
+  rows in `id` order (§10).
 - **Consumers**: a consumer may process different keys concurrently but
   must process messages for the *same* key one at a time, and commits an
   offset only after the message is fully handled.
@@ -656,7 +656,7 @@ the broker default of 1.
 | Link | Protocol | Payload |
 |---|---|---|
 | external client → `ingestion` | REST | app-specific JSON, validated against `event_schema_ref` |
-| `ingestion` → `orchestrator` | Kafka (`alert.received`), via Postgres `outbox` + Celery relay from Day 15 (§10) | `RunAgentRequest` (protobuf) |
+| `ingestion` → `orchestrator` | Kafka (`alert.received`), via Postgres `outbox` + `outbox-relay` from Day 15 (§10) | `RunAgentRequest` (protobuf) |
 | external client → `ingestion` → `registry` | REST | manifest read to validate against `event_schema_ref` (§12) |
 | `orchestrator` → `tool-gateway` | MCP | tool-call / tool-result |
 | `orchestrator` → `memory-store` | gRPC (`GetContext`) | `GetContextRequest`/`Response` (protobuf) |
@@ -711,12 +711,13 @@ cross-service or cross-app link.
   failures land in a DLQ instead of vanishing.
   - `ingestion` writes the validated event to the Postgres `outbox` table
     (§8) and returns `202`; it never publishes to Kafka directly.
-  - A Celery relay task (every ~1s via `celery-beat`) claims `PENDING` rows
-    in `id` order (`SELECT … FOR UPDATE SKIP LOCKED` as a safety net
-    against double-claiming; a Redis lock keeps only one relay run active so
-    per-key order holds, §8), publishes each to `alert.received` keyed by
-    its stored `kafka_key` with the stored trace headers, and marks them
-    `SENT`.
+  - The `outbox-relay` worker (ADR-0030) claims `PENDING` rows in `id`
+    order (`SELECT … FOR UPDATE SKIP LOCKED` as a safety net against
+    double-claiming; a Postgres advisory lock keeps only one relay draining
+    so per-key order holds, §8), publishes each to `alert.received` keyed
+    by its stored `kafka_key` with the stored trace headers, and marks them
+    `SENT`. It loops straight away while there's a backlog and polls every
+    0.5s when idle; `SENT` rows are pruned after 24h.
   - **Kafka unreachable** → rows stay `PENDING`, attempts are *not*
     counted; they drain when Kafka returns. **Message-specific failure**
     (e.g., oversized/rejected payload) → `attempts` increments; after 5,
@@ -805,8 +806,7 @@ containers (one set, shared by every app)
 ├── memory-store       gRPC GetContext, namespaced per app
 ├── registry           App Manifests
 ├── review-console     cases for all apps, filtered by app_id
-├── celery-worker(s)  outbox relay, batch re-eval (broker: Redis)
-├── celery-beat        schedules the above
+├── outbox-relay       drains outbox + verdict_outbox to Kafka (1 active, ADR-0030)
 └── infra: kafka, postgres, redis, otel-collector, loki, mimir, tempo, grafana
 ```
 

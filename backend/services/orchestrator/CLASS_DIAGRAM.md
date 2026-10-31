@@ -1,13 +1,16 @@
 # orchestrator — class diagram
 
-As built through Day 11 of `docs/plan.md` (Day 9: ADR-0023's `alert` echo and
-every agent's tool calls in the response; Day 11: `GatewayUnavailableError`). `orchestrator` runs the agents.
+As built through Day 14 of `docs/plan.md` (Day 12: a per-call MCP timeout
+and the new infra tool errors; Day 13: `prefetch_tools` and `alert_key` in
+the run context; Day 14: daily token budgets). `orchestrator` runs the agents.
 It takes a `RunAgentRequest` (from Kafka `alert.received`, or the gRPC
 `RunAgent` call) and resolves the app's manifest from `registry` and the
-prompts from its image. Each run is a **LangGraph** graph (ADR-0022):
+prompts from its image. An entry agent over its daily token budget isn't
+run (ADR-0029). Otherwise each run is a **LangGraph** graph (ADR-0022):
 1. fetch the alert_key's history from `memory-store` over gRPC;
-2. run the entry agent's tool loop (LangChain's prebuilt `create_agent`
-   with `ChatOpenAI`) against `tool-gateway` over MCP;
+2. call the agent's `prefetch_tools` with no arguments (ADR-0028), then run
+   its tool loop (LangChain's prebuilt `create_agent` with `ChatOpenAI`)
+   against `tool-gateway` over MCP, and record the tokens it used;
 3. apply the supervisor and the `escalate_when` guardrails;
 4. fan out to the callable agents whose `invoke_on` matches the final
    decision, in parallel, and fold their reasons and tool calls in.
@@ -47,6 +50,7 @@ classDiagram
         ToolGateway / ToolSession
         ContextSource
         AppSource (via ManifestStore)
+        TokenBudget
     }
     class Adapters {
         <<layer>>
@@ -54,6 +58,7 @@ classDiagram
         MCPToolGateway / MCPToolSession
         MemoryStoreClient - gRPC
         RegistryClient (ap-shared) + prompt files
+        Redis (budget counters)
     }
     Transports --> RunGraph : run(request)
     RunGraph --> AgentLoop : nodes call
@@ -63,7 +68,7 @@ classDiagram
 
 Both transports call the same `AgentRunner.run()`. The graph's nodes are
 small functions over the run's state. Per-run dependencies (chat model, MCP
-session, memory client) arrive as LangGraph runtime context (`RunDeps`), so
+session, memory client, budget) arrive as LangGraph runtime context (`RunDeps`), so
 the graph is compiled once per process. The supervisor and guardrails are
 pure functions. Adapters are chosen in `main.py`.
 
@@ -77,7 +82,7 @@ classDiagram
         class main {
             <<module>>
             +SERVICE_NAME = "orchestrator"
-            +build_runner(settings, registry, memory) AgentRunner
+            +build_runner(settings, registry, memory, budget) AgentRunner
             -lifespan(app) AsyncIterator
             +healthz() HealthResponse
         }
@@ -97,6 +102,9 @@ classDiagram
             +llm_model: str
             +max_tool_rounds: int
             +callable_timeout_s: float
+            +tool_call_timeout_s: float
+            +redis_url: str
+            +daily_token_budget: int
             +from_env()$ Settings
         }
     }
@@ -128,6 +136,7 @@ classDiagram
             -_max_tool_rounds: int
             -_min_confidence: float
             -_callable_timeout_s: float
+            -_budget: TokenBudget?
             -_graph: CompiledStateGraph
             -_callable_graph: CompiledStateGraph
             +run(request) RunAgentResponse
@@ -149,6 +158,7 @@ classDiagram
             +fold_node(state)
             +explain(deps, manifest, agent, request, ctx, entry)
             +explain_node(state, runtime)
+            +record_usage(deps, app_id, agent_id, outcome)
         }
         class RunDeps {
             <<frozen dataclass: runtime context>>
@@ -160,6 +170,7 @@ classDiagram
             +max_tool_rounds: int
             +default_min_confidence: float
             +callable_timeout_s: float
+            +budget: TokenBudget?
         }
         class RunState {
             <<TypedDict: graph state>>
@@ -196,6 +207,7 @@ classDiagram
             +tools: list~StructuredTool~
             +trace: list~ToolCall~
             +infra_failures: list~str~
+            +prefetch(tool_ids) list~str~
             +call(name, arguments) str
             +refuse(name) str
             +record(name, result) str
@@ -226,8 +238,8 @@ classDiagram
             +data_block(kind, content, nonce) str
             +alert_data(request) dict
             +context_data(context) dict
-            +alert_message(request, context, nonce) str
-            +explain_message(request, context, entry, nonce) str
+            +alert_message(request, context, nonce, prefetched) str
+            +explain_message(request, context, entry, nonce, prefetched) str
             +tool_result_message(tool_name, result, nonce) str
         }
         class decision {
@@ -286,6 +298,7 @@ classDiagram
             +call_tool(name, arguments, context) ToolResult
         }
         class MCPToolGateway {
+            -_call_timeout_s: float
             +connect() AsyncIterator~MCPToolSession~
         }
         class MCPToolSession {
@@ -311,6 +324,33 @@ classDiagram
             <<exception: RuntimeError>>
         }
         class GatewayUnavailableError {
+            <<exception: RuntimeError>>
+        }
+    }
+
+    namespace governance {
+        class TokenBudget {
+            -_redis: Redis
+            -_default: int
+            -_ttl_s: int
+            +key(app_id, agent_id) str
+            +limit(daily_tokens) int
+            +used(app_id, agent_id) Usage
+            +check(app_id, agent_id, daily_tokens) None
+            +record(app_id, agent_id, usage) None
+        }
+        class Usage {
+            <<frozen dataclass>>
+            +input_tokens: int
+            +output_tokens: int
+            +total: int
+        }
+        class BudgetExceededError {
+            <<exception: RuntimeError>>
+            +used: int
+            +limit: int
+        }
+        class BudgetUnavailableError {
             <<exception: RuntimeError>>
         }
     }
@@ -342,8 +382,14 @@ classDiagram
             <<pydantic, extra=ignore>>
             +agent_id, version, prompt_ref: str
             +role: entry or callable
-            +tool_allowlist, invoke_on: list~str~
+            +tool_allowlist, invoke_on, prefetch_tools: list~str~
+            +budget: AgentBudget?
             +tools: list~AgentTool~
+            +daily_tokens: int?
+        }
+        class AgentBudget {
+            <<pydantic, extra=ignore>>
+            +daily_tokens: int? ≥0
         }
         class AgentTool {
             <<pydantic, extra=ignore>>
@@ -409,6 +455,7 @@ classDiagram
     main ..> ManifestStore
     main ..> MemoryStoreClient : one channel per process
     main ..> RegistryClient
+    main ..> TokenBudget : over one Redis client
     main *-- AlertPipeline : lifespan
 
     %% transports
@@ -421,6 +468,7 @@ classDiagram
     %% run graph
     AgentRunner --> ManifestStore
     AgentRunner --> ToolGateway : one session per run
+    AgentRunner --> TokenBudget : entry agent's check
     AgentRunner ..> graph : compiles both graphs once
     AgentRunner ..> RunDeps : per run
     AgentRunner ..> RunAgentResponse : builds from final RunState
@@ -435,6 +483,14 @@ classDiagram
     graph ..> prompt : messages
     graph ..> ContextSource : context node
     graph ..> AppManifest : callables_for, guardrails, min_confidence
+    graph ..> TokenBudget : callable's check, record usage
+
+    %% governance
+    TokenBudget ..> Usage
+    TokenBudget ..> BudgetExceededError : check raises
+    TokenBudget ..> BudgetUnavailableError : Redis down
+    kafka_alerts ..> BudgetExceededError : not evaluated
+    AgentServicer ..> BudgetExceededError : not evaluated
 
     %% agent loop
     react ..> create_agent : per agent run
@@ -473,6 +529,7 @@ classDiagram
     AppManifest *-- EscalateRule
     AppManifest *-- SupervisorSpec
     AgentSpec *-- AgentTool
+    AgentSpec *-- AgentBudget
     EscalateRule ..> Rule
 ```
 
@@ -492,11 +549,11 @@ flowchart LR
 | Node | Does | Writes |
 |---|---|---|
 | `context` | `memory-store` `GetContext` once (span `memory.get_context`). A `ContextUnavailableError` isn't fatal. | `memory_context` (or `None`), a "memory context unavailable" platform reason |
-| `agent` | Builds `RunTools` and runs `run_agent` with the entry rules. Then: ran out of rounds, or an unparseable answer → ESCALATE with confidence 0; an infrastructure tool failure → ESCALATE. | `decision`, `confidence`, `reasons`, `tool_calls`, token counts, platform reasons |
+| `agent` | Builds `RunTools`, calls the agent's `prefetch_tools` (`RunTools.prefetch`), and runs `run_agent` with the entry rules and the prefetched results in the first message; records the tokens used (`record_usage`). Then: ran out of rounds, or an unparseable answer → ESCALATE with confidence 0; an infrastructure tool failure (prefetched calls included) → ESCALATE. | `decision`, `confidence`, `reasons`, `tool_calls`, token counts, platform reasons |
 | `supervisor` | `supervise()` with the manifest threshold or `RunDeps.default_min_confidence` | `decision`, `confidence`, its reason if it escalated |
 | `guardrails` | `guardrails.evaluate()`; every match is a reason; forces ESCALATE if it wasn't already | `decision`, platform reasons |
 | `route_callables` (edge) | `AppManifest.callables_for(final decision)`; one `Send("callable", CallableTask)` each, or `"fold"` if none | — |
-| `callable` | Runs `explain()` under `asyncio.wait_for(CALLABLE_TIMEOUT_S)`. Success → reasons prefixed `"<agent_id>: "` plus any tool-failure reasons. Any failure → one `orchestrator: callable '<id>' didn't contribute (<why>).` reason (timeout, LLM, parse, rounds, missing prompt; anything else is logged as "failed"). | `callable_results: [(index, reasons, tool_calls)]` (no calls on failure) |
+| `callable` | Runs `explain()` under `asyncio.wait_for(CALLABLE_TIMEOUT_S)`. Success → reasons prefixed `"<agent_id>: "` plus any tool-failure reasons. Any failure → one `orchestrator: callable '<id>' didn't contribute (<why>).` reason (timeout, budget exceeded, LLM, parse, rounds, missing prompt; anything else is logged as "failed"). | `callable_results: [(index, reasons, tool_calls)]` (no calls on failure) |
 | `fold` | Sorts results by manifest index and flattens them | `delegated_reasons`, `delegated_tool_calls` |
 
 `platform_reasons` and `callable_results` use an append reducer, so each
@@ -512,17 +569,23 @@ no `entry` block. It returns the reasons unprefixed, with `decision`
 `orchestrator: no explanation (<why>).` reason.
 
 **`explain()`** runs one callable agent:
+- checks its daily token budget first: over it raises `CallableFailed`
+  ("budget exceeded: …"); Redis down is logged and the callable runs;
 - loads its prompt through `RunDeps.prompts`;
 - opens its own MCP session, with a `RunContext` whose `agent_id` is the
   callable's;
+- calls its `prefetch_tools`, if any;
 - uses the *callable* platform rules and `prompt.explain_message` (alert,
-  memory context and, when delegated, the `triage_decision` block);
-- parses the answer with `parse_explanation`.
+  memory context, prefetched results and, when delegated, the
+  `triage_decision` block);
+- records the tokens it used, then parses the answer with
+  `parse_explanation`.
 
 It raises `CallableFailed` if the loop ran out of rounds.
 
 **`RunDeps`** is the runtime context. `tools` is the entry agent's MCP
-session; callables open their own from `gateway`.
+session; callables open their own from `gateway`. `budget` is `None` in
+tests that don't exercise budgets.
 
 ## Classes and modules
 
@@ -531,13 +594,16 @@ session; callables open their own from `gateway`.
 `main` is the composition root. `build_runner()` wires an `AgentRunner`
 from:
 - a `ManifestStore` over the `RegistryClient`;
-- `MCPToolGateway`;
+- `MCPToolGateway` with `TOOL_CALL_TIMEOUT_S`;
 - `llm.build_chat_model(LLM_PROVIDER, LLM_MODEL)`;
 - the `MemoryStoreClient`;
+- the `TokenBudget`;
 - `MAX_TOOL_ROUNDS`, `MIN_CONFIDENCE`, `CALLABLE_TIMEOUT_S`.
 
 `lifespan()` builds everything at startup, not at import, because the
 OpenAI client needs `OPENAI_API_KEY` and tests import `main` without one.
+It makes one Redis client for budgets with 0.5s socket timeouts, so a
+budget check is never what makes a run slow.
 
 **`Settings`**: frozen dataclass read from the environment:
 - `TOOL_GATEWAY_URL`, `REGISTRY_URL`, `MANIFEST_TTL_S` (default 30);
@@ -545,6 +611,10 @@ OpenAI client needs `OPENAI_API_KEY` and tests import `main` without one.
   `MEMORY_STORE_TIMEOUT_S` (default 1);
 - `MIN_CONFIDENCE` (default 0.6), `MAX_TOOL_ROUNDS` (default 5),
   `CALLABLE_TIMEOUT_S` (default 30);
+- `TOOL_CALL_TIMEOUT_S` (default 10, longer than `tool-gateway`'s own 5s,
+  so it only fires when `tool-gateway` itself hangs);
+- `REDIS_URL`, `DAILY_TOKEN_BUDGET` (default 1,000,000, for agents whose
+  manifest sets no `budget.daily_tokens`);
 - `LLM_PROVIDER`, `LLM_MODEL`;
 - `KAFKA_*`, `GRPC_PORT`, `APPS_DIR`.
 
@@ -552,7 +622,8 @@ OpenAI client needs `OPENAI_API_KEY` and tests import `main` without one.
 
 These are unchanged by LangGraph: both call `AgentRunner.run()`.
 - `handle_alert()` turns any failed run (`ResolutionError`, `LLMError`,
-  `ManifestUnavailableError`, `GatewayUnavailableError`, anything else) into
+  `ManifestUnavailableError`, `GatewayUnavailableError`,
+  `BudgetExceededError`, anything else) into
   `not_evaluated_response()`, so every decodable alert gets exactly one
   `alert.decided`.
 - `AlertPipeline` commits only after publishing.
@@ -577,9 +648,16 @@ returns an **`AgentOutcome`**:
   `agent.tool_call` span.
 - `record()` adds the call to `trace` (`ToolCall` with a 300-char summary
   and the run context's `agent_id`),
-  collects `INFRA_TOOL_ERRORS` into `infra_failures`, and returns the result
+  collects `INFRA_TOOL_ERRORS` (`tool_failed`, `tool_timeout`,
+  `tool_unavailable`, `tool_version_mismatch`, `registry_unavailable`,
+  `gateway_unreachable`) into `infra_failures`, and returns the result
   wrapped in a nonce data block. That data block is what the model sees
   (§13 T1/T2).
+- `prefetch(tool_ids)` (ADR-0028) calls each of the agent's
+  `prefetch_tools` with `{}` through the same `call()` — run context, data
+  block, trace, infra failures — and returns the data blocks for the first
+  message. A prefetched tool the agent isn't offered right now (disabled)
+  is skipped without a call.
 - `middleware()` returns two hooks:
   - `only_offered_tools` (`wrap_tool_call`): a tool name the agent wasn't
     given is answered with `refuse()` (`tool_not_allowed`), never reaching
@@ -602,11 +680,15 @@ returns an **`AgentOutcome`**:
   with the same rules for data blocks, memory (§13 T3) and tools:
   - `entry`: decide; answer with `decision`/`confidence`/`reasons`;
   - `callable`: explain, don't decide; answer with `reasons` only.
+
+  Both tell the agent that results under "Looked up before you started"
+  were run for it, and not to call those tools again.
 - `alert_data()` includes `fired_at`, an ISO 8601 UTC string, next to
   `timestamp_unix_ms`, so the agent never converts epochs.
 - `alert_message()` builds the entry agent's alert and `memory_context`
-  blocks. `explain_message()` adds a `triage_decision` block (the final
-  decision and its reasons) when the callable runs by delegation.
+  blocks, then any prefetched results. `explain_message()` does the same
+  and adds a `triage_decision` block (the final decision and its reasons)
+  when the callable runs by delegation.
 
 **`decision`**:
 - `parse_decision()`: strict JSON (an optional code fence is allowed).
@@ -633,10 +715,36 @@ nodes.
 - **`ToolGateway` / `ToolSession`**: `connect()` opens an `mcp.Client`;
   if that fails (tool-gateway down: MCP initialize fails before any call)
   it raises `GatewayUnavailableError`, and the run is "not evaluated".
-  `MCPToolSession.call_tool` sends the arguments, with `RunContext` as
-  `_meta`. A transport failure on a call becomes `gateway_unreachable`.
+  `MCPToolSession.call_tool` sends the arguments, with `RunContext`
+  (`app_id`, `agent_id`, `alert_id`, `alert_key`) as `_meta`. A transport
+  failure on a call, or no answer within `TOOL_CALL_TIMEOUT_S`, becomes
+  `gateway_unreachable`.
 - **`MemoryStoreClient`**: one `grpc.aio` channel per process, with a
   deadline on each call. Any RPC error becomes `ContextUnavailableError`.
+
+### Governance — `app/governance/budget.py` (Day 14, ADR-0029)
+
+**`TokenBudget`**: daily token budgets per `app_id` + `agent_id`, one Redis
+hash per agent per UTC day, `budget:{app_id}:{agent_id}:{YYYY-MM-DD}`,
+with `input_tokens` and `output_tokens` kept apart (**`Usage`**) so Day 24
+can price them.
+- `limit(daily_tokens)`: the agent's manifest `budget.daily_tokens`, else
+  `DAILY_TOKEN_BUDGET`.
+- `check()` before a run raises **`BudgetExceededError`** (the message
+  names the agent, used and limit, and the 00:00 UTC reset) once the day's
+  input + output tokens reach the limit. Called by `AgentRunner.run` for
+  an entry agent, before memory, prefetch or model — the alert is then
+  "not evaluated" and escalates — and by `explain()` for a callable, which
+  then doesn't contribute.
+- `record()` after each agent's loop adds what it used (`HINCRBY` ×2 and
+  an `EXPIRE` of 2 days, in one transaction). Usage is only known once a
+  run ends, so the run that crosses the limit finishes, and concurrent runs
+  that all passed the check can each overshoot by one run.
+- Redis unreachable: `check()` raises **`BudgetUnavailableError`**; the
+  entry agent runs with the reason "token budget not checked (…); the
+  agent ran without that limit.", a callable runs with a warning logged.
+  `record()` logs and drops the usage. A budget is a spending limit, not a
+  correctness check.
 
 ### Manifest — `app/core/manifest.py`
 
@@ -650,19 +758,25 @@ nodes.
 - `guardrails()`;
 - `min_confidence(default)`.
 
+**`AgentSpec`** also carries `prefetch_tools` (`registry` checked they're
+on the allowlist and callable with `{}`) and `budget`
+(**`AgentBudget`**); `daily_tokens` is `budget.daily_tokens` or `None`.
+
 ## Run flow (one alert)
 
 1. A transport hands `AgentRunner.run` a `RunAgentRequest`.
 2. `ManifestStore.get` → `AppManifest.agent` → `ManifestStore.prompt`.
-3. One MCP session opens; `RunDeps` is built; the graph is chosen by the
+3. An entry agent's budget is checked (`TokenBudget.check`); over it, the
+   run stops here with `BudgetExceededError`.
+4. One MCP session opens; `RunDeps` is built; the graph is chosen by the
    agent's role.
-4. `context`: `MemoryStoreClient.get_context`.
-5. `agent`: `run_agent` loops `ChatOpenAI` ⇄ `RunTools`, then
-   `parse_decision`.
-6. `supervisor`, then `guardrails`.
-7. `route_callables` → `callable` branches run concurrently, each with its
-   own `create_agent`, tools and MCP session → `fold`.
-8. `AgentRunner` builds the one `RunAgentResponse`. The transport
+5. `context`: `MemoryStoreClient.get_context`.
+6. `agent`: `RunTools.prefetch`, then `run_agent` loops `ChatOpenAI` ⇄
+   `RunTools`, then `record_usage` and `parse_decision`.
+7. `supervisor`, then `guardrails`.
+8. `route_callables` → `callable` branches run concurrently, each with its
+   own budget check, `create_agent`, tools and MCP session → `fold`.
+9. `AgentRunner` builds the one `RunAgentResponse`. The transport
    publishes it to `alert.decided` (keyed `{app_id}:{alert_key}`) or
    returns it over gRPC.
 
@@ -682,8 +796,14 @@ nodes.
 - **Only toward ESCALATE after the LLM**: the supervisor and guardrails can
   only raise a decision; callables never change it.
 - **Callables are bounded**: chosen by the manifest, never by the LLM;
-  parallel; one level deep; a per-callable timeout; a failure only adds a
-  reason. Exactly one response, and so one `alert.decided`, per alert.
+  parallel; one level deep; a per-callable timeout and token budget; a
+  failure only adds a reason. Exactly one response, and so one
+  `alert.decided`, per alert.
+- **Prefetch is the platform's call, not the agent's** (ADR-0028): a tool
+  the agent should always consult runs before the loop, so it can't be
+  forgotten; otherwise it's an ordinary call, checked and traced.
+- **Over budget is rejected, never queued** (ADR-0029): the alert still
+  reaches a human as a "not evaluated" `ESCALATE`.
 - **Testability**: tests use a scripted LangChain `FakeChatModel`:
   - per-agent scripts and delays, chosen by prompt text;
   - tools bound per agent;
@@ -691,6 +811,7 @@ nodes.
 
   Fakes stand in for the gateway, registry and memory, and no test calls a
   real LLM.
-- **Next changes**: Day 13 adds `similar-past-case-lookup` to the triage
-  agent; Day 14 adds budgets, where an over-budget callable doesn't
-  contribute.
+- **Next changes**: Day 16 dedupes at-least-once deliveries on `alert_id`
+  (`seen:{app_id}:{alert_id}` in Redis); Day 19 adds `/readyz`, a graceful
+  drain on SIGTERM and one MCP reconnect-and-retry on a dropped
+  connection; Day 24 prices the recorded tokens.

@@ -1,6 +1,8 @@
 # memory-store — class diagram
 
-As built through Day 11 of `docs/plan.md` (unchanged since Day 10). `memory-store` answers one
+As built through Day 14 of `docs/plan.md` (unchanged since Day 10; since
+Day 13 it holds `cost-anomaly-triage`'s history too, under its own
+namespace, with no code change). `memory-store` answers one
 question for `orchestrator`: *what has this platform seen and decided for
 this `alert_key` lately, and what did analysts say about it?* It serves
 gRPC `GetContext` (1h/24h/7d decision and verdict counts, `is_novel_alert`,
@@ -376,5 +378,9 @@ sequenceDiagram
   `memory_context` block, the supervisor's input, and what `context.*`
   guardrails read. A failed call doesn't stop the run: the supervisor
   caps confidence at 0.5 instead.
-- **Next changes**: none planned for the service itself; a retention job
-  for old `memory_events` rows is not in this build (ADR-0017).
+- **Next changes**: none planned for the service itself. From Day 15
+  verdicts reach it through `review-console`'s outbox, published with the
+  verdict's recorded time as the Kafka timestamp, so it times them as
+  before (ADR-0024); only the docstring that says the publish happens
+  inside the verdict's transaction changes. A retention job for old
+  `memory_events` rows is not in this build (ADR-0017).

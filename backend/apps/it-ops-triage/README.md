@@ -5,9 +5,12 @@ App bundle for the reference IT-ops alert triage app (`docs/ARCHITECTURE.md`
 
 - `manifest.yaml`: the App Manifest, source of truth (ADR-0006). Two
   agents (`triage-agent`, entry; `root-cause-summarizer`, callable on
-  `ESCALATE`), the two tools, `event_schema_ref`, `alert_key_fields`
-  (`alert_type:host`), `memory_namespace`, the `alert.severity in
-  [critical]` guardrail and `supervisor.min_confidence: 0.6`. `registry`
+  `ESCALATE`), the three tools (two its own, pinned; the global
+  `similar-past-case-lookup` at `latest`, ADR-0026), `event_schema_ref`,
+  `alert_key_fields` (`alert_type:host`), `memory_namespace`, the
+  `alert.severity in [critical]` guardrail and
+  `supervisor.min_confidence: 0.6`. No `budget` or `rate_limit`, so
+  `orchestrator`'s and `ingestion`'s defaults apply (ADR-0029). `registry`
   holds the runtime copy; after editing, run
   `uv run backend/scripts/register_app.py it-ops-triage`.
 - `event_schema.json`: what `ingestion` accepts as this app's `payload`
@@ -16,7 +19,10 @@ App bundle for the reference IT-ops alert triage app (`docs/ARCHITECTURE.md`
 - `prompts/`: one per agent. `orchestrator` wraps each in the platform
   rules (data blocks, JSON answer format).
   - `triage-agent.md`: decides from the runbook, the alert data and the
-    `memory-store` history, including analyst verdicts (Day 10).
+    `memory-store` history, including analyst verdicts (Day 10). On
+    `ESCALATE`, suggests a past case's fix to the analyst when its
+    `resolution_notes` name one (Day 13), as a suggestion, never an
+    action.
   - `root-cause-summarizer.md`: on `ESCALATE`, a probable cause with its
     evidence and a first check; never changes the decision.
 
@@ -31,3 +37,9 @@ by `tool-gateway` at startup:
   `tools/recent_changes.json` (absolute timestamps around 2026-10-05).
   Allowlisted for `root-cause-summarizer` only. Tested in
   `backend/services/tool-gateway/tests/test_recent_changes_lookup.py`.
+
+Platform tool, not in this folder: `similar-past-case-lookup` (global,
+`tool-gateway/app/tools/`, ADR-0027) returns this app's resolved cases on
+the alert's own key. Allowlisted for `triage-agent` and listed in its
+`prefetch_tools`, so `orchestrator` runs it before the agent's loop and
+puts the result in its first message (ADR-0028).

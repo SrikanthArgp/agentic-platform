@@ -1,10 +1,11 @@
 # ingestion — class diagram
 
-As built through Day 11 of `docs/plan.md` (Day 10 removed the Day 4 debug
-view; Day 11 only reworded the publisher's docstring). `ingestion` is the platform's
+As built through Day 14 of `docs/plan.md` (Day 14 added rate limits per
+app and per source; unchanged on Days 12–13). `ingestion` is the platform's
 REST front door: it accepts an alert at `POST /apps/{app_id}/events`,
-validates it against that app's rules (read from `registry`), turns it into
-a `RunAgentRequest`, and publishes it to `alert.received`. It never runs an agent and never decides anything.
+checks the app's rate limits, validates it against that app's rules (read
+from `registry`), turns it into a `RunAgentRequest`, and publishes it to
+`alert.received`. It never runs an agent and never decides anything.
 
 Python modules that are plain functions (no class) are drawn as
 `<<module>>` boxes, so every piece of behaviour shows up somewhere.
@@ -18,7 +19,7 @@ classDiagram
         class main {
             <<module>>
             +SERVICE_NAME = "ingestion"
-            +create_app(settings, publisher, apps) FastAPI
+            +create_app(settings, publisher, apps, rate_limiter) FastAPI
             -lifespan(app) AsyncIterator
             +healthz() HealthResponse
         }
@@ -45,6 +46,9 @@ classDiagram
             +registry_url: str
             +manifest_ttl_s: float
             +max_payload_bytes: int
+            +redis_url: str?
+            +rate_limit_per_minute: int
+            +rate_limit_per_source_per_minute: int
             +from_env()$ Settings
         }
         class AppStore {
@@ -63,7 +67,26 @@ classDiagram
             +app_id: str
             +alert_key_fields: tuple~str~
             +validator: Draft202012Validator
+            +limits: Limits
             +payload_errors(payload) list~dict~
+        }
+        class RateLimiter {
+            -_redis: Redis
+            -_default_per_minute: int
+            -_default_per_source: int
+            +hit(app_id, source, limits) None
+        }
+        class Limits {
+            <<frozen dataclass>>
+            +per_minute: int?
+            +per_source_per_minute: int?
+            +from_manifest(rate_limit)$ Limits
+        }
+        class RateLimited {
+            <<exception>>
+            +scope: str
+            +limit: int
+            +retry_after_s: int
         }
         class envelope {
             <<module: app.core.envelope>>
@@ -129,6 +152,9 @@ classDiagram
         class AIOKafkaProducer {
             <<aiokafka>>
         }
+        class Redis {
+            <<redis.asyncio>>
+        }
         class Draft202012Validator {
             <<jsonschema>>
         }
@@ -154,6 +180,7 @@ classDiagram
     main *-- AppStore : app.state.apps
     main *-- RegistryClient : unless apps injected, closed in lifespan
     main *-- KafkaPublisher : app.state.publisher, unless injected
+    main *-- RateLimiter : app.state.rate_limiter, if REDIS_URL or injected
     main ..> observability : setup at import
     main ..> alerts_router : include_router
     main ..> HealthResponse
@@ -162,6 +189,8 @@ classDiagram
     alerts_router ..> AlertIn : request body
     alerts_router ..> AlertAccepted : 202 response
     alerts_router ..> AppStore : get(app_id)
+    alerts_router ..> RateLimiter : hit(app_id, source, spec.limits)
+    alerts_router ..> RateLimited : 429 + Retry-After
     alerts_router ..> envelope : alert_key, request, Kafka key
     alerts_router ..> Publisher : publish alert.received
     alerts_router ..> UnknownAppError : 404
@@ -180,6 +209,10 @@ classDiagram
     AppStore ..> AppUnavailableError : raises
     AppStore ..> AppConfigError : raises
     AppEventSpec *-- Draft202012Validator
+    AppEventSpec *-- Limits : from manifest rate_limit, every fetch
+    RateLimiter *-- Redis : 0.2s timeouts
+    RateLimiter ..> Limits
+    RateLimiter ..> RateLimited : raises
     envelope ..> AlertIn : reads
     envelope ..> RunAgentRequest : builds
     envelope ..> AlertKeyError : raises
@@ -203,10 +236,11 @@ without globals:
 | `settings` | `Settings` | |
 | `apps` | `AppStore` | over the `RegistryClient` (or a fake a test passes as `apps`) |
 | `publisher` | `Publisher` | a `KafkaPublisher`, or the fake a test passes in |
+| `rate_limiter` | `RateLimiter` or `None` | over Redis when `REDIS_URL` is set (0.2s socket timeouts), or the one a test passes in; `None` (a startup warning) means no rate limiting |
 
 `lifespan()` starts `KafkaPublisher` (connecting in the background) on
 startup and stops it on shutdown, then closes the
-`RegistryClient` if `create_app()` made one. When a test injects a
+`RegistryClient` and Redis client if `create_app()` made them. When a test injects a
 `publisher`, or `KAFKA_ENABLED=false`, no producer is created, so
 the app runs with no broker. `setup_observability()` is called at import
 time so logging is JSON from the first line.
@@ -226,9 +260,13 @@ health checks use it.
   3. The app's spec, from `AppStore`. An unregistered app is a `404`;
      `registry` unreachable with nothing cached is a `503` with
      `Retry-After: 5`; a broken app (`AppConfigError`) is a `500`.
-  4. The payload against the app's JSON Schema. Failure is a `422` listing
+  4. The app's rate limits (Day 14), through `RateLimiter.hit`. Over either
+     is a `429` with `Retry-After` (seconds to the next minute) and a body
+     naming the limit (`limit`, `limit_per_minute`). Checked after the app
+     resolves, so an unknown app is still a `404`.
+  5. The payload against the app's JSON Schema. Failure is a `422` listing
      every error.
-  5. `alert_key`, built by `build_alert_key`. A missing field is a `422`.
+  6. `alert_key`, built by `build_alert_key`. A missing field is a `422`.
 
   It then mints `alert_id`, builds the protobuf and publishes. A
   `PublishError` becomes a `503` with `Retry-After: 5`.
@@ -242,8 +280,10 @@ Day 4's `POST /alerts` and its debug `GET /alerts/{id}` are gone (both
 **`Settings`** (`config.py`): frozen dataclass of everything configurable.
 `from_env()` reads `APPS_DIR`, `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_ENABLED`,
 `REGISTRY_URL` (default `http://localhost:8005`), `MANIFEST_TTL_S`
-(default 30, the same as `orchestrator` and `tool-gateway`) and
-`MAX_PAYLOAD_BYTES`. `apps_dir` defaults to
+(default 30, the same as `orchestrator` and `tool-gateway`),
+`MAX_PAYLOAD_BYTES`, `REDIS_URL` (unset: no rate limiting),
+`RATE_LIMIT_PER_MINUTE` (default 600) and
+`RATE_LIMIT_PER_SOURCE_PER_MINUTE` (default 300). `apps_dir` defaults to
 `backend/apps`, a path that is the same in the repo and in the Docker image.
 
 **`AppStore`** (`apps.py`): resolves `app_id` to an `AppEventSpec`.
@@ -256,7 +296,9 @@ Day 4's `POST /alerts` and its debug `GET /alerts/{id}` are gone (both
   schema itself is a file in this image (`APPS_DIR/{app_id}/`).
 - It keeps one compiled spec per `(app_id, event_schema_ref,
   alert_key_fields)`, so a manifest change builds a new spec on the next
-  fetch, with no restart.
+  fetch, with no restart. The manifest's `rate_limit` isn't part of that
+  key: it's read into the returned spec's `limits` on every fetch, so a
+  limit change lands within one TTL.
 - `AppNotFoundError` becomes `UnknownAppError` (`404`);
   `RegistryUnavailableError` becomes `AppUnavailableError` (`503`); a broken
   app raises `AppConfigError` (`500`).
@@ -272,6 +314,24 @@ manifest, and nothing else:
 
 `payload_errors()` returns every schema violation as `{path, message}`,
 sorted so error responses are deterministic.
+
+**`RateLimiter`** (`ratelimit.py`, Day 14, ADR-0029): fixed one-minute
+windows, two Redis counters per event, incremented together (with a
+2-minute `EXPIRE`) in one transaction:
+- `ratelimit:{app_id}:{minute}`: every event posted for the app;
+- `ratelimit:{app_id}:src:{source}:{minute}`: those with that envelope
+  `source`.
+
+`hit()` raises **`RateLimited`** (`scope` `per_minute` or
+`per_source_per_minute`, the `limit`, `retry_after_s`) when either is over
+its limit: the app's **`Limits`** (manifest `rate_limit`) or the
+`Settings` defaults. Refused events count too, and so do events that will
+fail payload validation, so retrying faster earns no fresh allowance. Each
+app has its own counters, so one app's flood never takes another's
+allowance. `source` is unauthenticated (§13 T6): a sender can dodge its
+per-source limit by varying it, never the app's. Redis unreachable → the
+event is accepted and a warning logged: a rate limit protects capacity,
+it isn't a correctness check.
 
 **`AppStore._load_spec`** builds the spec. These are the checks `registry`
 can't do, because the schema file isn't in its image (ARCHITECTURE §12). It
@@ -294,8 +354,8 @@ rejects, with `AppConfigError`:
   plus `payload`, which becomes a `google.protobuf.Struct` (numbers become
   doubles). `timestamp` defaults to when `ingestion` received the alert.
 
-**Exceptions**: `UnknownAppError`, `AppUnavailableError`, `AppConfigError`
-and `AlertKeyError` are small domain exceptions. The router maps each to a different HTTP status.
+**Exceptions**: `UnknownAppError`, `AppUnavailableError`, `AppConfigError`,
+`RateLimited` and `AlertKeyError` are small domain exceptions. The router maps each to a different HTTP status.
 
 ### Models — `app/models/alerts.py`
 
@@ -331,23 +391,27 @@ An alert therefore gets a `202` only once Kafka has stored it.
    **`AppStore.get`**, which gets the app from **`RegistryClient`**
    (cached 30s). For a new manifest version, `_load_spec` builds an
    **`AppEventSpec`**.
-3. **`AppEventSpec.payload_errors`** validates the payload, and
+3. **`RateLimiter.hit`** counts the event against the app's and the
+   source's limits (`429` if over).
+4. **`AppEventSpec.payload_errors`** validates the payload, and
    **`envelope.build_alert_key`** builds `alert_key`.
-4. **`envelope.build_request`** builds the **`RunAgentRequest`**.
-5. **`Publisher.publish`** sends it to `alert.received`, keyed by
+5. **`envelope.build_request`** builds the **`RunAgentRequest`**.
+6. **`Publisher.publish`** sends it to `alert.received`, keyed by
    **`envelope.message_key`**. The caller gets **`AlertAccepted`** (`202`).
-6. Later, `orchestrator` publishes to `alert.decided`; `ingestion` isn't
+7. Later, `orchestrator` publishes to `alert.decided`; `ingestion` isn't
    involved.
 
 ## Design notes
 
 - **Dependency injection through `create_app()`**: tests pass `Settings`,
-  a fake `Publisher` and a fake registry (`apps`), so no unit test needs
-  Kafka or `registry`.
+  a fake `Publisher`, a fake registry (`apps`) and, when they test limits,
+  a `RateLimiter` over fake Redis, so no unit test needs Kafka, Redis or
+  `registry`.
 - **Nothing app-specific in code**: every per-app rule comes from the
   app's manifest in `registry` (key fields, which schema) and its files
   under `backend/apps/{app_id}/` (the schema itself).
 - **Fail before publishing**: all validation happens before the Kafka
   write, so a bad alert never reaches the agent.
 - **Next changes**: **Day 15**: `KafkaPublisher` is replaced by an
-  outbox write behind the same `Publisher` interface.
+  outbox write behind the same `Publisher` interface; **Day 19**: `/readyz`
+  (ready when Postgres is reachable) and a graceful drain on SIGTERM.

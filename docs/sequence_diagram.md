@@ -11,17 +11,26 @@ reference. Section numbers point back to the source of truth.
 Diagram 4 uses a second app, `cost-anomaly-triage`, to make multi-app
 isolation visible. It's documented as a second worked example in
 `docs/ARCHITECTURE.md` §3, alongside `it-ops-triage`. It's app #2 in
-`docs/plan.md` (first cut Day 13, finished Day 17), but **no code for it
-exists in the repo yet** — treat this diagram as the intended design, not
-documentation of something already built. App #3, `security-alert-triage`,
+`docs/plan.md`: its first cut (one agent, `billing-lookup`, the shared
+`similar-past-case-lookup`) was built and checked live on Day 13, and Day
+17 finishes it. App #3, `security-alert-triage`,
 follows the exact same sequence as diagram 1/2 with its own manifest and
 isn't drawn separately; diagram 5 shows how it's *shipped* (the first app
 rolled out on Kubernetes, `docs/plan.md` Day 20, ADR-0014).
 
 All diagrams draw `ingestion → orchestrator` as a single Kafka hop. From
-Day 15 that hop physically goes through the Postgres `outbox` and a Celery
-relay (`ARCHITECTURE.md` §10) — same message, same consumer, up to ~1s
-added latency.
+Day 15 that hop physically goes through the Postgres `outbox` and the
+`outbox-relay` worker (`ARCHITECTURE.md` §10, ADR-0030) — same message,
+same consumer, up to ~0.5s added latency. The same goes for `review-console → memory-store`'s
+`verdict.recorded` (`verdict_outbox`, ADR-0024).
+
+Two refusals aren't drawn, because nothing runs after them (ADR-0029):
+an event over its app's or source's per-minute rate limit gets `429` with
+`Retry-After` from `ingestion` and is never published; an entry agent over
+its daily token budget isn't run, and `orchestrator` publishes `ESCALATE`
+"not evaluated: budget exceeded" straight away, so the alert still reaches
+an analyst as in diagram 2 (without the summarizer's contribution if it is
+over budget too).
 
 ---
 
@@ -41,16 +50,19 @@ sequenceDiagram
     participant ReviewConsole as review-console
 
     Client->>Ingestion: POST /apps/{app_id}/events (REST)
-    Ingestion->>Ingestion: validate against event_schema_ref
+    Ingestion->>Ingestion: rate limits (app, source), then validate against event_schema_ref
     Ingestion->>Orchestrator: alert.received (Kafka · RunAgentRequest)
     Ingestion-->>Client: 202 Accepted (once Kafka has it; from Day 15, once the outbox row commits)
 
     Orchestrator->>Registry: resolve app_id → manifest (REST, 30s TTL cache)
     Registry-->>Orchestrator: App Manifest
+    Note over Orchestrator: entry agent's daily token budget (Redis) not used up
 
     Orchestrator->>MemoryStore: GetContext (gRPC)
     MemoryStore-->>Orchestrator: GetContextResponse (windowed aggregates)
 
+    Orchestrator->>ToolGateway: prefetch_tools, no arguments (MCP · ADR-0028)
+    ToolGateway-->>Orchestrator: tool-result (in the agent's first message)
     Orchestrator->>ToolGateway: tool-call (MCP, allowlisted tools only)
     ToolGateway-->>Orchestrator: tool-result
 
@@ -68,9 +80,12 @@ sequenceDiagram
 | 2 | `ingestion` → `orchestrator` | `alert.received` (`RunAgentRequest`) | Kafka |
 | 3 | `orchestrator` → `registry` | manifest read | REST |
 | 4 | `orchestrator` → `memory-store` | `GetContext` | gRPC |
-| 5 | `orchestrator` → `tool-gateway` | tool-call / tool-result | MCP |
+| 5 | `orchestrator` → `tool-gateway` | prefetched tool-calls (e.g. `similar-past-case-lookup`), then the agent's own | MCP |
 | 6 | `orchestrator` → `review-console` | `alert.decided` (`RunAgentResponse`) | Kafka |
 | 7 | `orchestrator` → `memory-store` | `alert.decided`, same message, separate consumer group (ADR-0016) | Kafka |
+
+Between steps 3 and 4, the budget check is a Redis read; the tokens the
+agent used are added after its loop.
 
 ---
 
@@ -92,22 +107,26 @@ sequenceDiagram
     participant Analyst as analyst (human)
 
     Client->>Ingestion: POST /apps/{app_id}/events (REST)
-    Ingestion->>Ingestion: validate against event_schema_ref
+    Ingestion->>Ingestion: rate limits (app, source), then validate against event_schema_ref
     Ingestion->>Orchestrator: alert.received (Kafka · RunAgentRequest)
     Ingestion-->>Client: 202 Accepted (once Kafka has it; from Day 15, once the outbox row commits)
 
     Orchestrator->>Registry: resolve app_id → manifest (REST, 30s TTL cache)
     Registry-->>Orchestrator: App Manifest
+    Note over Orchestrator: triage-agent's daily token budget (Redis) not used up
 
     Orchestrator->>MemoryStore: GetContext (gRPC)
     MemoryStore-->>Orchestrator: GetContextResponse
 
+    Orchestrator->>ToolGateway: prefetch: similar-past-case-lookup {} (MCP · ADR-0028)
+    Note over ToolGateway: reads review-console's resolved cases for the run's<br/>app_id + alert_key, from _meta (ADR-0027)
+    ToolGateway-->>Orchestrator: past cases incl. resolution_notes (as data)
     Orchestrator->>ToolGateway: tool-call (MCP, allowlisted tools only)
     ToolGateway-->>Orchestrator: tool-result
 
     Note over Orchestrator: LLM → supervisor → escalate_when guardrails<br/>(any can raise to ESCALATE) → final decision = ESCALATE
 
-    Note over Orchestrator: callables with invoke_on ∋ ESCALATE →<br/>root-cause-summarizer (in-process graph branch,<br/>parallel if several · ADR-0012/0022)
+    Note over Orchestrator: callables with invoke_on ∋ ESCALATE →<br/>root-cause-summarizer (in-process graph branch,<br/>parallel if several, each within its own budget · ADR-0012/0022)
     Orchestrator->>ToolGateway: tool-call, summarizer's allowlist:<br/>recent-changes-lookup (2h before fired_at), lookup_runbook (MCP)
     ToolGateway-->>Orchestrator: tool-result
     Note over Orchestrator: summarizer answers {"reasons": [...]}:<br/>probable cause citing a change ref or runbook
@@ -121,7 +140,7 @@ sequenceDiagram
     Analyst->>ReviewConsole: GET case list/detail (REST)
     ReviewConsole-->>Analyst: case incl. the alert, reasons[], tool_calls[] (explainability trace)
     Analyst->>ReviewConsole: submit verdict + optional resolution_notes (REST)
-    Note over ReviewConsole: OPEN → RESOLVED exactly once (a second verdict is a 409);<br/>verdict.recorded published before the row commits
+    Note over ReviewConsole: OPEN → RESOLVED exactly once (a second verdict is a 409);<br/>verdict.recorded published before the row commits<br/>(from Day 15: a verdict_outbox row in the same transaction, ADR-0024)
     Note over ReviewConsole: resolution_notes stored on the case only —<br/>later surfaced via similar-past-case-lookup
 
     ReviewConsole->>MemoryStore: verdict.recorded (Kafka · {app_id, case_id, alert_key, verdict, verdict_by, recorded_at})
@@ -134,7 +153,7 @@ sequenceDiagram
 | 2 | `ingestion` → `orchestrator` | `alert.received` (`RunAgentRequest`) | Kafka |
 | 3 | `orchestrator` → `registry` | manifest read | REST |
 | 4 | `orchestrator` → `memory-store` | `GetContext` | gRPC |
-| 5 | `orchestrator` → `tool-gateway` | tool-call / tool-result (triage-agent) | MCP |
+| 5 | `orchestrator` → `tool-gateway` | prefetched `similar-past-case-lookup`, then triage-agent's tool-calls | MCP |
 | 6 | `orchestrator` (in-process) | callable `root-cause-summarizer` runs as a branch of the run graph | — |
 | 7 | `orchestrator` → `tool-gateway` | tool-call / tool-result (summarizer, its own `agent_id` in `_meta`) | MCP |
 | 8 | `orchestrator` → `review-console` | `alert.decided` (`RunAgentResponse`, ESCALATE) | Kafka |
@@ -187,11 +206,12 @@ sequenceDiagram
 
 ## 4. Two apps, one shared core — isolation in practice
 
-*Planned — `cost-anomaly-triage` is app #2 in `docs/plan.md` (Day 13/17)
-but not built yet; only `it-ops-triage` exists in the repo so far.* Same `orchestrator`,
+*Built — `cost-anomaly-triage`'s first cut, `docs/plan.md` Day 13; Day 17
+finishes it.* Same `orchestrator`,
 `tool-gateway`, `memory-store` process handling both apps' alerts back to
 back, showing where the §3 isolation guarantee (`app_id`, `memory_namespace`,
-`tool_allowlist`) actually bites.
+`tool_allowlist`) actually bites. Prefetch and the budget check (diagram 1)
+happen in both runs and aren't redrawn.
 
 ```mermaid
 sequenceDiagram
@@ -240,10 +260,16 @@ sequenceDiagram
 | 7–12 | same steps, client B, `app_id=cost-anomaly-triage` | — | — | identical mechanisms, disjoint values — same `alert_key` on both sides never collides |
 
 `similar-past-case-lookup` (`scope: global`) is allowlisted by both apps
-— one implementation, but it filters by the calling agent's `app_id`, so
-each app only ever sees its own past cases. `billing-lookup` and
-`lookup_runbook` are `scope: app` and can never appear outside the
-manifest that declares them.
+— one implementation, but it reads the run's `app_id` and `alert_key`
+from the MCP request context, never from an argument (ADR-0027), so each
+app only ever sees its own past cases; an `app_id` argument is
+`invalid_arguments`. `billing-lookup` and `lookup_runbook` are
+`scope: app` and can never appear outside the manifest that declares
+them: on Day 13, `triage-agent` → `billing-lookup` and
+`cost-triage-agent` → `lookup_runbook` were both `tool_not_allowed`, and a
+cost-app case came back `found: false` for `it-ops-triage` with the same
+key text. Each app's `rate_limit` and each agent's `budget` are separate
+counters too, so one app's flood or spend never uses up another's.
 
 ---
 

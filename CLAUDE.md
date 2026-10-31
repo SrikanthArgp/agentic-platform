@@ -37,7 +37,7 @@ Days 1–14 of `docs/plan.md` are done (infra, contracts, skeletons;
 callable agents; `review-console`; the verdict feedback loop; the Week 2
 integration pass; `tool-gateway` resilience; tool versions, the global
 `similar-past-case-lookup` and app #2's first cut; token budgets and rate
-limits); Day 15 (outbox + Celery relay, for alerts and verdicts) is next. As-built notes for each day are in `docs/plan.md`.
+limits); Day 15 (outbox + the `outbox-relay` worker, for alerts and verdicts, ADR-0030) is next. As-built notes for each day are in `docs/plan.md`.
 
 - All 6 services have a FastAPI skeleton (`app/main.py`, `/healthz`),
   a `pyproject.toml`, a committed `uv.lock`, a `Dockerfile`, and passing
@@ -214,7 +214,8 @@ then `pytest` green in every service directory.
 - **Six services**: `ingestion` (REST intake), `orchestrator` (agent loop),
   `tool-gateway` (MCP tool server), `memory-store` (gRPC context store),
   `registry` (REST capability/app discovery), `review-console` (REST
-  human-in-the-loop), plus Celery workers for batch/background work.
+  human-in-the-loop), plus one background worker, `outbox-relay` (Day 15,
+  ADR-0030), that drains the outbox tables to Kafka.
 - **Transport is protocol-per-purpose, not uniform**: Kafka between
   `ingestion`/`orchestrator`/`review-console`/`memory-store` (the event
   backbone: `alert.received`, `alert.decided`, `verdict.recorded`), gRPC for
@@ -267,5 +268,7 @@ then `pytest` green in every service directory.
   cluster (`backend/deploy/k8s/`, Kustomize) where app #3 onward ships by
   rolling update (`rollout_app.sh`: roll the three services, wait, then
   `register_app.py`).
-  Celery (Redis broker, `celery-beat`) runs the Day 15 outbox relay and
-  the Day 25 batch eval.
+  The `outbox-relay` worker (`backend/workers/outbox-relay/`, one active
+  instance via a Postgres advisory lock, ADR-0030) relays the Day 15
+  outbox tables; there is no Celery. The Day 25 batch eval is a script,
+  run nightly by a Kubernetes `CronJob`.

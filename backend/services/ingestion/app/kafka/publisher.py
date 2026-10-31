@@ -5,8 +5,9 @@ message, and 503 if Kafka is unreachable, so an alert is never accepted and
 then lost. A 503 from the send *timeout* may still be delivered once Kafka
 is back (the idempotent producer never expires a queued message), so a
 client retry can triage the alert twice (docs/plan.md Day 4). Day 15
-replaces this with the Postgres outbox + Celery relay (docs/ARCHITECTURE.md
-§10), which accepts alerts during a Kafka outage too.
+replaces this with the Postgres outbox + `outbox-relay` worker
+(docs/ARCHITECTURE.md §10, ADR-0030), which accepts alerts during a Kafka
+outage too.
 """
 
 import asyncio

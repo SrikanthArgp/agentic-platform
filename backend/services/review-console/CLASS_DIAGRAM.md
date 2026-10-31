@@ -1,8 +1,10 @@
 # review-console — class diagram
 
-As built through Day 11 of `docs/plan.md` (unchanged since Day 9): an `alert.decided` consumer that
+As built through Day 14 of `docs/plan.md` (unchanged since Day 9): an `alert.decided` consumer that
 turns escalations into cases, the analyst REST API, and the
-`verdict.recorded` producer.
+`verdict.recorded` producer. Since Day 13 `GET /cases` has a second
+reader: `tool-gateway`'s global `similar-past-case-lookup` asks it for
+`status=RESOLVED` cases on the run's `app_id` + `alert_key` (ADR-0027).
 
 ```mermaid
 classDiagram
@@ -121,7 +123,10 @@ classDiagram
   `RESOLVED` → `CaseAlreadyResolvedError` (409), else `resolve()` and
   publish `verdict.recorded` before commit. A `PublishError` rolls back
   (503; the case stays `OPEN`). A 503 from the send *timeout* may still be
-  delivered once Kafka is back (Day 11; open decision in `plan.md` Day 15).
+  delivered once Kafka is back (Day 11). Decided in ADR-0024: on Day 15
+  the verdict is written to a `verdict_outbox` row in the same
+  transaction and relayed by the `outbox-relay` worker (ADR-0030), the Kafka producer goes, and a Kafka
+  outage no longer returns 503.
 - **`verdict_event()`** builds the `verdict.recorded` body: `{app_id,
   case_id, alert_key, verdict, verdict_by, recorded_at}`, keyed
   `{app_id}:{alert_key}`. `resolution_notes` stays on the case (ADR-0011).

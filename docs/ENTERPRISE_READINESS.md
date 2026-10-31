@@ -133,7 +133,7 @@ in `alert_key_fields` are hashed.
 
 - Manifest gains `prompt_fields` and redaction rules — additive.
 - A redaction step in `orchestrator` and in `ap-shared`'s observability
-  module; retention jobs as Celery beat tasks.
+  module; retention jobs as Kubernetes `CronJob`s.
 - No contract change: `payload` still carries the full validated event
   internally; minimization happens at the prompt and trace boundaries.
 
@@ -146,8 +146,11 @@ in `alert_key_fields` are hashed.
 ### Today
 
 One LLM client inside `orchestrator`; model choice is implicit and the
-same for every agent. Provider outage behavior isn't specified beyond the
-general "fail toward escalation" rule.
+same for every agent. A provider outage has one behavior: after the
+client's own retries, the entry agent's alert is "not evaluated"
+(`ESCALATE`) and a callable doesn't contribute. There's no fallback model.
+Spend is capped by a daily token budget per agent (Day 14, ADR-0029),
+counted in tokens, not priced.
 
 ### Target
 
@@ -187,7 +190,8 @@ general "fail toward escalation" rule.
 
 - Day 24's spans already record model, tokens, and cost per call; with
   `model_ref` per agent, cost per app and per agent becomes directly
-  comparable across models.
+  comparable across models, and Day 14's token budgets (kept as input and
+  output tokens apart for this) can become budgets in money per model.
 
 ### Changes to the platform
 

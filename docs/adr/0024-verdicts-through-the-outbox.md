@@ -2,12 +2,12 @@
 
 - **Status**: Accepted
 - **Date**: 2026-10-26
-- **See**: ADR-0008, ADR-0011, ADR-0017; `ARCHITECTURE.md` §8, §9, §10; `plan.md` Days 11, 15
+- **See**: ADR-0030, ADR-0011, ADR-0017; `ARCHITECTURE.md` §8, §9, §10; `plan.md` Days 11, 15
 
 ## Context
 
-ADR-0008 gives `ingestion` an outbox, but `review-console` still publishes
-`verdict.recorded` inline: under the case's row lock it resolves the case,
+ADR-0030 (originally ADR-0008) gives `ingestion` an outbox, but
+`review-console` still publishes `verdict.recorded` inline: under the case's row lock it resolves the case,
 publishes, and commits only once Kafka has the event, returning `503` if
 the publish fails so the case stays `OPEN` for a retry.
 
@@ -42,15 +42,15 @@ key, so it corrupts the feedback loop the platform exists for.
   `status`, `attempts`, `last_error`, `created_at`, `sent_at`). It's
   owned by `review-console`, as `cases` is, rather than sharing
   `ingestion`'s table.
-- **The ADR-0008 relay drains both tables**: the same Celery task, the
-  same Redis lock, `id` order per table, and the same pruning of `SENT`
+- **The ADR-0030 relay drains both tables**: the same `outbox-relay`
+  loop, under the same single-relay lock, `id` order per table, and the same pruning of `SENT`
   rows. The relay is written once, over a table and its topic.
 - **The relay publishes each verdict with its row's `created_at` as the
   Kafka message timestamp.** `memory-store` times a verdict by its Kafka
   timestamp, which was the moment of the verdict only while publishing
   was inline. Without this, a verdict held through an outage would land
   in the rolling windows at relay time.
-- **Failures follow ADR-0008**: Kafka unreachable → rows stay `PENDING`
+- **Failures follow ADR-0030**: Kafka unreachable → rows stay `PENDING`
   with no attempts counted. A message-specific failure counts an attempt,
   and after 5 the row is `DEAD`, logged at `ERROR` and kept. There's no
   `verdict.recorded.dlq` topic: the payload is small JSON the platform

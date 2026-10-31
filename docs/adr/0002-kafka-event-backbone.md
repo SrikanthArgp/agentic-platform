@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-10-01
-- **See**: `ARCHITECTURE.md` §8, §10; ADR-0008
+- **See**: `ARCHITECTURE.md` §8, §10; ADR-0030
 
 ## Context
 

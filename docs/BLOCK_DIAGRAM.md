@@ -6,9 +6,10 @@ multi-app model see `docs/ARCHITECTURE.md` (this doc is the picture,
 `ARCHITECTURE.md` is the detail behind each block).
 
 **Reading the diagram**: solid arrows are synchronous calls or event
-publishes on the alert path (including the Celery outbox relay, which
-carries every alert from Day 15); dashed arrows are telemetry
-(traces/logs/metrics) or supporting links (Celery's broker).
+publishes on the alert path (including the `outbox-relay` worker, which
+carries every alert and every verdict from Day 15; until then `ingestion`
+and `review-console` publish to Kafka directly); dashed arrows are telemetry
+(traces/logs/metrics) or supporting links (Redis counters).
 
 **Deployment**: each block is one container (Compose) or one Deployment
 (the local kind cluster from `docs/plan.md` Day 18), shared by every app.
@@ -35,7 +36,7 @@ flowchart TB
         RC["review-console"]
     end
 
-    CEL["Celery workers + beat<br/>(outbox relay, batch eval)"]
+    REL["outbox-relay worker<br/>(drains outbox tables)"]
 
     subgraph Data["Data Plane"]
         KAFKA[("Kafka")]
@@ -65,18 +66,16 @@ flowchart TB
     TG -->|"REST agent's allowed tools (per-call check)"| REG
     KAFKA -->|consume| RC
     AN -->|"REST GET/POST cases, verdict"| RC
-    RC -->|"Kafka: verdict.recorded"| KAFKA
     KAFKA -->|"consume alert.decided, verdict.recorded"| MS
     MS -->|"REST memory_namespace"| REG
 
     MS <-->|"last 7 days of events per alert_key"| REDIS
     MS <-->|"memory_events (event log)"| PG
     REG <-->|"App Manifests, tools"| PG
-    RC <-->|"cases"| PG
+    RC <-->|"cases + verdict_outbox write (one transaction)"| PG
 
-    CEL -->|"relay: alert.received / alert.received.dlq"| KAFKA
-    CEL <-->|"claim outbox rows"| PG
-    CEL <-.->|"broker (task queue)"| REDIS
+    REL -->|"relay: alert.received / .dlq, verdict.recorded"| KAFKA
+    REL <-->|"claim outbox, verdict_outbox rows"| PG
 
     ING -.-> OTEL
     ORCH -.-> OTEL
@@ -84,7 +83,7 @@ flowchart TB
     MS -.-> OTEL
     REG -.-> OTEL
     RC -.-> OTEL
-    CEL -.-> OTEL
+    REL -.-> OTEL
     OTEL --> TEMPO
     OTEL --> MIMIR
     OTEL --> LOKI
@@ -122,16 +121,21 @@ target app's `event_schema_ref` (from `registry`'s App Manifest, 30s TTL
 cache), enqueues it for `alert.received`, and returns `202` immediately — it
 does not wait for a decision. Owns reliability at the edge: from Day 15 of
 `docs/plan.md` it writes each event to the Postgres `outbox` table and the
-Celery relay publishes it (DLQ after repeated message failures), so a Kafka
-outage doesn't silently drop alerts. Also enforces rate limits per `app_id`
-and per source (Day 14, `429` + `Retry-After`).
+`outbox-relay` worker publishes it (DLQ after repeated message failures), so a Kafka
+outage doesn't silently drop alerts. Enforces rate limits per `app_id` and
+per source within it (fixed one-minute Redis counters, limits from the
+manifest's `rate_limit`, `429` + `Retry-After`, ADR-0029), so one app's
+flood can't take another's allowance; Redis down → events are accepted.
 
 ### `orchestrator`
 The agent runtime — the only service that runs LLM tool-calling loops. On
 consuming `alert.received`, it resolves the event's `app_id` against
-`registry` to get that app's agent config and tool allowlist, calls
+`registry` to get that app's agent config and tool allowlist, checks the
+agent's daily token budget (Redis, ADR-0029: over it, the alert is "not
+evaluated" and escalates), calls
 `memory-store` once for behavioral context (before the loop, over one
-shared gRPC channel, ADR-0019), runs the agent's tool-calling loop
+shared gRPC channel, ADR-0019), calls the agent's `prefetch_tools` with no
+arguments (ADR-0028), runs the agent's tool-calling loop
 (LangChain's prebuilt agent inside a LangGraph run graph, ADR-0022) against
 `tool-gateway` with that context in the prompt, applies the supervisor
 (the agent's confidence capped by fixed rules, against the manifest's
@@ -151,23 +155,27 @@ every callable agent whose `invoke_on` matches, in parallel (e.g.
 `it-ops-triage`'s `root-cause-summarizer` on `ESCALATE`), folding their
 `reasons[]` into the entry agent's before publishing `alert.decided`
 (`docs/ARCHITECTURE.md` §3/§5). One level, one direction, scoped to one
-app's own manifest — not cross-app A2A. Owns cost/budget enforcement per
-`app_id`/agent (Day 14), dedupe of at-least-once deliveries (Day 16), and
-circuit-breaking around tool calls (Day 12).
+app's own manifest — not cross-app A2A. Owns token-budget enforcement per
+`app_id`/agent (an over-budget callable just doesn't contribute), a
+timeout on every MCP call, and, from Day 16, dedupe of at-least-once
+deliveries. Retries and circuit breakers around tools live in
+`tool-gateway`, not here.
 
 ### `tool-gateway`
 An MCP server — the only service that executes tools. Every tool is a
 read-only lookup (no remediation). Tools are either `global` (platform code
 in `tool-gateway` itself, available to any app that allowlists them — e.g.
 `similar-past-case-lookup`, which reads `review-console`'s `GET /cases`
-filtered by the caller's `app_id`) or `app`-scoped (owned by one app,
+for the run's own `app_id` + `alert_key`, taken from the run context,
+never from arguments — ADR-0027) or `app`-scoped (owned by one app,
 loaded at startup from `backend/apps/{app_id}/tools/`; fixture-backed in
 this build). Re-checks every call against the calling agent's resolved
-tools from `registry` and validates its arguments against the tool's input
-model before executing. From Day 12 it also validates input against the
-schema registered in `registry`, enforces a per-call timeout, and wraps
-execution in retry/backoff + a circuit breaker so a broken tool degrades
-predictably instead of hanging the whole platform.
+tools from `registry`, refuses a version other than the one it loaded
+(ADR-0026), and validates the arguments against the schema registered in
+`registry` and then the tool's own model before executing. Each call has
+one deadline covering its retries with backoff, and each tool a circuit
+breaker (ADR-0025), so a broken tool degrades predictably — the run
+escalates naming it — instead of hanging the whole platform.
 
 ### `memory-store`
 The only service that reads/writes behavioral history. Serves `GetContext`
@@ -189,8 +197,12 @@ per configured use case, declaring that app's agents (incl. `invoke_on` for
 callables), tools, event schema, and memory namespace. A manifest's source
 of truth is `backend/apps/{app_id}/manifest.yaml`; `register_app.py`
 upserts it here, and `registry` validates it on the way in. It serves each
-app *resolved*: every agent carries the tools it may call right now
-(allowlisted, declared, enabled). `ingestion`, `orchestrator` and
+app *resolved*: each tool reference is pinned or `latest` (the highest
+registered version, resolved on every read, ADR-0026), and every agent
+carries the tools it may call right now (allowlisted, declared, enabled).
+The manifest also carries the limits others enforce: each agent's
+`budget` (`orchestrator`) and the app's `rate_limit` (`ingestion`).
+`ingestion`, `orchestrator` and
 `tool-gateway` resolve "what am I allowed to do for this `app_id`" by
 asking `registry` (cached 30s), never by hardcoding it; `memory-store` reads
 only the app's `memory_namespace`. This is what makes adding app #2
@@ -206,25 +218,31 @@ confidence, and every agent's tool calls — ADR-0023), and `POST
 /cases/{id}/verdict` — `CONFIRMED_INCIDENT` / `CONFIRMED_NOISE`,
 `verdict_by`, and optional `resolution_notes` (what actually fixed it) —
 which moves the case `OPEN` → `RESOLVED` once and publishes
-`verdict.recorded` back onto Kafka. `resolution_notes` stays on the case;
-it reaches future agents via `similar-past-case-lookup`.
+`verdict.recorded` back onto Kafka — from Day 15 by writing a
+`verdict_outbox` row in the same transaction for the `outbox-relay` to
+publish (ADR-0024), so a Kafka outage no longer refuses a verdict.
+`resolution_notes` stays on the case; it reaches future agents via
+`similar-past-case-lookup`.
 
-### Celery workers
-Scheduled background work, with Redis as the broker and `celery-beat` as
-the scheduler. Two jobs: the **outbox relay** (Days 15–16) — every ~1s,
-publishes pending `outbox` rows to `alert.received`, or to
-`alert.received.dlq` after repeated message-specific failures — and **batch
-re-evaluation** against the eval fixture set (Day 25), nightly and on
-demand. The relay is the one place Celery sits on the alert path: it adds
-up to one relay interval of latency per alert, in exchange for no alert
-being lost during a Kafka outage (`ARCHITECTURE.md` §10).
+### `outbox-relay` worker
+One small asyncio process (Days 15–16, ADR-0030), not a platform service:
+no API beyond health checks. It publishes pending `outbox` rows to
+`alert.received`, or to `alert.received.dlq` after repeated
+message-specific failures, and pending `verdict_outbox` rows to
+`verdict.recorded` in the same loop (ADR-0024). A Postgres advisory lock
+keeps exactly one instance draining, so one key's messages stay in order.
+It's the one background piece on the alert path: it adds up to one poll
+interval (0.5s) of latency per alert when idle, in exchange for no alert
+or verdict being lost during a Kafka outage (`ARCHITECTURE.md` §10). The
+nightly batch re-evaluation (Day 25) isn't here: it's a script run by a
+Kubernetes `CronJob`.
 
 ---
 
 ## Data plane
 
 ### Kafka
-The event backbone connecting `ingestion` (via the Celery outbox relay),
+The event backbone connecting `ingestion` (via the `outbox-relay` worker),
 `orchestrator`, `review-console`, and `memory-store` (which reads
 `alert.decided` in its own consumer group). Four topics:
 `alert.received`, `alert.decided` (both protobuf-encoded
@@ -241,16 +259,19 @@ not five disjoint ones.
 `memory-store`'s hot-path cache of each alert key's recent events
 (`mem:{memory_namespace}:{alert_key}:events`, a 7-day sorted set, plus
 `:facts`), `orchestrator`'s
-per-app/agent budget counters (`budget:{app_id}:{agent_id}:{date}`) and
-dedupe markers (`seen:{app_id}:{alert_id}`), `ingestion`'s rate-limit
-counters, and Celery's broker (task queue, in a separate Redis DB index).
+per-app/agent daily token counters (`budget:{app_id}:{agent_id}:{date}`)
+and, from Day 16, dedupe markers (`seen:{app_id}:{alert_id}`),
+`ingestion`'s per-minute rate-limit counters
+(`ratelimit:{app_id}:{minute}`, `…:src:{source}:{minute}`). Budgets
+and rate limits aren't enforced while Redis is down; the run or event
+goes ahead.
 
 ### Postgres
-Single local instance, five concerns: `cases` (review-console, app-scoped),
+Single local instance: `cases` (review-console, app-scoped),
 `memory_events` (memory-store's event log, app-scoped), `apps` and `tools`
 (registry's App Manifests and tool registrations), and, from Day 15,
-`outbox` (ingestion's pending Kafka publishes, drained by the Celery
-relay).
+`outbox` (ingestion's pending Kafka publishes) and `verdict_outbox`
+(review-console's), both drained by the `outbox-relay` worker.
 
 ---
 

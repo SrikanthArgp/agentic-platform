@@ -16,7 +16,8 @@ Rules:
   that covers it and deleted, so each file describes the system as it is.
   Retired so far: 0013 (tool hot-reload, rejected; its reasoning is in
   0014), 0015 (OpenAI provider; now part of 0022), 0021 (guardrails read
-  the envelope; now part of 0010).
+  the envelope; now part of 0010), 0008 (outbox with a Celery relay;
+  now part of 0030).
 - Status is one of `Proposed`, `Accepted`, `Superseded`, `Rejected`.
 - Upcoming ADRs (identity, data classification, model gateway, ITSM
   integration, credentials, org tenancy) are listed per area in
@@ -32,7 +33,6 @@ Rules:
 | [0005](0005-deterministic-delegation.md) | One-level, manifest-declared agent delegation (`invoke_on`) | Accepted |
 | [0006](0006-manifest-in-git.md) | App Manifest source of truth in git, registered by script | Accepted |
 | [0007](0007-event-envelope-and-payload.md) | Generic envelope + `Struct` payload; `alert_key` built by `ingestion` | Accepted |
-| [0008](0008-outbox-with-celery-relay.md) | Transactional outbox with a Celery relay, Redis as broker | Accepted |
 | [0009](0009-fixture-backed-tools.md) | Fixture-backed tools in this build; real connectors are phase two | Accepted |
 | [0010](0010-escalation-guardrails.md) | Deterministic `escalate_when` guardrails (`alert.*`, `payload.*`, `context.*`) against prompt injection | Accepted |
 | [0011](0011-resolution-notes-on-cases.md) | Fixes recorded on cases (`resolution_notes`), not in memory | Accepted |
@@ -45,9 +45,10 @@ Rules:
 | [0020](0020-supervisor-confidence.md) | Supervisor confidence = the agent's own estimate, capped by fixed rules | Accepted |
 | [0022](0022-langgraph-agent-framework.md) | OpenAI (`gpt-5.4-mini`) via LangChain inside a LangGraph run graph | Accepted |
 | [0023](0023-decision-carries-alert-and-full-tool-trace.md) | `alert.decided` carries the alert and every agent's tool calls | Accepted |
-| [0024](0024-verdicts-through-the-outbox.md) | `review-console` writes verdicts to its own outbox, drained by the ADR-0008 relay | Accepted |
+| [0024](0024-verdicts-through-the-outbox.md) | `review-console` writes verdicts to its own outbox, drained by the ADR-0030 relay | Accepted |
 | [0025](0025-tool-resilience-in-tool-gateway.md) | Tool timeout, retry and circuit breaker live in `tool-gateway`, per tool | Accepted |
 | [0026](0026-tool-version-resolution.md) | Tool versions are pinned or `latest`; `tool-gateway` refuses a version it didn't load | Accepted |
 | [0027](0027-global-tools-scoped-by-run-context.md) | Global tools read their scope from the run context; `alert_key` joins it | Accepted |
 | [0028](0028-prefetched-tools.md) | Manifest-declared `prefetch_tools`, run by `orchestrator` before the agent's loop | Accepted |
 | [0029](0029-token-budgets-and-rate-limits.md) | Daily token budgets per agent; per-minute rate limits per app and source | Accepted |
+| [0030](0030-outbox-with-dedicated-relay.md) | Transactional outbox drained by a dedicated `outbox-relay` worker (replaces the Celery relay) | Accepted |
