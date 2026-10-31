@@ -2,7 +2,7 @@
 
 Memory is an event log: every decision and every analyst verdict for an
 `alert_key` is one `Event`. `GetContext` counts are computed by
-`build_context()` from the last 7 days of events plus two all-time
+`build_context()` from the last 7 days of events plus three all-time
 facts, whether those came from Redis or from Postgres, so the cache and the
 rebuild can't disagree.
 
@@ -50,14 +50,22 @@ class Facts:
 
     seen: bool = False
     confirmed_incident: bool = False
+    # ADR-0031: what an opt-in supervisor rule needs before a SUPPRESS stands.
+    confirmed_noise: bool = False
 
     @classmethod
     def from_events(cls, events: Iterable[Event]) -> "Facts":
-        seen = confirmed = False
+        seen = incident = noise = False
         for e in events:
             seen = seen or e.family == DECISION
-            confirmed = confirmed or e.kind == CONFIRMED_INCIDENT
-        return cls(seen=seen, confirmed_incident=confirmed)
+            incident = incident or e.kind == CONFIRMED_INCIDENT
+            noise = noise or e.kind == CONFIRMED_NOISE
+        return cls(seen=seen, confirmed_incident=incident, confirmed_noise=noise)
+
+    @classmethod
+    def of(cls, event: Event) -> "Facts":
+        """The facts one new event establishes on its own."""
+        return cls.from_events([event])
 
 
 def decision_event(response: agent_pb2.RunAgentResponse, at_ms: int) -> Event:
@@ -102,4 +110,5 @@ def build_context(
         window_7d=aggregate(events, now_ms, WINDOWS_MS["7d"]),
         is_novel_alert=not facts.seen,
         has_confirmed_incident_history=facts.confirmed_incident,
+        has_confirmed_noise_history=facts.confirmed_noise,
     )

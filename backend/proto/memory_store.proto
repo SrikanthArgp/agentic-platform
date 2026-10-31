@@ -46,4 +46,11 @@ message GetContextResponse {
   // verdict.recorded events). Kept alongside the windowed counts because
   // one real incident long ago should still argue against SUPPRESS.
   bool has_confirmed_incident_history = 7;
+
+  // True if a confirmed-noise verdict has ever been recorded for this
+  // alert_key, regardless of window (ADR-0031). The evidence an opt-in
+  // supervisor rule (manifest supervisor.suppress_requires_noise_verdict)
+  // asks for before it lets a SUPPRESS stand: a recurring job's earlier
+  // verdicts can be older than every window.
+  bool has_confirmed_noise_history = 8;
 }

@@ -221,7 +221,21 @@ def test_rejected_manifest_is_not_stored(registered):
 
 def test_supervisor_min_confidence_is_stored_and_served(registered):
     assert registered.put(APP_URL, json=manifest(supervisor={"min_confidence": 0.75})).status_code == 201
-    assert registered.get(APP_URL).json()["supervisor"] == {"min_confidence": 0.75}
+    assert registered.get(APP_URL).json()["supervisor"] == {
+        "min_confidence": 0.75, "suppress_requires_noise_verdict": False,
+    }
+
+
+def test_supervisor_suppress_requires_noise_verdict_is_stored_and_served(registered):
+    m = manifest(supervisor={"min_confidence": 0.6, "suppress_requires_noise_verdict": True})
+    assert registered.put(APP_URL, json=m).status_code == 201
+    assert registered.get(APP_URL).json()["supervisor"]["suppress_requires_noise_verdict"] is True
+
+
+@pytest.mark.parametrize("value", ["yes", 1, None])
+def test_supervisor_suppress_requires_noise_verdict_must_be_a_boolean(registered, value):
+    m = manifest(supervisor={"suppress_requires_noise_verdict": value})
+    assert registered.put(APP_URL, json=m).status_code == 422
 
 
 def test_supervisor_is_optional_and_served_as_null(registered):

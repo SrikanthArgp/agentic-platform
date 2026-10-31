@@ -1,6 +1,6 @@
 # Build Plan: 27-Day Sequence
 
-Status: Days 1–16 done; Day 17 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
+Status: Days 1–17 done; Day 18 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
 
 Service map this plan assumes (see `docs/ARCHITECTURE.md` for full rationale): `ingestion`, `orchestrator`, `memory-store`, `review-console`, `registry`, `tool-gateway`, plus the `outbox-relay` worker (Day 15, ADR-0030). The platform is multi-app: three configurable use cases (products) run on the same shared core, each registered as an **App Manifest** in `registry` (introduced Day 5) rather than hardcoded. App #1 / reference domain adapter: IT ops alert triage (`it-ops-triage`; `ingestion` accepts alerts; `orchestrator`'s agent decides auto-resolve / escalate / suppress-as-noise). App #2 is **cloud cost-anomaly triage** (`cost-anomaly-triage`): a spend-spike alert from a cloud billing/cost tool. App #3 is **security alert triage** (`security-alert-triage`): SIEM/EDR alerts. All three use the same `AUTO_RESOLVE` / `ESCALATE` / `SUPPRESS` decision enum from `agent.proto` — apps that need a different decision vocabulary would require a proto change and are out of scope. App #2 gets a first cut on Day 13 and is finished Day 17; a local Kubernetes cluster is stood up on Days 18–19 (ADR-0014), and app #3 is built Day 20 and shipped to it by rolling update. Agent-to-agent (A2A) communication between apps is explicitly out of scope — apps are isolated tenants sharing infrastructure (Kafka/gRPC/REST/MCP transports), not a mesh. A "tenant" is an app; there is no per-customer tenancy in this build.
 
@@ -452,7 +452,7 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 ---
 
-### Day 17 — Finish app #2 + platform-core review
+### Day 17 — Finish app #2 + platform-core review ✅
 
 **Goal**: `cost-anomaly-triage` is a real adapter, and the platform-core-vs-adapter boundary is checked in code, not just asserted.
 
@@ -462,6 +462,28 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 - **Unit tests**: `cost-anomaly-triage` prompt assembly and guardrails, recurring-spike suppression against seeded history.
 
 **Definition of done**: a seeded monthly batch-job spike is `SUPPRESS`ed with a reason citing its history, while a novel spike on another `service:region` is `ESCALATE`d; the core-vs-adapter review finds no app-specific code in platform services (or fixes what it finds).
+
+**As built** (notes for later days):
+- **Two design calls** (made with the user before building):
+  - **Monthly history comes from past cases, not memory.** `GetContext`'s windows stop at 7 days, so a monthly job's earlier runs never show in them. The prefetched `similar-past-case-lookup` (ADR-0028) already gives the agent resolved cases with their verdicts and notes.
+  - **The jump guardrail is a payload field.** Guardrails match exact values only, so the detector grades the jump itself: optional `anomaly_level: low|high|extreme`, rule `payload.anomaly_level in [extreme]`. Numeric operators were left for a later ADR.
+- **Platform-core review**: no leaks. A scan of every service, the worker and `ap-shared` (non-test code) for app ids, agent names, tool names, domain terms (`disk_full`, runbook, billing, checkout, SIEM, FinOps…) and payload field names (`alert_type`, `observed_cost`…) found only docstring examples (`tool-gateway`'s `loader.py`, `faults.py`; `ingestion`'s severity example) and a false positive (`_LockedRow`). There are no hard-coded app lists, and `orchestrator`'s shared prompt text is domain-neutral.
+- **`cost-anomaly-triage`** (all under its folder):
+  - schema gains `anomaly_level`;
+  - manifest gets the second guardrail and agent `0.2.0`;
+  - prompt step 4: SUPPRESS needs ≥2 `CONFIRMED_NOISE` past cases for the same scheduled job, no incident, and owned and scheduled tagged spend. "Tags alone never justify SUPPRESS"; `found: false` means ESCALATE;
+  - `billing.json` gains `reporting-svc`/`us-east-2`, the same tagged monthly EMR batch on 10-01 ($884.30 of $986.90) but no history: the novel key for the contrast. There are 168 line items.
+- `seed.py --app-id cost-anomaly-triage`: three resolved `CONFIRMED_NOISE` cases on `checkout-svc:us-east-1` (2026-07-01, 08-01, 09-01, `verdict_by: seed`, notes on the reconciliation batch), each with its `decision:ESCALATE` and `verdict:CONFIRMED_NOISE` memory events. `--reset` removes seeded cases too.
+- **Found live, fixed with ADR-0031** (user's call, mid-day). After the stricter prompt wording, the agent still suppressed a *repeat* spike on `reporting-svc:us-east-2` (no verdicts, schedule tags only) in 1 of 3 runs. It quoted the rule and overrode it ("however, the strongest evidence here is the scheduled monthly job"). Only the *first* alert on a key was safe, through the novel-key cap. Now:
+  - `memory-store` keeps an all-time `confirmed_noise` fact (`GetContextResponse.has_confirmed_noise_history`, field 8). The Redis facts hash's `loaded` marker became cache version `2`, so pre-change entries rebuild.
+  - The supervisor caps a SUPPRESS at 0.3 on a key without it, when the manifest sets `supervisor.suppress_requires_noise_verdict: true`. `registry` accepts only a JSON boolean, default false; the served `supervisor` block now always includes the flag.
+  - Only the cost app opts in. `it-ops-triage` suppresses unreviewed flapping noise and would change wholesale.
+  - `context.has_confirmed_noise_history` is also usable in any app's `escalate_when`, because `registry` walks the proto descriptor.
+- **Live**, after `up --build`, re-registering both apps and the seed (memory context: `checkout-svc` known with noise history; `reporting-svc` novel, then known without):
+  - recurring `checkout-svc` spike for 2026-10-01 → `SUPPRESS` on **7 of 7** runs (confidence 0.95–0.98), reasons citing cases 94–96 by date, `emr-recon-202610` and $1,146.90 of $1,568.05;
+  - `reporting-svc` spike → `ESCALATE` on **7 of 7**. The first was novel (the agent suppressed; the novel-key cap escalated). Before ADR-0031, one repeat run was suppressed by the agent with nothing to stop it. After it, the agent suppressed again on 1 of 3 and the new cap escalated it ("capped at 0.30: no analyst has ever confirmed noise on this alert_key, and this app requires that before a SUPPRESS"); the other two escalated on their own;
+  - `anomaly_level: extreme` on the recurring key → `ESCALATE` on 2 of 2 via `escalate_when[1]` ("SUPPRESS changed to ESCALATE").
+- Tests: `orchestrator` 252 (+17: `test_cost_anomaly_app.py` on the real manifest and prompt, +supervisor cases), `ingestion` 70 (+5, `anomaly_level`), `registry` 107 (+4), `memory-store` 64 (+3, plus the Postgres integration check of an old noise verdict), `tool-gateway` 131 (+1, `reporting-svc`); the rest unchanged. Integration green in all six projects. `orchestrator` gained `pyyaml` as a dev dependency.
 
 ---
 

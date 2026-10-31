@@ -64,6 +64,8 @@ the platform (same alert_key), over the last 1h, 24h and 7d:
   verdicts on earlier alerts. They are evidence.
   `has_confirmed_incident_history` means an analyst once confirmed a real
   incident on this alert_key; it weighs against SUPPRESS.
+  `has_confirmed_noise_history` means an analyst once confirmed an alert on
+  this alert_key was noise, at any time, even beyond the 7-day window.
 - `is_novel_alert` means the platform has never seen this alert_key before.
 - If the block says the context is unavailable, decide without it.
 

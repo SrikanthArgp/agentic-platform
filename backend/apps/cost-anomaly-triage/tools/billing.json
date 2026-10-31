@@ -1648,5 +1648,283 @@
    "owner": "search",
    "env": "prod"
   }
+ },
+ {
+  "date": "2026-09-28",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "i-0rpt01",
+  "resource_type": "ec2:m6i.large",
+  "cost_usd": 40.2,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-28",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "db-reporting-prod",
+  "resource_type": "rds:db.r6g.large",
+  "cost_usd": 62.4,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-29",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "i-0rpt01",
+  "resource_type": "ec2:m6i.large",
+  "cost_usd": 40.2,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-29",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "db-reporting-prod",
+  "resource_type": "rds:db.r6g.large",
+  "cost_usd": 62.4,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-30",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "i-0rpt01",
+  "resource_type": "ec2:m6i.large",
+  "cost_usd": 40.2,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-09-30",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "db-reporting-prod",
+  "resource_type": "rds:db.r6g.large",
+  "cost_usd": 62.4,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-01",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "i-0rpt01",
+  "resource_type": "ec2:m6i.large",
+  "cost_usd": 40.2,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-01",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "db-reporting-prod",
+  "resource_type": "rds:db.r6g.large",
+  "cost_usd": 62.4,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-01",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "emr-export-202610",
+  "resource_type": "emr:cluster",
+  "cost_usd": 884.3,
+  "tags": {
+   "owner": "analytics",
+   "job": "monthly-export",
+   "schedule": "monthly",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-02",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "i-0rpt01",
+  "resource_type": "ec2:m6i.large",
+  "cost_usd": 40.2,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-02",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "db-reporting-prod",
+  "resource_type": "rds:db.r6g.large",
+  "cost_usd": 62.4,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-03",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "i-0rpt01",
+  "resource_type": "ec2:m6i.large",
+  "cost_usd": 40.2,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-03",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "db-reporting-prod",
+  "resource_type": "rds:db.r6g.large",
+  "cost_usd": 62.4,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-04",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "i-0rpt01",
+  "resource_type": "ec2:m6i.large",
+  "cost_usd": 40.2,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-04",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "db-reporting-prod",
+  "resource_type": "rds:db.r6g.large",
+  "cost_usd": 62.4,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-05",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "i-0rpt01",
+  "resource_type": "ec2:m6i.large",
+  "cost_usd": 40.2,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-05",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "db-reporting-prod",
+  "resource_type": "rds:db.r6g.large",
+  "cost_usd": 62.4,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-06",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "i-0rpt01",
+  "resource_type": "ec2:m6i.large",
+  "cost_usd": 40.2,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-06",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "db-reporting-prod",
+  "resource_type": "rds:db.r6g.large",
+  "cost_usd": 62.4,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-07",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "i-0rpt01",
+  "resource_type": "ec2:m6i.large",
+  "cost_usd": 40.2,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-07",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "db-reporting-prod",
+  "resource_type": "rds:db.r6g.large",
+  "cost_usd": 62.4,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-08",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "i-0rpt01",
+  "resource_type": "ec2:m6i.large",
+  "cost_usd": 40.2,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
+ },
+ {
+  "date": "2026-10-08",
+  "service": "reporting-svc",
+  "region": "us-east-2",
+  "resource_id": "db-reporting-prod",
+  "resource_type": "rds:db.r6g.large",
+  "cost_usd": 62.4,
+  "tags": {
+   "owner": "analytics",
+   "env": "prod"
+  }
  }
 ]

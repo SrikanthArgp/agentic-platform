@@ -80,6 +80,8 @@ class SupervisorSpec(BaseModel):
 
     # None: orchestrator's MIN_CONFIDENCE default (docs/adr/0020).
     min_confidence: float | None = Field(default=None, ge=0, le=1)
+    # ADR-0031: a SUPPRESS needs a confirmed-noise verdict on the key, ever.
+    suppress_requires_noise_verdict: bool = False
 
 
 class AppManifest(BaseModel):
@@ -105,6 +107,9 @@ class AppManifest(BaseModel):
     def min_confidence(self, default: float) -> float:
         value = self.supervisor.min_confidence if self.supervisor else None
         return default if value is None else value
+
+    def suppress_requires_noise_verdict(self) -> bool:
+        return bool(self.supervisor and self.supervisor.suppress_requires_noise_verdict)
 
     def agent(self, agent_id: str) -> AgentSpec:
         """The named agent, or the app's entry agent when `agent_id` is empty."""

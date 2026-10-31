@@ -3,8 +3,8 @@
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
 
-from app.core.events import CONFIRMED_INCIDENT, Event, Facts
-from app.redis.cache import MemoryCache
+from app.core.events import CONFIRMED_INCIDENT, CONFIRMED_NOISE, Event, Facts
+from app.redis.cache import CACHE_VERSION, MemoryCache
 from registry_client import AppNotFoundError, RegistryUnavailableError
 from tests.conftest import APP_ID, H, KEY, NAMESPACE, NOW, decision
 
@@ -27,6 +27,24 @@ async def test_fill_then_read_round_trips(redis):
     got_events, facts = await cache.read(NAMESPACE, KEY, NOW)
     assert sorted(got_events, key=lambda e: e.ref_id) == events
     assert facts == Facts(seen=True)
+
+
+async def test_noise_fact_round_trips_and_a_new_verdict_sets_it(redis):
+    cache = MemoryCache(redis)
+    await cache.fill(NAMESPACE, KEY, [], Facts(seen=True, confirmed_noise=True))
+    assert (await cache.read(NAMESPACE, KEY, NOW))[1] == Facts(seen=True, confirmed_noise=True)
+
+    other = MemoryCache(redis)
+    await other.fill(NAMESPACE, "other", [], Facts(seen=True))
+    await other.add(NAMESPACE, "other", Event(CONFIRMED_NOISE, "case-7", NOW - 1000), NOW)
+    assert (await other.read(NAMESPACE, "other", NOW))[1] == Facts(seen=True, confirmed_noise=True)
+
+
+async def test_entry_cached_before_the_noise_fact_is_a_miss(redis):
+    """Written by the previous version (loaded=1, no confirmed_noise field):
+    rebuilt from Postgres instead of reading the new fact as false."""
+    await redis.hset(f"mem:{NAMESPACE}:{KEY}:facts", mapping={"seen": "1", "loaded": "1"})
+    assert await MemoryCache(redis).read(NAMESPACE, KEY, NOW) is None
 
 
 async def test_read_trims_events_older_than_seven_days(redis):
@@ -74,7 +92,7 @@ async def test_miss_falls_back_to_postgres_and_repopulates(service, store, redis
     assert store.loads == 1
     assert (first.window_1h.alert_count, first.window_24h.alert_count) == (1, 2)
     assert first.is_novel_alert is False
-    assert await redis.hget(f"mem:{NAMESPACE}:{KEY}:facts", "loaded") == "1"
+    assert await redis.hget(f"mem:{NAMESPACE}:{KEY}:facts", "loaded") == CACHE_VERSION
 
     second = await service.get_context(APP_ID, KEY)
     assert store.loads == 1  # served from Redis

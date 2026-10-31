@@ -40,7 +40,10 @@ below are illustrative, not measured.
   has stopped trusting them, and a forgotten GPU cluster burned $60k
   before anyone noticed.
 - **What the platform does**:
-  - suppresses recurring known spikes using memory of past cycles
+  - suppresses recurring known spikes once an analyst has confirmed them as
+    noise (past cases with their verdicts, e.g. last month's batch run);
+    a spike whose only evidence is a `schedule` tag is escalated until
+    someone confirms it once (ADR-0031)
   - escalates new spending patterns with a per-service/resource/tag
     breakdown (`billing-lookup`) and similar past cases
 - **Business case**: runaway spend is caught within hours, not at

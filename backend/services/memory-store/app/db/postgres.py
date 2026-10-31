@@ -9,7 +9,7 @@ from typing import Protocol
 
 import asyncpg
 
-from app.core.events import CONFIRMED_INCIDENT, DECISION, Event, Facts
+from app.core.events import CONFIRMED_INCIDENT, CONFIRMED_NOISE, DECISION, Event, Facts
 
 
 class EventStore(Protocol):
@@ -56,8 +56,9 @@ class PostgresEventStore:
             facts = await conn.fetchrow(
                 "SELECT "
                 "EXISTS (SELECT 1 FROM memory_events WHERE app_id = $1 AND alert_key = $2 AND family = $3) AS seen, "
-                "EXISTS (SELECT 1 FROM memory_events WHERE app_id = $1 AND alert_key = $2 AND kind = $4) AS confirmed",
-                app_id, alert_key, DECISION, CONFIRMED_INCIDENT,
+                "EXISTS (SELECT 1 FROM memory_events WHERE app_id = $1 AND alert_key = $2 AND kind = $4) AS confirmed, "
+                "EXISTS (SELECT 1 FROM memory_events WHERE app_id = $1 AND alert_key = $2 AND kind = $5) AS noise",
+                app_id, alert_key, DECISION, CONFIRMED_INCIDENT, CONFIRMED_NOISE,
             )
         events = [Event(kind=r["kind"], ref_id=r["ref_id"], at_ms=_ms(r["occurred_at"])) for r in rows]
-        return events, Facts(seen=facts["seen"], confirmed_incident=facts["confirmed"])
+        return events, Facts(seen=facts["seen"], confirmed_incident=facts["confirmed"], confirmed_noise=facts["noise"])

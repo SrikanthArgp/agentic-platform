@@ -167,6 +167,8 @@ def test_real_cost_app_accepts_a_spend_spike_keyed_by_service_and_region():
         {"window_end": "2026-10-06"},
         {"window_end": "2026-10-06T00:00:00"},
         {"tags": {"team": 5}},
+        {"anomaly_level": "huge"},
+        {"anomaly_level": 3},
     ],
     ids=lambda c: next(iter(c)) + ("-missing" if next(iter(c.values())) is None else "-invalid"),
 )
@@ -178,6 +180,16 @@ def test_real_cost_app_rejects_a_malformed_spike(change):
 
     assert response.status_code == 422, response.text
     assert outbox.rows == []
+
+
+@pytest.mark.parametrize("level", ["low", "high", "extreme"])
+def test_real_cost_app_accepts_each_anomaly_level(level):
+    client_, outbox = _real_cost_app()
+    response = client_.post(f"/apps/{COST_APP}/events", json=alert_body(payload={**SPIKE, "anomaly_level": level}))
+
+    assert response.status_code == 202, response.text
+    message = agent_pb2.RunAgentRequest.FromString(outbox.rows[0].payload)
+    assert message.payload["anomaly_level"] == level
 
 
 def test_an_it_ops_payload_is_rejected_by_the_cost_app():

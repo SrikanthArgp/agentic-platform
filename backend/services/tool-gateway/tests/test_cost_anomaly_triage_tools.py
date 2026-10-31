@@ -41,6 +41,19 @@ async def test_monthly_batch_day_shows_the_tagged_emr_cluster(billing_lookup):
     assert out["untagged_cost_usd"] == 0
 
 
+async def test_novel_key_has_the_same_shape_of_tagged_monthly_batch(billing_lookup):
+    """Day 17's contrast for checkout-svc: same tags claiming a monthly job,
+    but no past cases on reporting-svc:us-east-2 to confirm them."""
+    out = await lookup(billing_lookup, "reporting-svc", "us-east-2", "2026-10-01T00:00:00Z", "2026-10-02T00:00:00Z")
+
+    assert out["total_cost_usd"] == pytest.approx(40.20 + 62.40 + 884.30)
+    top = out["by_resource"][0]
+    assert (top["resource_id"], top["tags"]["schedule"]) == ("emr-export-202610", "monthly")
+    assert out["untagged_cost_usd"] == 0
+    normal = await lookup(billing_lookup, "reporting-svc", "us-east-2", "2026-10-02T00:00:00Z", "2026-10-03T00:00:00Z")
+    assert normal["total_cost_usd"] == pytest.approx(40.20 + 62.40)
+
+
 async def test_runaway_gpu_spend_is_untagged(billing_lookup):
     out = await lookup(billing_lookup, "ml-platform", "eu-west-1", "2026-10-05T00:00:00Z", "2026-10-06T00:00:00Z")
 

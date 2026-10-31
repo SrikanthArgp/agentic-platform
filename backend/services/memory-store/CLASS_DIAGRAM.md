@@ -1,12 +1,13 @@
 # memory-store — class diagram
 
-As built through Day 14 of `docs/plan.md` (unchanged since Day 10; since
+As built through Day 17 of `docs/plan.md` (Day 17: a third all-time fact,
+`confirmed_noise`, served as `has_confirmed_noise_history`, ADR-0031; since
 Day 13 it holds `cost-anomaly-triage`'s history too, under its own
-namespace, with no code change). `memory-store` answers one
+namespace). `memory-store` answers one
 question for `orchestrator`: *what has this platform seen and decided for
 this `alert_key` lately, and what did analysts say about it?* It serves
 gRPC `GetContext` (1h/24h/7d decision and verdict counts, `is_novel_alert`,
-`has_confirmed_incident_history`), built from an event log it fills by
+`has_confirmed_incident_history`, `has_confirmed_noise_history`), built from an event log it fills by
 consuming `alert.decided` (ADR-0016, ADR-0017) and, since Day 10,
 `verdict.recorded`.
 
@@ -131,7 +132,9 @@ classDiagram
             <<frozen dataclass>>
             +seen: bool
             +confirmed_incident: bool
+            +confirmed_noise: bool
             +from_events(events)$ Facts
+            +of(event)$ Facts
         }
         class events {
             <<module: app.core.events>>
@@ -170,6 +173,7 @@ classDiagram
             +window_1h, window_24h, window_7d: ContextAggregate
             +is_novel_alert: bool
             +has_confirmed_incident_history: bool
+            +has_confirmed_noise_history: bool
         }
         class ContextAggregate { <<proto: memory_store.proto>> }
         class RunAgentResponse {
@@ -240,9 +244,12 @@ point at the Compose stack from the host.
   the part of `kind` before `:`; (`app_id`, family, `ref_id`) is unique.
 - `at_ms`: when it happened (the Kafka message timestamp, for both kinds).
 
-**`Facts`**: the two all-time facts that outlive the 7-day window: `seen`
-(any decision ever) and `confirmed_incident` (any confirmed-incident
-verdict ever).
+**`Facts`**: the three all-time facts that outlive the 7-day window: `seen`
+(any decision ever), `confirmed_incident` (any confirmed-incident verdict
+ever) and `confirmed_noise` (any confirmed-noise verdict ever, ADR-0031: a
+monthly job's verdicts are older than every window, and an app can require
+one before a SUPPRESS stands). `Facts.of(event)` is what one new event
+establishes on its own (the cache's `add`).
 
 **Window maths** (module functions):
 - `aggregate(events, now_ms, window_ms)` counts one window, `(now − w,
@@ -252,7 +259,8 @@ verdict ever).
   (`DECISION_UNSPECIFIED`) count as alerts only.
 - `build_context(...)` builds the full `GetContextResponse`: the three
   windows, `is_novel_alert = not facts.seen`,
-  `has_confirmed_incident_history = facts.confirmed_incident`.
+  `has_confirmed_incident_history = facts.confirmed_incident`,
+  `has_confirmed_noise_history = facts.confirmed_noise`.
 - `decision_event(response, at_ms)` turns an `alert.decided` message into
   an `Event`.
 
@@ -287,10 +295,12 @@ verdict ever).
 | Key | Type | Content |
 |---|---|---|
 | `mem:{ns}:{key}:events` | sorted set | member `{kind}\|{ref_id}`, score = `at_ms`; last 7 days |
-| `mem:{ns}:{key}:facts` | hash | `seen`, `confirmed_incident` (present only when true), `loaded` |
+| `mem:{ns}:{key}:facts` | hash | `seen`, `confirmed_incident`, `confirmed_noise` (present only when true), `loaded` = `CACHE_VERSION` (`2`) |
 
 - `read` trims events older than 7 days, then returns events + facts, or
-  `None` when `loaded` is absent (a miss).
+  `None` when `loaded` isn't the current `CACHE_VERSION` (a miss). The
+  version went from `1` to `2` with `confirmed_noise`, so an entry cached
+  before that is rebuilt instead of reading the new fact as false.
 - `fill` stores a Postgres rebuild and sets `loaded`.
 - `add` adds one event, trims, and sets any fact it makes true.
 - `invalidate` deletes both keys.
@@ -359,7 +369,7 @@ sequenceDiagram
     K->>C: RunAgentResponse (decision) or verdict JSON, timestamp
     C->>S: record(app_id, alert_key, Event)
     S->>P: INSERT ... ON CONFLICT DO NOTHING
-    S->>R: ZADD, trim, HSET seen / confirmed_incident, EXPIRE
+    S->>R: ZADD, trim, HSET seen / confirmed_incident / confirmed_noise, EXPIRE
     C->>K: commit offset
 ```
 

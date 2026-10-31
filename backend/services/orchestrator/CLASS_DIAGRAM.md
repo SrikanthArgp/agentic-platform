@@ -1,6 +1,7 @@
 # orchestrator — class diagram
 
-As built through Day 16 of `docs/plan.md` (Day 12: a per-call MCP timeout
+As built through Day 17 of `docs/plan.md` (Day 17: the opt-in
+noise-verdict supervisor cap, ADR-0031; Day 12: a per-call MCP timeout
 and the new infra tool errors; Day 13: `prefetch_tools` and `alert_key` in
 the run context; Day 14: daily token budgets; Day 16: duplicate
 `alert.received` deliveries skipped). `orchestrator` runs the agents.
@@ -268,8 +269,8 @@ classDiagram
         }
         class supervisor {
             <<module: app.agent.supervisor>>
-            +caps(decision, context) list
-            +supervise(decision, agent_confidence, context, min_confidence) Supervised
+            +caps(decision, context, require_noise_verdict) list
+            +supervise(decision, agent_confidence, context, min_confidence, require_noise_verdict) Supervised
         }
         class Supervised {
             <<frozen dataclass>>
@@ -387,6 +388,7 @@ classDiagram
             +callables_for(decision) list~AgentSpec~
             +guardrails() list~Rule~
             +min_confidence(default) float
+            +suppress_requires_noise_verdict() bool
         }
         class AgentSpec {
             <<pydantic, extra=ignore>>
@@ -415,6 +417,7 @@ classDiagram
         class SupervisorSpec {
             <<pydantic>>
             +min_confidence: float? 0-1
+            +suppress_requires_noise_verdict: bool = false
         }
         class ResolutionError {
             <<exception: LookupError>>
@@ -562,7 +565,7 @@ flowchart LR
 |---|---|---|
 | `context` | `memory-store` `GetContext` once (span `memory.get_context`). A `ContextUnavailableError` isn't fatal. | `memory_context` (or `None`), a "memory context unavailable" platform reason |
 | `agent` | Builds `RunTools`, calls the agent's `prefetch_tools` (`RunTools.prefetch`), and runs `run_agent` with the entry rules and the prefetched results in the first message; records the tokens used (`record_usage`). Then: ran out of rounds, or an unparseable answer → ESCALATE with confidence 0; an infrastructure tool failure (prefetched calls included) → ESCALATE. | `decision`, `confidence`, `reasons`, `tool_calls`, token counts, platform reasons |
-| `supervisor` | `supervise()` with the manifest threshold or `RunDeps.default_min_confidence` | `decision`, `confidence`, its reason if it escalated |
+| `supervisor` | `supervise()` with the manifest threshold or `RunDeps.default_min_confidence`, and the manifest's `suppress_requires_noise_verdict` | `decision`, `confidence`, its reason if it escalated |
 | `guardrails` | `guardrails.evaluate()`; every match is a reason; forces ESCALATE if it wasn't already | `decision`, platform reasons |
 | `route_callables` (edge) | `AppManifest.callables_for(final decision)`; one `Send("callable", CallableTask)` each, or `"fold"` if none | — |
 | `callable` | Runs `explain()` under `asyncio.wait_for(CALLABLE_TIMEOUT_S)`. Success → reasons prefixed `"<agent_id>: "` plus any tool-failure reasons. Any failure → one `orchestrator: callable '<id>' didn't contribute (<why>).` reason (timeout, budget exceeded, LLM, parse, rounds, missing prompt; anything else is logged as "failed"). | `callable_results: [(index, reasons, tool_calls)]` (no calls on failure) |
@@ -725,7 +728,9 @@ Unchanged from Day 7 (ADR-0020, ADR-0010), now called from graph
 nodes.
 - **Supervisor**: confidence = min(agent's value, caps); the caps are no
   context 0.5, a novel key that isn't ESCALATE 0.5, and SUPPRESS with an
-  analyst-confirmed incident 0.3. Below the threshold, the decision becomes
+  analyst-confirmed incident 0.3; and, only when the manifest sets
+  `supervisor.suppress_requires_noise_verdict` (ADR-0031), SUPPRESS on a
+  key without `has_confirmed_noise_history` 0.3. Below the threshold, the decision becomes
   ESCALATE.
 - **Guardrails**: `alert.*` / `payload.*` / `context.*` rules, matched
   type-strictly; a missing or non-scalar field never matches.
@@ -777,6 +782,9 @@ can price them.
   decision, in manifest order;
 - `guardrails()`;
 - `min_confidence(default)`.
+- `suppress_requires_noise_verdict()`: `False` when the manifest has no
+  `supervisor` block or doesn't set it (older manifests keep their
+  behaviour).
 
 **`AgentSpec`** also carries `prefetch_tools` (`registry` checked they're
 on the allowlist and callable with `{}`) and `budget`

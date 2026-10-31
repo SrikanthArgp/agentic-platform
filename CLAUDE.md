@@ -30,7 +30,7 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Days 1–16 of `docs/plan.md` are done (infra, contracts, skeletons;
+Days 1–17 of `docs/plan.md` are done (infra, contracts, skeletons;
 `tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core;
 `ingestion` and the end-to-end hot path; `registry` + App Manifest;
 `memory-store`; context, supervisor and guardrails in `orchestrator`;
@@ -38,8 +38,9 @@ callable agents; `review-console`; the verdict feedback loop; the Week 2
 integration pass; `tool-gateway` resilience; tool versions, the global
 `similar-past-case-lookup` and app #2's first cut; token budgets and rate
 limits; the outbox + the `outbox-relay` worker, for alerts and verdicts;
-DLQ, dedupe and the Kafka-outage test); Day 17 (finish app #2 +
-platform-core review) is next. As-built notes for each day are in `docs/plan.md`.
+DLQ, dedupe and the Kafka-outage test; app #2 finished and the
+platform-core review); Day 18 (Kubernetes, part 1: local kind cluster) is
+next. As-built notes for each day are in `docs/plan.md`.
 
 - All 6 services and the `outbox-relay` worker have a FastAPI app
   (`app/main.py`, `/healthz`), a `pyproject.toml`, a committed `uv.lock`,
@@ -80,12 +81,16 @@ platform-core review) is next. As-built notes for each day are in `docs/plan.md`
   only Postgres down → `503`, nothing committed.
 - `memory-store` serves gRPC `GetContext` (`:50051`, host `:50053`): 1h/24h/7d
   decision and verdict counts plus `is_novel_alert`/
-  `has_confirmed_incident_history` per `app_id` + `alert_key`. One consumer
+  `has_confirmed_incident_history`/`has_confirmed_noise_history` (all-time
+  facts, ADR-0031) per `app_id` + `alert_key`. One consumer
   (group `memory-store`) reads `alert.decided` and `verdict.recorded` into
   Postgres `memory_events` (an event log, ADR-0017) and caches the last 7
   days per key in Redis (`mem:{memory_namespace}:{alert_key}:*`); a miss
-  rebuilds from Postgres. `uv run backend/scripts/seed.py` seeds synthetic
-  it-ops history; `uv run backend/scripts/get_context.py KEY [--repeat N]`
+  rebuilds from Postgres (the facts hash's `loaded` marker is a cache
+  version, now `2`; older entries are rebuilt). `uv run backend/scripts/seed.py`
+  seeds synthetic it-ops history; `--app-id cost-anomaly-triage` seeds three
+  resolved `CONFIRMED_NOISE` cases (plus memory events) on
+  `checkout-svc:us-east-1`; `uv run backend/scripts/get_context.py KEY [--repeat N]`
   queries it.
 - `registry` (Postgres `tools`/`apps`, asyncpg) stores tool registrations
   and App Manifests, validates manifests on `PUT /apps/{app_id}`, and
@@ -141,7 +146,9 @@ platform-core review) is next. As-built notes for each day are in `docs/plan.md`
   contribute. After it, in order:
   the supervisor (agent's `confidence`, capped by fixed rules, below the
   manifest's `supervisor.min_confidence` / default 0.6 → `ESCALATE`,
-  ADR-0020), then the manifest's `escalate_when` guardrails (`alert.*`,
+  ADR-0020; with `supervisor.suppress_requires_noise_verdict: true` a
+  SUPPRESS on a key without `has_confirmed_noise_history` is capped at 0.3,
+  ADR-0031, opt-in: cost app only), then the manifest's `escalate_when` guardrails (`alert.*`,
   `payload.*`, `context.*`; a match → `ESCALATE`, named in `reasons[]`,
   ADR-0010). Both only ever move toward `ESCALATE`; memory down →
   the run continues without context and the supervisor escalates. A run
@@ -181,11 +188,16 @@ platform-core review) is next. As-built notes for each day are in `docs/plan.md`
   absolute timestamps around 2026-10-05, so set an alert's `timestamp` near
   one to see a change cited), a complete `manifest.yaml` (guardrail `alert.severity in
   [critical]`, `supervisor.min_confidence: 0.6`), `event_schema.json`, `prompts/triage-agent.md` and `prompts/root-cause-summarizer.md` (callable, `invoke_on: [ESCALATE]`).
-- `backend/apps/cost-anomaly-triage/` (app #2, first cut; finished Day 17):
-  `cost-triage-agent` with `billing-lookup` (`tools/billing.json`, daily
-  line items around 2026-10-01..08 for `checkout-svc`/`us-east-1`,
-  `ml-platform`/`eu-west-1`, `search-api`/`us-west-2`) and the global
-  `similar-past-case-lookup`; `alert_key` is `service:region`.
+- `backend/apps/cost-anomaly-triage/` (app #2, Days 13 and 17):
+  `cost-triage-agent` (0.2.0) with `billing-lookup` (`tools/billing.json`,
+  daily line items 2026-09-28..10-08 for `checkout-svc`/`us-east-1` (a
+  monthly EMR batch on the 1st), `ml-platform`/`eu-west-1`,
+  `search-api`/`us-west-2`, `reporting-svc`/`us-east-2` (the same tagged
+  monthly batch, no history)) and the global `similar-past-case-lookup`;
+  `alert_key` is `service:region`. Guardrails `alert.severity in [critical]`
+  and `payload.anomaly_level in [extreme]` (an optional payload field);
+  `suppress_requires_noise_verdict: true`. A recurring spike is suppressed
+  on past `CONFIRMED_NOISE` verdicts, never on tags alone.
 
 ## How each day's work is done
 

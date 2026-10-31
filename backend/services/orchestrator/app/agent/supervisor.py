@@ -12,6 +12,11 @@ past them:
 | memory context unavailable                                  | 0.5 |
 | `is_novel_alert` and the decision isn't ESCALATE           | 0.5 |
 | `has_confirmed_incident_history` and the decision is SUPPRESS | 0.3 |
+| the app requires a noise verdict (manifest `supervisor.suppress_requires_noise_verdict`), the decision is SUPPRESS, and not `has_confirmed_noise_history` | 0.3 |
+
+The last rule is opt-in per app (ADR-0031): it makes "only analyst
+verdicts are evidence of noise" (§13 T3) a deterministic check instead of
+a prompt rule the LLM can talk itself out of.
 """
 
 from dataclasses import dataclass
@@ -21,6 +26,7 @@ from proto_gen import agent_pb2, memory_store_pb2
 NO_CONTEXT_CAP = 0.5
 NOVEL_ALERT_CAP = 0.5
 CONFIRMED_INCIDENT_SUPPRESS_CAP = 0.3
+NO_NOISE_VERDICT_SUPPRESS_CAP = 0.3
 
 
 @dataclass(frozen=True)
@@ -32,7 +38,9 @@ class Supervised:
 
 
 def caps(
-    decision: agent_pb2.Decision, context: memory_store_pb2.GetContextResponse | None
+    decision: agent_pb2.Decision,
+    context: memory_store_pb2.GetContextResponse | None,
+    require_noise_verdict: bool = False,
 ) -> list[tuple[float, str]]:
     """(cap, why) for every rule that applies to this decision."""
     out = []
@@ -43,6 +51,11 @@ def caps(
             out.append((NOVEL_ALERT_CAP, "first time this alert_key is seen"))
         if context.has_confirmed_incident_history and decision == agent_pb2.SUPPRESS:
             out.append((CONFIRMED_INCIDENT_SUPPRESS_CAP, "an analyst confirmed a real incident on this alert_key"))
+        if require_noise_verdict and decision == agent_pb2.SUPPRESS and not context.has_confirmed_noise_history:
+            out.append((
+                NO_NOISE_VERDICT_SUPPRESS_CAP,
+                "no analyst has ever confirmed noise on this alert_key, and this app requires that before a SUPPRESS",
+            ))
     return out
 
 
@@ -51,8 +64,9 @@ def supervise(
     agent_confidence: float,
     context: memory_store_pb2.GetContextResponse | None,
     min_confidence: float,
+    require_noise_verdict: bool = False,
 ) -> Supervised:
-    applied = caps(decision, context)
+    applied = caps(decision, context, require_noise_verdict)
     confidence = min([agent_confidence, *(cap for cap, _ in applied)])
     if decision == agent_pb2.ESCALATE or confidence >= min_confidence:
         return Supervised(decision, confidence)

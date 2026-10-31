@@ -48,6 +48,11 @@
       "description": "What was actually spent in the window, in USD.",
       "type": "number",
       "minimum": 0
+    },
+    "anomaly_level": {
+      "description": "The detector's own grading of how far observed_cost is above baseline_cost. Optional. 'extreme' always escalates (the manifest's escalate_when guardrail), whatever the agent decides: a deterministic check the agent can't lower.",
+      "type": "string",
+      "enum": ["low", "high", "extreme"]
     }
   },
   "additionalProperties": true

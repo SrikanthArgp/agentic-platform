@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import pytest
 from fakeredis import FakeAsyncRedis
 
-from app.core.events import CONFIRMED_INCIDENT, DECISION, Event, Facts
+from app.core.events import CONFIRMED_INCIDENT, CONFIRMED_NOISE, DECISION, Event, Facts
 from app.core.service import MemoryService
 from app.redis.cache import MemoryCache
 from registry_client import AppNotFoundError, RegistryUnavailableError
@@ -40,6 +40,7 @@ class FakeStore:
         return sorted((e for e in mine if e.at_ms > since_ms), key=lambda e: e.at_ms), Facts(
             seen=any(e.family == DECISION for e in mine),
             confirmed_incident=any(e.kind == CONFIRMED_INCIDENT for e in mine),
+            confirmed_noise=any(e.kind == CONFIRMED_NOISE for e in mine),
         )
 
 

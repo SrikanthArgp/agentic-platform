@@ -140,7 +140,8 @@ arguments (ADR-0028), runs the agent's tool-calling loop
 (LangChain's prebuilt agent inside a LangGraph run graph, ADR-0022) against
 `tool-gateway` with that context in the prompt, applies the supervisor
 (the agent's confidence capped by fixed rules, against the manifest's
-threshold, ADR-0020) and the manifest's deterministic `escalate_when`
+threshold, ADR-0020; an app can require a confirmed-noise verdict on the
+key before any `SUPPRESS` stands, ADR-0031) and the manifest's deterministic `escalate_when`
 guardrails (both can only raise a decision to `ESCALATE`,
 `ARCHITECTURE.md` §5/§13), and publishes `alert.decided` with
 `confidence` and `reasons[]` populated from its own tool-call trace and
@@ -182,8 +183,9 @@ escalates naming it — instead of hanging the whole platform.
 ### `memory-store`
 The only service that reads/writes behavioral history. Serves `GetContext`
 over gRPC — rolling-window counts (1h/24h/7d) of decisions and analyst
-verdicts per `alert_key`, plus `is_novel_alert` and
-`has_confirmed_incident_history`. History is an event log (ADR-0017): it
+verdicts per `alert_key`, plus `is_novel_alert`,
+`has_confirmed_incident_history` and `has_confirmed_noise_history` (the
+last two all-time, ADR-0031). History is an event log (ADR-0017): it
 consumes `alert.decided` (ADR-0016) and `verdict.recorded` in one group,
 storing one Postgres `memory_events` row per event — the source of truth.
 Redis caches each key's last 7 days, prefixed by the app's

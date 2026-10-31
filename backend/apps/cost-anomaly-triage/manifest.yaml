@@ -1,5 +1,6 @@
 # App Manifest for cost-anomaly-triage (docs/ARCHITECTURE.md §3, ADR-0006).
-# App #2, first cut (docs/plan.md Day 13; finished Day 17).
+# App #2 (docs/plan.md Day 13 first cut, Day 17 finished: recurring-spike
+# suppression from past verdicts, the anomaly_level guardrail).
 #
 # Source of truth; registry holds the runtime copy. After editing, register
 # it (code first, manifest second, §12):
@@ -11,7 +12,7 @@ display_name: Cloud cost anomaly triage
 
 agents:
   - agent_id: cost-triage-agent
-    version: 0.1.0
+    version: 0.2.0
     role: entry
     prompt_ref: prompts/cost-triage-agent.md
     tool_allowlist:
@@ -39,11 +40,21 @@ tools:
 # "checkout-svc:us-east-1" here apart from any it-ops key with the same text.
 memory_namespace: cost-anomaly-triage
 
-# Deterministic guardrails (ADR-0010): any match forces ESCALATE.
+# Deterministic guardrails (ADR-0010): any match forces ESCALATE, whatever
+# the agent decided, including SUPPRESS on a known recurring spike.
 escalate_when:
   - field: alert.severity
     in: [critical]
+  # The detector's own grading of the jump (event_schema.json). Rules match
+  # exact values only, so the jump is graded by the detector, not computed
+  # here from observed_cost/baseline_cost.
+  - field: payload.anomaly_level
+    in: [extreme]
 
 # Supervisor (ADR-0020): below this confidence, the decision becomes ESCALATE.
 supervisor:
   min_confidence: 0.6
+  # ADR-0031: a SUPPRESS stands only on a key an analyst has confirmed as
+  # noise at least once (ever, not just in the last 7 days). Schedule tags
+  # alone can't get a spike suppressed, whatever the agent concludes.
+  suppress_requires_noise_verdict: true

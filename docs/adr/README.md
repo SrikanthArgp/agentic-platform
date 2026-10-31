@@ -52,3 +52,4 @@ Rules:
 | [0028](0028-prefetched-tools.md) | Manifest-declared `prefetch_tools`, run by `orchestrator` before the agent's loop | Accepted |
 | [0029](0029-token-budgets-and-rate-limits.md) | Daily token budgets per agent; per-minute rate limits per app and source | Accepted |
 | [0030](0030-outbox-with-dedicated-relay.md) | Transactional outbox drained by a dedicated `outbox-relay` worker (replaces the Celery relay) | Accepted |
+| [0031](0031-suppress-requires-noise-verdict.md) | Opt-in supervisor rule: a SUPPRESS needs a confirmed-noise verdict on the key, ever | Accepted |

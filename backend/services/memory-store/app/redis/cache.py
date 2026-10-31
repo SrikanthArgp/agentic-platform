@@ -6,11 +6,15 @@ Two keys per `{memory_namespace}:{alert_key}`:
   `{kind}|{ref_id}`, score = event time in ms. Trimmed on every write and
   read.
 - `mem:{ns}:{key}:facts`: hash of all-time facts (`seen`,
-  `confirmed_incident`, each present only when true) and the `loaded`
-  marker, which says the sorted set holds *every* recent event.
+  `confirmed_incident`, `confirmed_noise`, each present only when true) and
+  the `loaded` marker, which says the sorted set holds *every* recent event
+  and the hash every fact.
 
-Without `loaded` the key is a miss and is rebuilt from Postgres, even if a
-writer has already added a few events to it. Every operation only adds
+Without `loaded` at the current `CACHE_VERSION` the key is a miss and is
+rebuilt from Postgres, even if a writer has already added a few events to
+it. The version goes up when a fact is added (2: `confirmed_noise`,
+ADR-0031), so an entry cached without it is rebuilt instead of reading the
+new fact as false. Every operation only adds
 (ZADD, and HSET of true facts), so a rebuild racing a write can't drop the
 write: the result is the union. Both keys get `ttl_s` on every touch, so
 idle alert keys expire and are rebuilt on demand.
@@ -18,10 +22,12 @@ idle alert keys expire and are rebuilt on demand.
 
 from redis.asyncio import Redis
 
-from app.core.events import CONFIRMED_INCIDENT, DECISION, RETENTION_MS, Event, Facts
+from app.core.events import RETENTION_MS, Event, Facts
 
 DEFAULT_TTL_S = 8 * 24 * 3600  # the 7-day window plus a day
 _LOADED = "loaded"
+# The `loaded` value; bumped whenever the facts hash gains a field.
+CACHE_VERSION = "2"
 
 
 def _keys(namespace: str, alert_key: str) -> tuple[str, str]:
@@ -39,6 +45,8 @@ def _true_facts(facts: Facts) -> dict[str, str]:
         fields["seen"] = "1"
     if facts.confirmed_incident:
         fields["confirmed_incident"] = "1"
+    if facts.confirmed_noise:
+        fields["confirmed_noise"] = "1"
     return fields
 
 
@@ -56,13 +64,17 @@ class MemoryCache:
             pipe.zrangebyscore(events_key, f"({cutoff}", "+inf", withscores=True)
             pipe.hgetall(facts_key)
             _, members, facts = await pipe.execute()
-        if facts.get(_LOADED) != "1":
+        if facts.get(_LOADED) != CACHE_VERSION:
             return None
         events = []
         for member, score in members:
             kind, _, ref_id = member.partition("|")
             events.append(Event(kind=kind, ref_id=ref_id, at_ms=int(score)))
-        return events, Facts(seen=facts.get("seen") == "1", confirmed_incident=facts.get("confirmed_incident") == "1")
+        return events, Facts(
+            seen=facts.get("seen") == "1",
+            confirmed_incident=facts.get("confirmed_incident") == "1",
+            confirmed_noise=facts.get("confirmed_noise") == "1",
+        )
 
     async def fill(self, namespace: str, alert_key: str, events: list[Event], facts: Facts) -> None:
         """Store a rebuild from Postgres and mark the key loaded."""
@@ -70,7 +82,7 @@ class MemoryCache:
         async with self._redis.pipeline(transaction=True) as pipe:
             if events:
                 pipe.zadd(events_key, {_member(e): e.at_ms for e in events})
-            pipe.hset(facts_key, mapping={**_true_facts(facts), _LOADED: "1"})
+            pipe.hset(facts_key, mapping={**_true_facts(facts), _LOADED: CACHE_VERSION})
             pipe.expire(events_key, self._ttl_s)
             pipe.expire(facts_key, self._ttl_s)
             await pipe.execute()
@@ -78,7 +90,7 @@ class MemoryCache:
     async def add(self, namespace: str, alert_key: str, event: Event, now_ms: int) -> None:
         """Add one new event (already stored in Postgres)."""
         events_key, facts_key = _keys(namespace, alert_key)
-        facts = Facts(seen=event.family == DECISION, confirmed_incident=event.kind == CONFIRMED_INCIDENT)
+        facts = Facts.of(event)
         async with self._redis.pipeline(transaction=True) as pipe:
             pipe.zadd(events_key, {_member(event): event.at_ms})
             pipe.zremrangebyscore(events_key, "-inf", now_ms - RETENTION_MS)

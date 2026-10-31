@@ -13,7 +13,7 @@ here and cross-references (tools exist, one entry agent, ...) in
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 SLUG = r"^[a-z][a-z0-9-]{0,62}$"
 TOOL_ID = r"^[a-z][a-z0-9_-]{0,63}$"
@@ -118,6 +118,9 @@ class SupervisorIn(_Strict):
     # Below this, orchestrator's supervisor escalates; omitted -> its
     # MIN_CONFIDENCE default (docs/adr/0020).
     min_confidence: float | None = Field(default=None, ge=0, le=1)
+    # ADR-0031: orchestrator caps a SUPPRESS on a key no analyst ever marked
+    # as noise. Opt-in per app; a JSON boolean only.
+    suppress_requires_noise_verdict: StrictBool = False
 
 
 class ManifestIn(_Strict):

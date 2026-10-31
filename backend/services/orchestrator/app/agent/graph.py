@@ -187,7 +187,11 @@ async def agent_node(state: RunState, runtime: Runtime[RunDeps]) -> RunState:
 
 def supervisor_node(state: RunState, runtime: Runtime[RunDeps]) -> RunState:
     threshold = state["manifest"].min_confidence(runtime.context.default_min_confidence)
-    result = supervise(state["decision"], state["confidence"], state.get("memory_context"), threshold)
+    manifest = state["manifest"]
+    result = supervise(
+        state["decision"], state["confidence"], state.get("memory_context"), threshold,
+        require_noise_verdict=manifest.suppress_requires_noise_verdict(),
+    )
     return {
         "decision": result.decision,
         "confidence": result.confidence,

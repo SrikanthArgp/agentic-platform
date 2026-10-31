@@ -54,12 +54,24 @@ def test_facts_from_events():
     assert Facts.from_events([]) == Facts()
     assert Facts.from_events([decision("SUPPRESS", "a", 1)]) == Facts(seen=True)
     assert Facts.from_events([Event(CONFIRMED_INCIDENT, "c", 0)]) == Facts(confirmed_incident=True)
+    assert Facts.from_events([Event(CONFIRMED_NOISE, "c", 0)]) == Facts(confirmed_noise=True)
+    assert Facts.of(Event(CONFIRMED_NOISE, "c", 0)) == Facts(confirmed_noise=True)
 
 
 def test_all_time_facts_survive_the_window():
     ctx = build_context("app", "k", [], Facts(seen=True, confirmed_incident=True), NOW)
     assert ctx.is_novel_alert is False
     assert ctx.has_confirmed_incident_history is True
+    assert ctx.has_confirmed_noise_history is False
+
+
+def test_a_noise_verdict_older_than_every_window_still_counts_as_history():
+    """A monthly job's verdicts are older than 7 days (ADR-0031)."""
+    old_noise = Event(CONFIRMED_NOISE, "case-1", NOW - 30 * 24 * 3_600_000)
+    facts = Facts.from_events([decision("ESCALATE", "a", 30 * 24), old_noise])
+    ctx = build_context("app", "k", [], facts, NOW)
+    assert ctx.window_7d.confirmed_noise_count == 0
+    assert ctx.has_confirmed_noise_history is True
 
 
 def test_decision_event_from_response():

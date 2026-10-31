@@ -77,6 +77,7 @@ dev = [
     { name = "fakeredis" },
     { name = "httpx" },
     { name = "pytest" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
@@ -101,6 +102,7 @@ dev = [
     { name = "fakeredis", specifier = ">=2.26" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pytest", specifier = ">=8.3" },
+    { name = "pyyaml", specifier = ">=6" },
 ]
 
 [[package]]

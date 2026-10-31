@@ -66,3 +66,33 @@ def test_caps_are_only_those_that_apply():
     assert [c for c, _ in caps(S, context(novel=True, incident_history=True))] == [0.5, 0.3]
     assert [c for c, _ in caps(E, context(novel=True, incident_history=True))] == []
     assert [c for c, _ in caps(E, None)] == [0.5]
+
+
+# --- opt-in: SUPPRESS needs a confirmed-noise verdict (ADR-0031) ---
+
+NOISE_HISTORY = context(window_7d={"alert_count": 3})
+NOISE_HISTORY.has_confirmed_noise_history = True
+
+
+@pytest.mark.parametrize(
+    "decision, ctx, required, capped",
+    [
+        (agent_pb2.SUPPRESS, KNOWN_CONTEXT, True, True),       # no noise verdict ever
+        (agent_pb2.SUPPRESS, NOISE_HISTORY, True, False),      # an analyst confirmed noise once
+        (agent_pb2.SUPPRESS, KNOWN_CONTEXT, False, False),     # the app didn't opt in
+        (agent_pb2.AUTO_RESOLVE, KNOWN_CONTEXT, True, False),  # only SUPPRESS needs it
+        (agent_pb2.ESCALATE, KNOWN_CONTEXT, True, False),
+    ],
+    ids=["no-verdict", "noise-history", "not-opted-in", "auto-resolve", "escalate"],
+)
+def test_noise_verdict_cap_applies_only_to_an_opted_in_suppress_without_one(decision, ctx, required, capped):
+    got = [why for _, why in caps(decision, ctx, require_noise_verdict=required)]
+    assert any("no analyst has ever confirmed noise" in w for w in got) is capped
+
+
+def test_required_noise_verdict_turns_a_confident_suppress_into_escalate():
+    result = supervise(agent_pb2.SUPPRESS, 0.97, KNOWN_CONTEXT, 0.6, require_noise_verdict=True)
+    assert (result.decision, result.confidence) == (agent_pb2.ESCALATE, 0.3)
+    assert "this app requires that before a SUPPRESS" in result.reason
+    kept = supervise(agent_pb2.SUPPRESS, 0.97, NOISE_HISTORY, 0.6, require_noise_verdict=True)
+    assert (kept.decision, kept.reason) == (agent_pb2.SUPPRESS, None)

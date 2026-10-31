@@ -11,9 +11,10 @@ reference. Section numbers point back to the source of truth.
 Diagram 4 uses a second app, `cost-anomaly-triage`, to make multi-app
 isolation visible. It's documented as a second worked example in
 `docs/ARCHITECTURE.md` §3, alongside `it-ops-triage`. It's app #2 in
-`docs/plan.md`: its first cut (one agent, `billing-lookup`, the shared
-`similar-past-case-lookup`) was built and checked live on Day 13, and Day
-17 finishes it. App #3, `security-alert-triage`,
+`docs/plan.md`, built on Day 13 (one agent, `billing-lookup`, the shared
+`similar-past-case-lookup`) and finished on Day 17 (recurring-spike
+suppression on past verdicts, the `anomaly_level` guardrail, and ADR-0031's
+noise-verdict rule). App #3, `security-alert-triage`,
 follows the exact same sequence as diagram 1/2 with its own manifest and
 isn't drawn separately; diagram 5 shows how it's *shipped* (the first app
 rolled out on Kubernetes, `docs/plan.md` Day 20, ADR-0014).
@@ -219,8 +220,7 @@ sequenceDiagram
 
 ## 4. Two apps, one shared core — isolation in practice
 
-*Built — `cost-anomaly-triage`'s first cut, `docs/plan.md` Day 13; Day 17
-finishes it.* Same `orchestrator`,
+*Built — `cost-anomaly-triage`, `docs/plan.md` Days 13 and 17.* Same `orchestrator`,
 `tool-gateway`, `memory-store` process handling both apps' alerts back to
 back, showing where the §3 isolation guarantee (`app_id`, `memory_namespace`,
 `tool_allowlist`) actually bites. Prefetch and the budget check (diagram 1)

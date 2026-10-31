@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x12memory_store.proto\x12\x0bmemorystore\"6\n\x11GetContextRequest\x12\x0e\n\x06\x61pp_id\x18\x01 \x01(\t\x12\x11\n\talert_key\x18\x02 \x01(\t\"\x9d\x01\n\x10\x43ontextAggregate\x12\x13\n\x0b\x61lert_count\x18\x01 \x01(\r\x12\x18\n\x10\x65scalation_count\x18\x02 \x01(\r\x12\x19\n\x11suppression_count\x18\x03 \x01(\r\x12 \n\x18\x63onfirmed_incident_count\x18\x04 \x01(\r\x12\x1d\n\x15\x63onfirmed_noise_count\x18\x05 \x01(\r\"\x8e\x02\n\x12GetContextResponse\x12\x0e\n\x06\x61pp_id\x18\x01 \x01(\t\x12\x11\n\talert_key\x18\x02 \x01(\t\x12\x30\n\twindow_1h\x18\x03 \x01(\x0b\x32\x1d.memorystore.ContextAggregate\x12\x31\n\nwindow_24h\x18\x04 \x01(\x0b\x32\x1d.memorystore.ContextAggregate\x12\x30\n\twindow_7d\x18\x05 \x01(\x0b\x32\x1d.memorystore.ContextAggregate\x12\x16\n\x0eis_novel_alert\x18\x06 \x01(\x08\x12&\n\x1ehas_confirmed_incident_history\x18\x07 \x01(\x08\x32\\\n\x0bMemoryStore\x12M\n\nGetContext\x12\x1e.memorystore.GetContextRequest\x1a\x1f.memorystore.GetContextResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x12memory_store.proto\x12\x0bmemorystore\"6\n\x11GetContextRequest\x12\x0e\n\x06\x61pp_id\x18\x01 \x01(\t\x12\x11\n\talert_key\x18\x02 \x01(\t\"\x9d\x01\n\x10\x43ontextAggregate\x12\x13\n\x0b\x61lert_count\x18\x01 \x01(\r\x12\x18\n\x10\x65scalation_count\x18\x02 \x01(\r\x12\x19\n\x11suppression_count\x18\x03 \x01(\r\x12 \n\x18\x63onfirmed_incident_count\x18\x04 \x01(\r\x12\x1d\n\x15\x63onfirmed_noise_count\x18\x05 \x01(\r\"\xb3\x02\n\x12GetContextResponse\x12\x0e\n\x06\x61pp_id\x18\x01 \x01(\t\x12\x11\n\talert_key\x18\x02 \x01(\t\x12\x30\n\twindow_1h\x18\x03 \x01(\x0b\x32\x1d.memorystore.ContextAggregate\x12\x31\n\nwindow_24h\x18\x04 \x01(\x0b\x32\x1d.memorystore.ContextAggregate\x12\x30\n\twindow_7d\x18\x05 \x01(\x0b\x32\x1d.memorystore.ContextAggregate\x12\x16\n\x0eis_novel_alert\x18\x06 \x01(\x08\x12&\n\x1ehas_confirmed_incident_history\x18\x07 \x01(\x08\x12#\n\x1bhas_confirmed_noise_history\x18\x08 \x01(\x08\x32\\\n\x0bMemoryStore\x12M\n\nGetContext\x12\x1e.memorystore.GetContextRequest\x1a\x1f.memorystore.GetContextResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -36,7 +36,7 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_CONTEXTAGGREGATE']._serialized_start=92
   _globals['_CONTEXTAGGREGATE']._serialized_end=249
   _globals['_GETCONTEXTRESPONSE']._serialized_start=252
-  _globals['_GETCONTEXTRESPONSE']._serialized_end=522
-  _globals['_MEMORYSTORE']._serialized_start=524
-  _globals['_MEMORYSTORE']._serialized_end=616
+  _globals['_GETCONTEXTRESPONSE']._serialized_end=559
+  _globals['_MEMORYSTORE']._serialized_start=561
+  _globals['_MEMORYSTORE']._serialized_end=653
 # @@protoc_insertion_point(module_scope)

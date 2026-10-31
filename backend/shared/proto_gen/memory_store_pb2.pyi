@@ -28,7 +28,7 @@ class ContextAggregate(_message.Message):
     def __init__(self, alert_count: _Optional[int] = ..., escalation_count: _Optional[int] = ..., suppression_count: _Optional[int] = ..., confirmed_incident_count: _Optional[int] = ..., confirmed_noise_count: _Optional[int] = ...) -> None: ...
 
 class GetContextResponse(_message.Message):
-    __slots__ = ("app_id", "alert_key", "window_1h", "window_24h", "window_7d", "is_novel_alert", "has_confirmed_incident_history")
+    __slots__ = ("app_id", "alert_key", "window_1h", "window_24h", "window_7d", "is_novel_alert", "has_confirmed_incident_history", "has_confirmed_noise_history")
     APP_ID_FIELD_NUMBER: _ClassVar[int]
     ALERT_KEY_FIELD_NUMBER: _ClassVar[int]
     WINDOW_1H_FIELD_NUMBER: _ClassVar[int]
@@ -36,6 +36,7 @@ class GetContextResponse(_message.Message):
     WINDOW_7D_FIELD_NUMBER: _ClassVar[int]
     IS_NOVEL_ALERT_FIELD_NUMBER: _ClassVar[int]
     HAS_CONFIRMED_INCIDENT_HISTORY_FIELD_NUMBER: _ClassVar[int]
+    HAS_CONFIRMED_NOISE_HISTORY_FIELD_NUMBER: _ClassVar[int]
     app_id: str
     alert_key: str
     window_1h: ContextAggregate
@@ -43,4 +44,5 @@ class GetContextResponse(_message.Message):
     window_7d: ContextAggregate
     is_novel_alert: bool
     has_confirmed_incident_history: bool
-    def __init__(self, app_id: _Optional[str] = ..., alert_key: _Optional[str] = ..., window_1h: _Optional[_Union[ContextAggregate, _Mapping]] = ..., window_24h: _Optional[_Union[ContextAggregate, _Mapping]] = ..., window_7d: _Optional[_Union[ContextAggregate, _Mapping]] = ..., is_novel_alert: _Optional[bool] = ..., has_confirmed_incident_history: _Optional[bool] = ...) -> None: ...
+    has_confirmed_noise_history: bool
+    def __init__(self, app_id: _Optional[str] = ..., alert_key: _Optional[str] = ..., window_1h: _Optional[_Union[ContextAggregate, _Mapping]] = ..., window_24h: _Optional[_Union[ContextAggregate, _Mapping]] = ..., window_7d: _Optional[_Union[ContextAggregate, _Mapping]] = ..., is_novel_alert: _Optional[bool] = ..., has_confirmed_incident_history: _Optional[bool] = ..., has_confirmed_noise_history: _Optional[bool] = ...) -> None: ...

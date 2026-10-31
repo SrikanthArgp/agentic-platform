@@ -1,8 +1,9 @@
 # registry — class diagram
 
-As built through Day 14 of `docs/plan.md` (Day 13: version references
+As built through Day 17 of `docs/plan.md` (Day 13: version references
 pinned or `latest`, JSON-Schema checks on tools, `prefetch_tools`; Day 14:
-`budget` per agent and `rate_limit` per app). `registry` stores two kinds of
+`budget` per agent and `rate_limit` per app; Day 17:
+`supervisor.suppress_requires_noise_verdict`, ADR-0031). `registry` stores two kinds of
 records: **tool registrations** (one per `tool_id` + `version`) and **App
 Manifests** (one per `app_id`). It validates a manifest when it is
 registered, and serves it back *resolved*: each manifest tool reference
@@ -140,6 +141,7 @@ classDiagram
         class SupervisorIn {
             <<pydantic, extra=forbid>>
             +min_confidence: float? 0-1
+            +suppress_requires_noise_verdict: StrictBool = false
         }
         class RateLimitIn {
             <<pydantic, extra=forbid>>
@@ -416,8 +418,10 @@ Three groups of pydantic models:
   `ToolRefIn`, `EscalateRuleIn`, `SupervisorIn`, `BudgetIn`, `RateLimitIn`.
   `EscalateRuleIn.in_` is
   aliased to `in` (a Python keyword) and must be non-empty.
-  `SupervisorIn.min_confidence` is optional, 0–1 (ADR-0020); the whole
-  `supervisor` block is optional. `ToolRefIn.version` is `x.y.z` or
+  `SupervisorIn.min_confidence` is optional, 0–1 (ADR-0020), and
+  `SupervisorIn.suppress_requires_noise_verdict` a JSON boolean, default
+  `false` (ADR-0031; stored and served, so the served `supervisor` block
+  always has it); the whole `supervisor` block is optional. `ToolRefIn.version` is `x.y.z` or
   `latest` (ADR-0026). `AgentIn.prefetch_tools` (ADR-0028) and
   `AgentIn.budget.daily_tokens` (≥0; 0 stops the agent; omitted →
   `orchestrator`'s default) and `ManifestIn.rate_limit` (`per_minute`,
@@ -462,6 +466,7 @@ field:
 | `alert_key_fields` | empty, or a field repeated |
 | `escalate_when[i].field` | doesn't start with `alert.`, `payload.` or `context.`; an `alert.<name>` whose name isn't in `ENVELOPE_FIELDS` (`source`, `severity`, `message`, `alert_key`; ADR-0010 — `orchestrator`'s guardrails list the same); an invalid `payload.<path>`; or a `context.<path>` that isn't a scalar field of `GetContextResponse` (walked via the proto descriptor, e.g. `context.window_24h.escalation_count` is fine, `context.window_24h` is not) |
 | `supervisor.min_confidence` | outside 0–1 (a pydantic `422`, before these checks) |
+| `supervisor.suppress_requires_noise_verdict` | not a JSON boolean, e.g. `"yes"`, `1` or `null` (pydantic `422`) |
 | `agents[i].budget.daily_tokens`, `rate_limit.*` | negative, or below 1 (pydantic `422`s, likewise) |
 
 Not checked here (files in other images): `prompt_ref` (`orchestrator`),

@@ -34,9 +34,24 @@ How to decide:
      of the spike, ESCALATE.
    - Tags are claims made by whoever created the resource, not proof. A tag
      can support a decision; it can't settle one alone.
-4. SUPPRESS only when the extra spend comes from resources tagged with an
-   owner and a schedule (e.g. `schedule: monthly`) and the memory context
-   shows this key has spiked before without a confirmed incident.
+4. SUPPRESS only a known recurring spike, and only when all of these hold:
+   - the extra spend comes from resources tagged with an owner and a
+     schedule (e.g. `schedule: monthly`, a `job` tag);
+   - the `similar-past-case-lookup` result has at least two past cases on
+     this key with verdict `CONFIRMED_NOISE` whose reasons or
+     `resolution_notes` describe the same scheduled job, recurring at that
+     schedule (e.g. about a month apart, around the same day of the month);
+   - no past case has verdict `CONFIRMED_INCIDENT`, and
+     `has_confirmed_incident_history` is false.
+   Tags alone never justify SUPPRESS. The past cases are evidence *for*
+   suppressing, never the lack of evidence against it: if the lookup says
+   `found: false`, or shows fewer than two `CONFIRMED_NOISE` cases for the
+   same job, you must not SUPPRESS, however clear the tags look; ESCALATE so
+   a human confirms the schedule once. When you
+   SUPPRESS, cite the past cases (ids and dates), the tagged resource and
+   its amount. Look at past cases for this, not the memory context: the
+   memory context covers 7 days at most, so a monthly job's earlier runs
+   never appear in it.
 5. AUTO_RESOLVE only when the extra spend comes from resources tagged with
    the service's usual owner, it is explained by those tags (e.g. an
    `autoscaling-group` or a planned `event`), and the spike is under twice
@@ -47,7 +62,8 @@ How to decide:
    analyst once confirmed a real cost incident on this service and region;
    never SUPPRESS it. `confirmed_noise_count` of 2 or more in 7d, with no
    confirmed incident, supports a benign reading of a spike that matches
-   step 4 or 5.
+   step 5. `is_novel_alert: false` only says the platform has seen this
+   key before; it is not evidence that a spike is benign.
 8. When unsure between two decisions, pick the one that gets a human to
    look: a needless escalation costs minutes, a missed runaway spend costs
    money every hour it runs.

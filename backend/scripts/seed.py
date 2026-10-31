@@ -2,9 +2,11 @@
 # requires-python = ">=3.12"
 # dependencies = ["psycopg[binary]>=3.2", "redis>=5.1", "httpx>=0.27"]
 # ///
-"""Seed `memory-store` with synthetic decision history (docs/plan.md Day 6).
+"""Seed synthetic history: decisions for `memory-store` (docs/plan.md Day 6)
+and resolved past cases for `review-console` (Day 17).
 
     uv run backend/scripts/seed.py                    # it-ops-triage
+    uv run backend/scripts/seed.py --app-id cost-anomaly-triage
     uv run backend/scripts/seed.py --app-id it-ops-triage --reset   # remove seed rows only
 
 Writes decision events straight into Postgres `memory_events` (the source
@@ -12,19 +14,29 @@ of truth, ADR-0017) at fixed offsets before *now*, and deletes the seeded
 keys' Redis cache so the next `GetContext` rebuilds them from Postgres.
 Then prints the counts `GetContext` should return for each key.
 
+`SEED_CASES` adds resolved cases straight into Postgres `cases`, at fixed
+dates, each with its decision and verdict in `memory_events` too, as the
+real flow would have recorded them. They're what `similar-past-case-lookup`
+returns, which is how an agent sees history older than memory's 7 days,
+e.g. `cost-anomaly-triage`'s monthly batch job on `checkout-svc:us-east-1`
+(its billing fixture has this month's run on 2026-10-01).
+
 Idempotent: every run first deletes this app's earlier seed rows (ref_id
-`seed:...`), so re-running just moves the history to the current time.
-Real decisions for the same keys are left alone, and add to the counts.
+or alert_id `seed:...`), so re-running just moves the decision history to
+the current time; seeded cases keep their fixed dates. Real decisions and
+cases for the same keys are left alone, and add to the counts.
 The app must be registered (its `memory_namespace` comes from `registry`).
 """
 
 import argparse
 import sys
 import time
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import psycopg
 import redis
+from psycopg.types.json import Jsonb
 
 HOUR = 3600.0
 WINDOWS_H = {"1h": 1, "24h": 24, "7d": 24 * 7}
@@ -48,6 +60,52 @@ SCENARIOS: dict[str, dict[str, list[tuple[str, float]]]] = {
         # Older than the 7-day window: counts are 0, but it's not novel.
         "cert_expiring:api-gw": [("ESCALATE", 24 * 9)],
     },
+    "cost-anomaly-triage": {},  # its history is the past cases below
+}
+
+
+def _monthly_batch_case(month: int, amount: float, total: float) -> dict:
+    run = datetime(2026, month, 1, 6, 0, tzinfo=UTC)
+    resource = f"emr-recon-2026{month:02d}"
+    return {
+        "alert_key": "checkout-svc:us-east-1",
+        "agent_id": "cost-triage-agent",
+        "decided_at": run,
+        "resolved_at": run + timedelta(hours=3),
+        "confidence": 0.55,
+        "reasons": [
+            f"${amount:,.2f} of ${total:,.2f} on {run:%Y-%m-%d} is EMR cluster {resource}, tagged "
+            "owner: finance-data, job: monthly-reconciliation, schedule: monthly",
+            "no confirmed-noise past cases on checkout-svc:us-east-1 confirm the schedule yet; escalating so a human "
+            "can confirm it once",
+        ],
+        "alert": {
+            "source": "cost-anomaly-detector",
+            "severity": "warning",
+            "message": f"checkout-svc spend in us-east-1 is {total / 421.15:.1f}x baseline",
+            "fired_at": (run + timedelta(hours=1)).isoformat(),
+            "payload": {
+                "account": "123456789012", "service": "checkout-svc", "region": "us-east-1",
+                "window_start": f"{run:%Y-%m-%d}T00:00:00Z",
+                "window_end": f"{run + timedelta(days=1):%Y-%m-%d}T00:00:00Z",
+                "baseline_cost": 421.15, "observed_cost": total,
+            },
+        },
+        "verdict": "CONFIRMED_NOISE",
+        "resolution_notes": (
+            f"Expected: finance-data's monthly reconciliation EMR batch ({resource}) runs on the 1st of every "
+            "month and is torn down the same day. No action needed."
+        ),
+    }
+
+
+# app_id -> resolved past cases (seeded with verdict_by "seed"). Fixed dates.
+SEED_CASES: dict[str, list[dict]] = {
+    "cost-anomaly-triage": [
+        _monthly_batch_case(7, 1121.40, 1542.55),
+        _monthly_batch_case(8, 1139.75, 1560.90),
+        _monthly_batch_case(9, 1132.10, 1553.25),
+    ],
 }
 
 
@@ -70,6 +128,7 @@ def main() -> int:
     args = parser.parse_args()
 
     scenario = SCENARIOS.get(args.app_id)
+    seed_cases = SEED_CASES.get(args.app_id, [])
     if scenario is None:
         print(f"no seed scenario for app '{args.app_id}'; have {sorted(SCENARIOS)}", file=sys.stderr)
         return 1
@@ -85,8 +144,32 @@ def main() -> int:
         deleted = conn.execute(
             "DELETE FROM memory_events WHERE app_id = %s AND ref_id LIKE 'seed:%%'", (args.app_id,)
         ).rowcount
+        deleted_cases = conn.execute(
+            "DELETE FROM cases WHERE app_id = %s AND alert_id LIKE 'seed:%%'", (args.app_id,)
+        ).rowcount
         inserted = 0
+        case_ids: list[tuple[int, dict]] = []
         if not args.reset:
+            for i, c in enumerate(seed_cases):
+                case_id = conn.execute(
+                    "INSERT INTO cases (app_id, alert_id, alert_key, agent_id, decision, confidence, reasons, "
+                    "tool_calls, alert, status, verdict, verdict_by, resolution_notes, created_at, resolved_at) "
+                    "VALUES (%s, %s, %s, %s, 'ESCALATE', %s, %s, '[]'::jsonb, %s, 'RESOLVED', %s, 'seed', %s, %s, %s) "
+                    "RETURNING id",
+                    (args.app_id, f"seed:{c['alert_key']}:{i}", c["alert_key"], c["agent_id"], c["confidence"],
+                     Jsonb(c["reasons"]), Jsonb(c["alert"]), c["verdict"], c["resolution_notes"],
+                     c["decided_at"], c["resolved_at"]),
+                ).fetchone()[0]
+                case_ids.append((case_id, c))
+                # What the real flow records: the decision, then the verdict (ADR-0016/0017).
+                conn.execute(
+                    "INSERT INTO memory_events (app_id, alert_key, kind, ref_id, occurred_at) VALUES "
+                    "(%s, %s, 'decision:ESCALATE', %s, %s), (%s, %s, %s, %s, %s)",
+                    (args.app_id, c["alert_key"], f"seed:{c['alert_key']}:{i}", c["decided_at"],
+                     args.app_id, c["alert_key"], f"verdict:{c['verdict']}", f"seed:case:{c['alert_key']}:{i}",
+                     c["resolved_at"]),
+                )
+                inserted += 2
             for alert_key, events in scenario.items():
                 for i, (decision, hours_ago) in enumerate(events):
                     conn.execute(
@@ -96,12 +179,18 @@ def main() -> int:
                     )
                     inserted += 1
 
+    keys = set(scenario) | {c["alert_key"] for c in seed_cases}
     cache = redis.Redis.from_url(args.redis_url)
-    cache.delete(*(f"mem:{namespace}:{k}:{part}" for k in scenario for part in ("events", "facts")))
+    if keys:
+        cache.delete(*(f"mem:{namespace}:{k}:{part}" for k in keys for part in ("events", "facts")))
 
-    print(f"{args.app_id} (namespace {namespace}): deleted {deleted} seed rows, inserted {inserted}, "
-          f"cleared {len(scenario)} cached keys")
+    print(f"{args.app_id} (namespace {namespace}): deleted {deleted} seed memory rows and {deleted_cases} seed "
+          f"cases, inserted {inserted} memory rows and {len(case_ids)} cases, cleared {len(keys)} cached keys")
     if args.reset:
+        return 0
+    for case_id, c in case_ids:
+        print(f"  case {case_id}: {c['alert_key']} decided {c['decided_at']:%Y-%m-%d}, {c['verdict']}")
+    if not scenario:
         return 0
     print("\nExpected GetContext (alerts/escalations/suppressions), plus any real decisions:")
     print(f"  {'alert_key':28} {'1h':>9} {'24h':>9} {'7d':>9}")

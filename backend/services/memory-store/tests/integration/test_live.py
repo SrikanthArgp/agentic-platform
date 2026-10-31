@@ -61,6 +61,11 @@ async def test_postgres_store_insert_is_idempotent_and_load_filters_by_time(stor
     assert events == [new]
     assert facts == Facts(seen=True)
 
+    # A noise verdict older than every window still shows up as a fact (ADR-0031).
+    await store.insert(APP_ID, alert_key, Event("verdict:CONFIRMED_NOISE", f"{alert_key}-case", now - 30 * 24 * H))
+    _, facts = await store.load(APP_ID, alert_key, now - 7 * 24 * H)
+    assert facts == Facts(seen=True, confirmed_noise=True)
+
 
 async def test_grpc_get_context_from_seeded_postgres(store, alert_key):
     now = int(time.time() * 1000)
