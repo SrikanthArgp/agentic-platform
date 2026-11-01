@@ -487,7 +487,7 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 ---
 
-### Day 18 — Kubernetes, part 1: local cluster with platform parity
+### Day 18 — Kubernetes, part 1: local cluster with platform parity ✅
 
 **Goal**: the same images that run in Compose run on a local Kubernetes cluster, end to end, before app #3 needs it (ADR-0014).
 
@@ -500,6 +500,26 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 - **Unit tests**: a pytest over `kubectl kustomize backend/deploy/k8s/overlays/local` output (plus `kubeconform` schema validation) asserting the invariants: every Deployment has probes, requests/limits, and a non-`latest` image; no Deployment is named after an app; `outbox-relay` has 1 replica.
 
 **Definition of done**: `k8s_up.sh` from a clean machine → all pods `Ready`; an `it-ops-triage` and a `cost-anomaly-triage` event posted through a port-forwarded `ingestion` are decided and show up as cases, same as in Compose; Compose still works unchanged.
+
+**As built** (notes for later days):
+- **Layout** (`backend/deploy/k8s/`): `kind-config.yaml` (one node), `base/` (namespace `agentic-platform`, `platform-config` ConfigMap, `infra/`, `platform/`), `overlays/local/` (placeholder tag `unbuilt`). It's its own small `uv` project for the manifest tests.
+- **`render.sh TAG`** wraps the overlay in a throwaway kustomization (in a gitignored `.render.*` dir: kustomize takes a directory resource only as a relative path that resolves without symlinks, and macOS `/var` is one). It sets every platform image to `TAG` and generates, from the files Compose already uses, `postgres-init` (`init.sql`), `kafka-topics-script` (`create-topics.sh`) and the `llm-api-key` Secret (`backend/local/.env`, `orchestrator` only). Generated names carry a content hash, so a changed key rolls `orchestrator` and nothing else. Day 19's `rollout_app.sh` should apply through it too.
+- **`k8s_up.sh`**: create the cluster if missing, build the 7 Dockerfiles, tag `<12-char SHA>` (plus `-dirty-<time>` when `backend/` has uncommitted changes), `kind load` them, delete and rerun the `kafka-topics` Job, apply, then wait on the StatefulSets, the Job and each Deployment. **`k8s_port_forward.sh`**: Compose's port + 10000 (`18001`–`18007`, gRPC `50062`/`50063`, Postgres `15432`, Redis `16379`) and Kafka `39092`, a third listener advertised as `localhost:39092`, so the cluster and Compose run side by side.
+- **Infra**: Kafka, Postgres and Redis are single-replica StatefulSets with PVCs (kind's `standard` local-path class). Kafka probes are TCP: an exec of `kafka-broker-api-versions.sh` starts a JVM every period. Topics have 6 partitions (Compose has 12). The OTel Collector is the upstream contrib image with a `nop` exporter, probed over HTTP on `13133`.
+- **Every pod sets `enableServiceLinks: false`**: `apache/kafka` reads every `KAFKA_*` variable as broker config, and the `kafka` Service's link variables (`KAFKA_PORT=tcp://…`) would break it.
+- **`/readyz`** is a placeholder in the 6 services (same body as `/healthz`). Liveness is `/healthz`, with a startup probe (2s × 60) while `uv` starts the app. `outbox-relay` keeps its Day 15 `/readyz`: `standby` counts as ready (user's call). Readiness can't require the lock, or a one-replica rolling update would never finish, since the new pod waits for the old one's lock.
+- **No startup ordering**: `registry`, `memory-store` and `review-console` exit while Postgres isn't up and restart (3–4 restarts on a fresh cluster), and the topics Job's first pod fails until the broker answers. Everything was `Ready` about 90s after the apply. Init containers weren't worth adding for that.
+- **Found live**:
+  - `kind load` of pulled multi-platform images (postgres, kafka…) fails on Docker Desktop's containerd image store (`ctr: content digest … not found`). Only the platform images are loaded; the node pulls the infra images itself.
+  - The quoted `OPENAI_API_KEY="…"` in `.env` reached the Secret with its quotes, so OpenAI returned a 401 and every run was "not evaluated" (cases 4–6, ESCALATE, as designed). Compose's `env_file` strips quotes and `secretGenerator` doesn't, so `render.sh` now does, with a test.
+  - Re-applying reports the StatefulSets `configured` even when nothing changed (server-side defaults); no new revision is created and no pod restarts.
+- **Live** (kind v0.33, node `kindest/node:v1.37.0`, Docker Desktop 8 CPUs / 16 GB, tag `ecd081ea01be-dirty-20261101114929`): all 13 pods `Ready`, `/readyz` 200 on every forwarded port (relay `active`). Both apps registered and the cost history seeded through the port-forwards (cases 1–3). Then:
+  - it-ops `disk_full:web-01` (critical) → `ESCALATE` 0.97, **case 7**, citing RB-001, with the root-cause callable;
+  - cost `checkout-svc:us-east-1` → `SUPPRESS` 0.98, reasons citing cases 1–3 and `emr-recon-202610` ($1,146.90 of $1,568.05), read from `alert.decided` through `localhost:39092`;
+  - cost `reporting-svc:us-east-2` → the agent suppressed, the ADR-0031 cap escalated at 0.30, **case 8**.
+
+  Compose came up healthy next to the cluster (15 containers, `/readyz` 200 on 8001–8007).
+- Tests: `backend/deploy/k8s` 15 (new: rendered-manifest invariants, the env-quote case, `kubeconform -strict`); +1 `/readyz` test in each service: `ingestion` 71, `orchestrator` 253, `tool-gateway` 132, `memory-store` 65, `registry` 108, `review-console` 42; `outbox-relay` 36 and `shared` 18 unchanged. Integration green in all six projects that have it, after `seed.py` on the fresh Compose volumes.
 
 ---
 

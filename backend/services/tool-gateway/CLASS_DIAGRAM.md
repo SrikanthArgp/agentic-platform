@@ -36,6 +36,7 @@ classDiagram
             +create_app(apps_dir, allowed_hosts, apps, cases) FastAPI
             -lifespan(app) AsyncIterator
             +healthz() HealthResponse
+            +readyz() HealthResponse
         }
         class HealthResponse {
             <<pydantic>>
@@ -787,6 +788,6 @@ All three are fixture-backed and change only through git (ADR-0009).
 - **A broken tool degrades, never hangs**: the deadline caps each call,
   the breaker stops calling a tool that keeps failing, and `orchestrator`
   escalates on `tool_timeout`/`tool_unavailable` like any infra failure.
-- **Next changes**: Day 19 adds `/readyz` (ready once the startup tool
-  scan is done) and a graceful drain of in-flight MCP calls on SIGTERM;
+- **Next changes**: Day 19 makes `/readyz` (today the same as
+  `/healthz`) wait for the startup tool scan and a graceful drain of in-flight MCP calls on SIGTERM;
   Day 23 exports traces and joins them across the MCP hop.

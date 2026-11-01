@@ -87,6 +87,7 @@ classDiagram
             +build_runner(settings, registry, memory, budget) AgentRunner
             -lifespan(app) AsyncIterator
             +healthz() HealthResponse
+            +readyz() HealthResponse
         }
         class Settings {
             <<frozen dataclass>>
@@ -839,6 +840,7 @@ on the allowlist and callable with `{}`) and `budget`
 
   Fakes stand in for the gateway, registry and memory, and no test calls a
   real LLM.
-- **Next changes**: Day 19 adds `/readyz`, a graceful
+- **Next changes**: Day 19 makes `/readyz` (today the same as
+  `/healthz`) check the consumer joined and its dependencies, adds a graceful
   drain on SIGTERM and one MCP reconnect-and-retry on a dropped
   connection; Day 24 prices the recorded tokens.

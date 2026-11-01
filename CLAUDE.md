@@ -30,7 +30,7 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Days 1–17 of `docs/plan.md` are done (infra, contracts, skeletons;
+Days 1–18 of `docs/plan.md` are done (infra, contracts, skeletons;
 `tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core;
 `ingestion` and the end-to-end hot path; `registry` + App Manifest;
 `memory-store`; context, supervisor and guardrails in `orchestrator`;
@@ -39,11 +39,12 @@ integration pass; `tool-gateway` resilience; tool versions, the global
 `similar-past-case-lookup` and app #2's first cut; token budgets and rate
 limits; the outbox + the `outbox-relay` worker, for alerts and verdicts;
 DLQ, dedupe and the Kafka-outage test; app #2 finished and the
-platform-core review); Day 18 (Kubernetes, part 1: local kind cluster) is
-next. As-built notes for each day are in `docs/plan.md`.
+platform-core review; Kubernetes part 1, the local kind cluster); Day 19
+(Kubernetes, part 2: zero-interruption rolling updates) is next. As-built notes for each day are in `docs/plan.md`.
 
 - All 6 services and the `outbox-relay` worker have a FastAPI app
-  (`app/main.py`, `/healthz`), a `pyproject.toml`, a committed `uv.lock`,
+  (`app/main.py`, `/healthz`, `/readyz`; the services' `/readyz` is the
+  same as `/healthz` until Day 19), a `pyproject.toml`, a committed `uv.lock`,
   a `Dockerfile`, and passing tests.
 - Nothing but `orchestrator` publishes to Kafka directly (Day 15,
   ADR-0030, ADR-0024). `ingestion` writes each accepted alert to Postgres
@@ -176,7 +177,26 @@ next. As-built notes for each day are in `docs/plan.md`.
   `backend/local/postgres/init.sql` creates `cases`, `memory_events`,
   `tools`, `apps`, `outbox`, `verdict_outbox`; it's idempotent, so on an existing volume pipe it into
   `docker compose exec -T postgres psql -U platform -d platform`.
-  After `down -v`, re-run `register_app.py` for both apps.
+  After `down -v`, re-run `register_app.py` for both apps (and `seed.py`
+  for both before the integration tests).
+- The same images also run on a local kind cluster (Day 18,
+  `backend/deploy/k8s/`, Kustomize `base/` + `overlays/local/`, namespace
+  `agentic-platform`). `backend/scripts/k8s_up.sh` creates the cluster
+  (`agentic-platform`) if missing, builds, tags with the git SHA (never
+  `latest`; `-dirty-<time>` with uncommitted changes), `kind load`s the 7
+  platform images (the node pulls infra itself) and applies
+  `backend/deploy/k8s/render.sh TAG`. That wrapper sets the tag and
+  generates the `postgres-init`/`kafka-topics-script` ConfigMaps from
+  Compose's `init.sql`/`create-topics.sh`, and the `llm-api-key` Secret
+  from `backend/local/.env` (quotes stripped, `orchestrator` only). Infra:
+  single-replica StatefulSets (Kafka, Postgres, Redis), a `kafka-topics`
+  Job (6 partitions), an OTel no-op sink. Every pod has
+  `enableServiceLinks: false` (Kafka reads `KAFKA_*` env vars as config).
+  `backend/scripts/k8s_port_forward.sh` maps the cluster to Compose's ports
+  + 10000 (`18001`–`18007`, Postgres `15432`, Redis `16379`) and Kafka
+  `39092`, so both run side by side; pass those URLs to `register_app.py`/
+  `seed.py` (`--registry-url`, `--tool-gateway-url`, `--postgres-dsn`,
+  `--redis-url`). Reset with `kind delete cluster --name agentic-platform`.
 - Services log JSON to stdout and drop spans; nothing exports to the
   collector until Day 23. Don't set `OTEL_EXPORTER_OTLP_ENDPOINT` on a
   service before then — FastAPI >=0.142 auto-attaches OTLP exporters when
@@ -276,7 +296,17 @@ docker compose up -d --build --wait   # all containers healthy
 docker compose down -v                # reset volumes (re-runs init.sql)
 ```
 
-then `pytest` green in every service directory and in `backend/workers/outbox-relay`.
+then `pytest` green in every service directory, in `backend/workers/outbox-relay`
+and in `backend/deploy/k8s` (rendered-manifest tests; need `kubectl`, and
+`kubeconform` from `brew install kind kubeconform`).
+
+Kubernetes check (local kind cluster):
+
+```bash
+backend/scripts/k8s_up.sh             # all pods Ready
+backend/scripts/k8s_port_forward.sh   # foreground; host ports 18001-18007, 15432, 16379, 39092
+kind delete cluster --name agentic-platform
+```
 
 ## Architecture essentials
 
@@ -335,10 +365,10 @@ then `pytest` green in every service directory and in `backend/workers/outbox-re
   request context, never as a tool argument.
 - **Deployment** (§12, ADR-0014): one container per platform service, never per app;
   `ingestion`/`orchestrator`/`tool-gateway` images `COPY` `backend/apps/`.
-  Compose for apps #1–#2 and the dev loop; from Day 18 a local kind
-  cluster (`backend/deploy/k8s/`, Kustomize) where app #3 onward ships by
-  rolling update (`rollout_app.sh`: roll the three services, wait, then
-  `register_app.py`).
+  Compose for apps #1–#2 and the dev loop; a local kind cluster
+  (`backend/deploy/k8s/`, Kustomize, Day 18) where app #3 onward ships by
+  rolling update (Day 19's `rollout_app.sh`: roll the three services,
+  wait, then `register_app.py`).
   The `outbox-relay` worker (`backend/workers/outbox-relay/`, one active
   instance via a Postgres advisory lock, ADR-0030) relays both outbox
   tables; there is no Celery. The Day 25 batch eval is a script,

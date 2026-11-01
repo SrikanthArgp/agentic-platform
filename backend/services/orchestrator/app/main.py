@@ -79,3 +79,9 @@ app = FastAPI(title=SERVICE_NAME, lifespan=lifespan)
 @app.get("/healthz", response_model=HealthResponse)
 async def healthz() -> HealthResponse:
     return HealthResponse(status="ok", service=SERVICE_NAME)
+
+# Readiness probe (Kubernetes, docs/plan.md Day 18). For now it is the
+# same as /healthz; Day 19 makes it check what this service needs.
+@app.get("/readyz", response_model=HealthResponse)
+async def readyz() -> HealthResponse:
+    return HealthResponse(status="ok", service=SERVICE_NAME)

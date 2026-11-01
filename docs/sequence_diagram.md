@@ -288,7 +288,7 @@ counters too, so one app's flood or spend never uses up another's.
 
 ## 5. Adding an app on Kubernetes — rolling update, then registration
 
-*Planned — `docs/plan.md` Days 18–20, ADR-0014.* App #3 and every app
+*Planned — `docs/plan.md` Days 19–20, ADR-0014 (the kind cluster it runs on is built, Day 18).* App #3 and every app
 after it ship this way. Code goes first, one pod at a time, while other
 apps keep being served. The manifest is registered only when every pod of
 all three services runs the new image, so the new app can't receive an

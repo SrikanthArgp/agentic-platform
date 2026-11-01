@@ -859,9 +859,28 @@ Two deployment targets built from the **same images** (ADR-0014):
 
 - **Compose** (`backend/local/docker-compose.yml`): apps #1 and #2
   (`plan.md` Days 1–17), and the local dev loop for the whole build.
-- **Local Kubernetes (kind)** (`backend/deploy/k8s/`, Kustomize): from
-  `plan.md` Day 18. One Deployment per platform service, never per app.
-  App #3 and every app after it are shipped here by rolling update.
+- **Local Kubernetes (kind)** (`backend/deploy/k8s/`, Kustomize `base/` +
+  `overlays/local/`, `plan.md` Day 18). One Deployment + Service per
+  platform service, never per app, plus `outbox-relay` at `replicas: 1`
+  (its advisory lock makes a rollout overlap harmless; a `standby` pod
+  counts as ready, or a one-replica rolling update could never finish).
+  Infra is dev-grade single-replica StatefulSets with PVCs (Kafka KRaft,
+  Postgres, Redis), a `kafka-topics` Job (6 partitions, so at most 6
+  `orchestrator` replicas, ADR-0002) and an OTel Collector that drops
+  everything until Day 23. `backend/scripts/k8s_up.sh` creates the
+  cluster, builds the same Dockerfiles, tags images with the git SHA
+  (never `latest`), `kind load`s them and applies
+  `backend/deploy/k8s/render.sh TAG`. That wrapper sets the tag and
+  generates, from the files Compose already uses, the `postgres-init`
+  (`init.sql`) and `kafka-topics-script` (`create-topics.sh`) ConfigMaps
+  and the `llm-api-key` Secret (`backend/local/.env`, `orchestrator` only;
+  never committed). Other config is the `platform-config` ConfigMap.
+  Every container has requests/limits, liveness on `/healthz` and
+  readiness on `/readyz` (Day 19 makes `/readyz` check dependencies).
+  Host access is `backend/scripts/k8s_port_forward.sh`: Compose's ports
+  + 10000 (`18001`–`18007`, Postgres `15432`, Redis `16379`), Kafka
+  `39092`. App #3 and every app after it are shipped here by rolling
+  update.
 
 **Where each part of an app lands at runtime**
 
@@ -985,9 +1004,9 @@ App Manifest or the code layout:
 - **More replicas**: extra `orchestrator` instances in the same Kafka
   consumer group, sharing load across all apps — up to the partition count,
   with per-key ordering preserved by the `{app_id}:{alert_key}` partition
-  key (§8). The kind cluster already runs 2 replicas of `ingestion`,
-  `orchestrator`, `tool-gateway` so rolling updates have a pod to fail over
-  to (ADR-0014); autoscaling (HPA) is phase two.
+  key (§8). On the kind cluster, `ingestion`, `orchestrator` and
+  `tool-gateway` run 2 replicas (`plan.md` Day 19) so rolling updates have
+  a pod to fail over to (ADR-0014); autoscaling (HPA) is phase two.
 - **Dedicated per-app deployment**: the *same* `orchestrator` image run as
   a separate deployment that only takes one app's events (per-app topic,
   partition key, or `app_id` filter), for a noisy app or a stricter SLA.

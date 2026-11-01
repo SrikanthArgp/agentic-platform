@@ -13,6 +13,12 @@ def test_healthz_returns_200_with_expected_shape():
     assert response.json() == {"status": "ok", "service": "review-console"}
 
 
+def test_readyz_returns_200_with_expected_shape():
+    response = client.get("/readyz")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "service": "review-console"}
+
+
 def test_health_response_rejects_missing_fields():
     with pytest.raises(ValidationError):
         HealthResponse(status="ok")

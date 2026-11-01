@@ -1,0 +1,15 @@
+# Local kind overlay. The tag below is a placeholder that never exists:
+# render.sh overrides it with the git SHA that k8s_up.sh built and loaded,
+# so every rollout is a real tag change (never `latest`).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+images:
+  - { name: agentic-platform/ingestion, newTag: unbuilt }
+  - { name: agentic-platform/orchestrator, newTag: unbuilt }
+  - { name: agentic-platform/tool-gateway, newTag: unbuilt }
+  - { name: agentic-platform/memory-store, newTag: unbuilt }
+  - { name: agentic-platform/registry, newTag: unbuilt }
+  - { name: agentic-platform/review-console, newTag: unbuilt }
+  - { name: agentic-platform/outbox-relay, newTag: unbuilt }

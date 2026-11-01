@@ -1,0 +1,52 @@
+# tool-gateway: MCP tool server at /mcp; loads app tools from the image's backend/apps/.
+# Host header tool-gateway:8000 is in its default MCP_ALLOWED_HOSTS.
+apiVersion: v1
+kind: Service
+metadata:
+  name: tool-gateway
+spec:
+  selector: { app.kubernetes.io/name: tool-gateway }
+  ports:
+    - { name: http, port: 8000, targetPort: 8000 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tool-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: tool-gateway }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: tool-gateway, app.kubernetes.io/component: service }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: tool-gateway
+          image: agentic-platform/tool-gateway
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8000 }
+          envFrom:
+            - configMapRef: { name: platform-config }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "500m", memory: 512Mi }
+          # Liveness is /healthz (the process is up); readiness is /readyz
+          # (Day 19 makes it check this pod's dependencies). The startup probe
+          # holds both off while uv starts the app.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2

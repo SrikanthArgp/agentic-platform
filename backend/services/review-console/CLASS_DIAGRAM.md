@@ -14,6 +14,7 @@ classDiagram
         <<module: app.main>>
         +create_app(settings, store) FastAPI
         +healthz() HealthResponse
+        +readyz() HealthResponse
     }
     class Settings {
         <<dataclass: app.core.config>>

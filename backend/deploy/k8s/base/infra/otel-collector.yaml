@@ -1,0 +1,74 @@
+# OTel Collector as a no-op sink: it accepts OTLP and drops it. Nothing sends
+# to it yet (services drop spans until Day 23); Day 23 adds the LGTM stack
+# and real exporters. The upstream image is used as-is: kubelet probes the
+# health_check extension over HTTP, so Compose's busybox rebuild isn't needed.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+data:
+  config.yaml: |
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+    receivers:
+      otlp:
+        protocols:
+          grpc: { endpoint: 0.0.0.0:4317 }
+          http: { endpoint: 0.0.0.0:4318 }
+    exporters:
+      nop: {}
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces: { receivers: [otlp], exporters: [nop] }
+        metrics: { receivers: [otlp], exporters: [nop] }
+        logs: { receivers: [otlp], exporters: [nop] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+spec:
+  selector: { app.kubernetes.io/name: otel-collector }
+  ports:
+    - { name: otlp-grpc, port: 4317, targetPort: 4317 }
+    - { name: otlp-http, port: 4318, targetPort: 4318 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: otel-collector }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: otel-collector, app.kubernetes.io/component: infra }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.111.0
+          args: ["--config", "/etc/otelcol-contrib/config.yaml"]
+          ports:
+            - { name: otlp-grpc, containerPort: 4317 }
+            - { name: otlp-http, containerPort: 4318 }
+            - { name: health, containerPort: 13133 }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          livenessProbe:
+            httpGet: { path: /, port: 13133 }
+            periodSeconds: 10
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet: { path: /, port: 13133 }
+            periodSeconds: 5
+            timeoutSeconds: 3
+          volumeMounts:
+            - { name: config, mountPath: /etc/otelcol-contrib, readOnly: true }
+      volumes:
+        - name: config
+          configMap: { name: otel-collector-config }

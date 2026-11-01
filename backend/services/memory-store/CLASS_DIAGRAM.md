@@ -56,6 +56,7 @@ classDiagram
             +SERVICE_NAME = "memory-store"
             -lifespan(app) AsyncIterator
             +healthz() HealthResponse
+            +readyz() HealthResponse
         }
         class Settings {
             <<frozen dataclass>>
@@ -229,7 +230,8 @@ classDiagram
 `MemoryService`. It starts the gRPC server on `GRPC_PORT` (50051; Compose
 publishes it as 50053) and, unless `KAFKA_ENABLED=false`, the
 `EventConsumer`. On shutdown it stops all of them in reverse. HTTP serves
-only `/healthz`.
+only `/healthz` and `/readyz` (the Kubernetes probes; `/readyz` is the
+same body until Day 19).
 
 **`Settings`**: frozen dataclass from the environment, with defaults that
 point at the Compose stack from the host.

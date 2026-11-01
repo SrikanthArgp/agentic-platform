@@ -23,6 +23,7 @@ classDiagram
             +create_app(settings, outbox, apps, rate_limiter) FastAPI
             -lifespan(app) AsyncIterator
             +healthz() HealthResponse
+            +readyz() HealthResponse
         }
         class HealthResponse {
             <<pydantic>>
@@ -258,7 +259,8 @@ the app runs with no broker. `setup_observability()` is called at import
 time so logging is JSON from the first line.
 
 **`HealthResponse`** is the `/healthz` body (`status`, `service`). Compose
-health checks use it.
+health checks and the Kubernetes liveness probe use it. `/readyz` (Day 18,
+the Kubernetes readiness probe) returns the same body for now.
 
 ### API — `app/api/alerts.py`
 
@@ -429,5 +431,5 @@ Kafka is up. `ingestion` has no Kafka client at all (ADR-0030).
   under `backend/apps/{app_id}/` (the schema itself).
 - **Fail before writing**: all validation happens before the outbox
   write, so a bad alert never reaches the agent.
-- **Next changes**: **Day 19**: `/readyz` (ready when Postgres is
-  reachable) and a graceful drain on SIGTERM.
+- **Next changes**: **Day 19**: `/readyz` checks Postgres is reachable
+  (today it always answers 200), and a graceful drain on SIGTERM.

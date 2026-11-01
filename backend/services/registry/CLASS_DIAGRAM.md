@@ -69,6 +69,7 @@ classDiagram
             +create_app(repo=None) FastAPI
             +app: FastAPI
             +healthz() HealthResponse
+            +readyz() HealthResponse
         }
         class HealthResponse {
             <<pydantic>>
@@ -379,6 +380,8 @@ classDiagram
   Compose. Postgres being reachable is checked implicitly: the pool is
   opened at startup, so a dead database fails the container, not the
   health check.
+- **`GET /readyz`**: the same body, for the Kubernetes readiness probe
+  (Day 18).
 
 ### API — `app/api/tools.py`
 
@@ -585,5 +588,4 @@ sequenceDiagram
 - **`registry` stores limits; others enforce them.** `budget` is
   enforced by `orchestrator`, `rate_limit` by `ingestion`; both read them
   on every manifest fetch, so lowering one takes effect within one TTL.
-- **Next changes**: none planned beyond Day 18's `/readyz` (every
-  service gets one for Kubernetes).
+- **Next changes**: none planned.

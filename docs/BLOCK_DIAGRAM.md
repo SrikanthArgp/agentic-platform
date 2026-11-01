@@ -11,8 +11,11 @@ carries every alert and every verdict to Kafka: `ingestion` and
 `review-console` only write outbox rows); dashed arrows are telemetry
 (traces/logs/metrics) or supporting links (Redis counters).
 
-**Deployment**: each block is one container (Compose) or one Deployment
-(the local kind cluster from `docs/plan.md` Day 18), shared by every app.
+**Deployment**: each block is one container (Compose,
+`backend/local/`) or one Deployment + Service (the local kind cluster,
+`backend/deploy/k8s/`, brought up by `backend/scripts/k8s_up.sh`), shared
+by every app. On kind, Kafka, Postgres and Redis are single-replica
+StatefulSets and the OTel Collector is a no-op sink until Day 23.
 Adding an app adds no blocks (`ARCHITECTURE.md` §12, ADR-0014).
 
 **Scope**: everything drawn here is the platform. Alert sources and the

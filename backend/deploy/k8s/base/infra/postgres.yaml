@@ -1,0 +1,61 @@
+# Postgres, single replica, dev-grade (managed Postgres is phase two).
+# init.sql is backend/local/postgres/init.sql, the same file Compose runs,
+# mounted from the postgres-init ConfigMap that render.sh generates. Like
+# Compose it runs only on an empty volume (`kind delete cluster` to reset).
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector: { app.kubernetes.io/name: postgres }
+  ports:
+    - { name: postgres, port: 5432, targetPort: 5432 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: postgres }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: postgres, app.kubernetes.io/component: infra }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - { name: POSTGRES_USER, value: platform }
+            - { name: POSTGRES_PASSWORD, value: platform }
+            - { name: POSTGRES_DB, value: platform }
+            # A subdirectory, so initdb never sees the volume root.
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports:
+            - { name: postgres, containerPort: 5432 }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          livenessProbe:
+            exec: { command: ["pg_isready", "-U", "platform", "-d", "platform"] }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "platform", "-d", "platform"] }
+            periodSeconds: 5
+            timeoutSeconds: 3
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: init, mountPath: /docker-entrypoint-initdb.d, readOnly: true }
+      volumes:
+        - name: init
+          configMap: { name: postgres-init }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 2Gi } }

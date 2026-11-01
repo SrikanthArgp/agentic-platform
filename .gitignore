@@ -25,3 +25,6 @@ venv/
 # Generated protobuf stubs in backend/shared/proto_gen/ are committed (images
 # COPY shared/ as-is). Rerun backend/scripts/gen_proto.sh after editing a
 # .proto; backend/shared/tests/test_proto_gen.py catches stale stubs.
+
+# Kubernetes render scratch (backend/deploy/k8s/render.sh)
+backend/deploy/k8s/.render.*/

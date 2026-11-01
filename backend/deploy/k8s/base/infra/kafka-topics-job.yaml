@@ -1,0 +1,32 @@
+# Creates the four platform topics with backend/local/kafka/create-topics.sh,
+# the same script Compose's kafka-init runs (from the kafka-topics-script
+# ConfigMap render.sh generates). 6 partitions on kind (12 in Compose): that
+# caps orchestrator replicas at 6 (ADR-0002). Idempotent, never shrinks; a
+# Job is immutable, so k8s_up.sh deletes it before each apply to rerun it.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-topics
+spec:
+  backoffLimit: 12
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: kafka-topics, app.kubernetes.io/component: infra }
+    spec:
+      enableServiceLinks: false
+      restartPolicy: Never
+      containers:
+        - name: create-topics
+          image: apache/kafka:3.9.0
+          command: ["/bin/sh", "/scripts/create-topics.sh"]
+          env:
+            - { name: BOOTSTRAP, value: "kafka:9092" }
+            - { name: PARTITIONS, value: "6" }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          volumeMounts:
+            - { name: scripts, mountPath: /scripts, readOnly: true }
+      volumes:
+        - name: scripts
+          configMap: { name: kafka-topics-script }

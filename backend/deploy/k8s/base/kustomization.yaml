@@ -1,0 +1,25 @@
+# Platform base (docs/ARCHITECTURE.md §12, ADR-0014): one Deployment + Service
+# per platform service, never per app, plus dev-grade infra. Don't apply this
+# directly: backend/deploy/k8s/render.sh adds the image tag, the files it
+# shares with Compose (init.sql, create-topics.sh) and the LLM key Secret.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: agentic-platform
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: agentic-platform
+resources:
+  - namespace.yaml
+  - config.yaml
+  - infra/postgres.yaml
+  - infra/redis.yaml
+  - infra/kafka.yaml
+  - infra/kafka-topics-job.yaml
+  - infra/otel-collector.yaml
+  - platform/registry.yaml
+  - platform/ingestion.yaml
+  - platform/orchestrator.yaml
+  - platform/tool-gateway.yaml
+  - platform/memory-store.yaml
+  - platform/review-console.yaml
+  - platform/outbox-relay.yaml

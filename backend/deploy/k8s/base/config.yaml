@@ -1,0 +1,22 @@
+# Config every platform pod reads (envFrom), the Kubernetes twin of
+# docker-compose.yml's x-service-defaults. Each service ignores keys it
+# doesn't use. Credentials here are local-dev only, as in Compose; the LLM
+# API key is a Secret (llm-api-key, made by render.sh from backend/local/.env).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-config
+data:
+  POSTGRES_DSN: postgresql://platform:platform@postgres:5432/platform
+  REDIS_URL: redis://redis:6379/0
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  REGISTRY_URL: http://registry:8000
+  MANIFEST_TTL_S: "30"
+  TOOL_GATEWAY_URL: http://tool-gateway:8000/mcp
+  MEMORY_STORE_TARGET: memory-store:50051
+  REVIEW_CONSOLE_URL: http://review-console:8000
+  LLM_PROVIDER: openai
+  LLM_MODEL: gpt-5.4-mini
+  RELAY_POLL_INTERVAL_S: "0.5"
+  OUTBOX_RETENTION_H: "24"
+  # No OTEL_EXPORTER_OTLP_ENDPOINT until Day 23 (see docker-compose.yml).

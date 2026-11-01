@@ -1,0 +1,8 @@
+# Local kind cluster for docs/plan.md Day 18 (ADR-0014). One node: infra is
+# dev-grade (single-replica StatefulSets); multi-node is phase two. Reach
+# services from the host with backend/scripts/k8s_port_forward.sh.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: agentic-platform
+nodes:
+  - role: control-plane
