@@ -7,6 +7,7 @@ and resolved past cases for `review-console` (Day 17).
 
     uv run backend/scripts/seed.py                    # it-ops-triage
     uv run backend/scripts/seed.py --app-id cost-anomaly-triage
+    uv run backend/scripts/seed.py --app-id security-alert-triage
     uv run backend/scripts/seed.py --app-id it-ops-triage --reset   # remove seed rows only
 
 Writes decision events straight into Postgres `memory_events` (the source
@@ -19,7 +20,10 @@ dates, each with its decision and verdict in `memory_events` too, as the
 real flow would have recorded them. They're what `similar-past-case-lookup`
 returns, which is how an agent sees history older than memory's 7 days,
 e.g. `cost-anomaly-triage`'s monthly batch job on `checkout-svc:us-east-1`
-(its billing fixture has this month's run on 2026-10-01).
+(its billing fixture has this month's run on 2026-10-01), and
+`security-alert-triage`'s weekly vulnerability-scanner sweep on
+`nids-portscan-sweep:vulnscan-01` (three analyst-confirmed noise cases) plus
+one confirmed incident on `siem-impossible-travel:vpn-gw-01`.
 
 Idempotent: every run first deletes this app's earlier seed rows (ref_id
 or alert_id `seed:...`), so re-running just moves the decision history to
@@ -61,6 +65,7 @@ SCENARIOS: dict[str, dict[str, list[tuple[str, float]]]] = {
         "cert_expiring:api-gw": [("ESCALATE", 24 * 9)],
     },
     "cost-anomaly-triage": {},  # its history is the past cases below
+    "security-alert-triage": {},  # likewise
 }
 
 
@@ -99,12 +104,71 @@ def _monthly_batch_case(month: int, amount: float, total: float) -> dict:
     }
 
 
+def _scanner_sweep_case(day: int) -> dict:
+    """secops' weekly authenticated scan trips the port-sweep rule on the
+    scanner itself; analysts confirmed it as noise each time."""
+    run = datetime(2026, 10, day, 2, 0, tzinfo=UTC)
+    return {
+        "alert_key": "nids-portscan-sweep:vulnscan-01",
+        "agent_id": "security-triage-agent",
+        "decided_at": run,
+        "resolved_at": run + timedelta(hours=7),
+        "confidence": 0.5,
+        "reasons": [
+            "src_ip 10.20.0.15 is known-benign (asset-inventory: vulnscan-01, the internal vulnerability scanner)",
+            "no confirmed-noise past cases on nids-portscan-sweep:vulnscan-01 yet; escalating so an analyst confirms it",
+        ],
+        "alert": {
+            "source": "nids",
+            "severity": "low",
+            "message": "Port sweep from 10.20.0.15 across 10.40.0.0/24",
+            "fired_at": run.isoformat(),
+            "payload": {
+                "rule_id": "nids-portscan-sweep", "host": "vulnscan-01", "src_ip": "10.20.0.15",
+                "indicators": [{"type": "ip", "value": "10.20.0.15"}],
+            },
+        },
+        "verdict": "CONFIRMED_NOISE",
+        "resolution_notes": "Weekly authenticated scan by secops' vulnerability scanner (vulnscan-01). No action needed.",
+    }
+
+
+def _impossible_travel_incident() -> dict:
+    run = datetime(2026, 10, 9, 14, 30, tzinfo=UTC)
+    return {
+        "alert_key": "siem-impossible-travel:vpn-gw-01",
+        "agent_id": "security-triage-agent",
+        "decided_at": run,
+        "resolved_at": run + timedelta(hours=2),
+        "confidence": 0.9,
+        "reasons": ["VPN login for a.patel from 198.51.100.23 (known-bad: brute-force source) 40 minutes after one from Pune"],
+        "alert": {
+            "source": "siem",
+            "severity": "medium",
+            "message": "Impossible travel for a.patel on vpn-gw-01",
+            "fired_at": run.isoformat(),
+            "payload": {
+                "rule_id": "siem-impossible-travel", "host": "vpn-gw-01", "src_ip": "198.51.100.23",
+                "user": "a.patel", "indicators": [{"type": "ip", "value": "198.51.100.23"}],
+            },
+        },
+        "verdict": "CONFIRMED_INCIDENT",
+        "resolution_notes": "Credential stuffing succeeded; account disabled and password reset, MFA enforced.",
+    }
+
+
 # app_id -> resolved past cases (seeded with verdict_by "seed"). Fixed dates.
 SEED_CASES: dict[str, list[dict]] = {
     "cost-anomaly-triage": [
         _monthly_batch_case(7, 1121.40, 1542.55),
         _monthly_batch_case(8, 1139.75, 1560.90),
         _monthly_batch_case(9, 1132.10, 1553.25),
+    ],
+    "security-alert-triage": [
+        _scanner_sweep_case(11),
+        _scanner_sweep_case(18),
+        _scanner_sweep_case(25),
+        _impossible_travel_incident(),
     ],
 }
 

@@ -16,8 +16,8 @@ isolation visible. It's documented as a second worked example in
 suppression on past verdicts, the `anomaly_level` guardrail, and ADR-0031's
 noise-verdict rule). App #3, `security-alert-triage`,
 follows the exact same sequence as diagram 1/2 with its own manifest and
-isn't drawn separately; diagram 5 shows how it's *shipped* (the first app
-rolled out on Kubernetes, `docs/plan.md` Day 20, ADR-0014).
+isn't drawn separately; diagram 5 shows how it was *shipped* (the first
+app rolled out on Kubernetes, `docs/plan.md` Day 20, ADR-0014).
 
 Diagrams 1 and 2 draw `ingestion → orchestrator` as a single Kafka hop to
 keep them readable. Physically that hop goes through the Postgres `outbox`
@@ -288,8 +288,8 @@ counters too, so one app's flood or spend never uses up another's.
 
 ## 5. Adding an app on Kubernetes — rolling update, then registration
 
-*The mechanism is built and measured (`docs/plan.md` Day 19, ADR-0014,
-ADR-0033); app #3 is the first app shipped with it (Day 20).* App #3 and
+*Built and measured on Day 19 (ADR-0014, ADR-0033); app #3,
+`security-alert-triage`, was the first app shipped this way (Day 20).* App #3 and
 every app after it ship this way. Code goes first, one pod at a time, while other
 apps keep being served. The manifest is registered only when every pod of
 all three services runs the new image, so the new app can't receive an

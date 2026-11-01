@@ -30,7 +30,7 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Days 1–19 of `docs/plan.md` are done (infra, contracts, skeletons;
+Days 1–20 of `docs/plan.md` are done (infra, contracts, skeletons;
 `tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core;
 `ingestion` and the end-to-end hot path; `registry` + App Manifest;
 `memory-store`; context, supervisor and guardrails in `orchestrator`;
@@ -40,8 +40,9 @@ integration pass; `tool-gateway` resilience; tool versions, the global
 limits; the outbox + the `outbox-relay` worker, for alerts and verdicts;
 DLQ, dedupe and the Kafka-outage test; app #2 finished and the
 platform-core review; Kubernetes part 1, the local kind cluster;
-Kubernetes part 2, zero-interruption rolling updates); Day 20 (app #3,
-`security-alert-triage`, shipped by rolling update) is next. As-built notes for each day are in `docs/plan.md`.
+Kubernetes part 2, zero-interruption rolling updates; app #3,
+`security-alert-triage`, shipped by rolling update); Day 21 (the alert
+simulator, realistic mixed traffic for all three apps) is next. As-built notes for each day are in `docs/plan.md`.
 
 - All 6 services and the `outbox-relay` worker have a FastAPI app
   (`app/main.py`, `/healthz`, `/readyz`), a `pyproject.toml`, a committed
@@ -250,6 +251,20 @@ Kubernetes part 2, zero-interruption rolling updates); Day 20 (app #3,
   and `payload.anomaly_level in [extreme]` (an optional payload field);
   `suppress_requires_noise_verdict: true`. A recurring spike is suppressed
   on past `CONFIRMED_NOISE` verdicts, never on tags alone.
+- `backend/apps/security-alert-triage/` (app #3, Day 20, configuration
+  only; shipped with `rollout_app.sh security-alert-triage`):
+  `security-triage-agent` with `ioc-reputation-lookup`
+  (`tools/ioc_reputation.json`, 8 synthetic indicators: known-bad
+  `203.0.113.66`, `198.51.100.23`, `update-check.badcdn.example`, one
+  SHA-256; known-benign `10.20.0.15` = the `vulnscan-01` scanner,
+  `192.0.2.53`, `updates.corp.example`, the empty-file SHA-256; anything
+  else `unknown`) and the global `similar-past-case-lookup` (prefetched);
+  `alert_key` is `rule_id:host`. Guardrails `alert.severity in [high,
+  critical]` and `context.has_confirmed_incident_history in [true]`;
+  `suppress_requires_noise_verdict: true`. `seed.py --app-id
+  security-alert-triage` seeds three `CONFIRMED_NOISE` scanner sweeps on
+  `nids-portscan-sweep:vulnscan-01` and a `CONFIRMED_INCIDENT` on
+  `siem-impossible-travel:vpn-gw-01`.
 
 ## How each day's work is done
 

@@ -1,0 +1,59 @@
+# App Manifest for security-alert-triage (docs/ARCHITECTURE.md §3, ADR-0006).
+# App #3 (docs/plan.md Day 20): SIEM/EDR detections, the app where alert
+# text is attacker-chosen. The first app shipped by rolling update on
+# Kubernetes (ADR-0014): code first, then this manifest:
+#
+#   backend/scripts/rollout_app.sh security-alert-triage
+#
+# (On Compose: uv run backend/scripts/register_app.py security-alert-triage.)
+
+app_id: security-alert-triage
+display_name: Security alert triage
+
+agents:
+  - agent_id: security-triage-agent
+    version: 0.1.0
+    role: entry
+    prompt_ref: prompts/security-triage-agent.md
+    tool_allowlist:
+      - ioc-reputation-lookup
+      - similar-past-case-lookup
+    # Run by orchestrator before the agent's loop, results in its first
+    # message (ADR-0028): past analyst verdicts on this rule and host.
+    prefetch_tools:
+      - similar-past-case-lookup
+
+event_schema_ref: event_schema.json
+# Joined with ":" into alert_key, e.g. "edr-c2-beacon:fin-ws-042" (ADR-0007).
+alert_key_fields: [rule_id, host]
+
+tools:
+  - tool_id: ioc-reputation-lookup
+    version: 1.0.0
+    scope: app
+  # Global (ADR-0027), the same tool the other two apps use; "latest" (ADR-0026).
+  - tool_id: similar-past-case-lookup
+    version: latest
+    scope: global
+
+# Prefix of every memory-store key for this app (§3, §6).
+memory_namespace: security-alert-triage
+
+# Deterministic guardrails (ADR-0010, §13 T1/T3): any match forces
+# ESCALATE, whatever the agent decided. Here the alert text is written by
+# whoever triggered it, so these are never left to the LLM alone.
+escalate_when:
+  # Severity is an envelope field, set by the SIEM/EDR, not the payload.
+  - field: alert.severity
+    in: [high, critical]
+  # An analyst once confirmed a real incident on this rule and host.
+  - field: context.has_confirmed_incident_history
+    in: [true]
+
+# Supervisor (ADR-0020): below this confidence, the decision becomes ESCALATE.
+supervisor:
+  min_confidence: 0.6
+  # ADR-0031 (§13 T3, memory poisoning): a SUPPRESS stands only on a key an
+  # analyst has confirmed as noise at least once. The platform's own past
+  # SUPPRESS decisions, however many, can't get an alert suppressed.
+  suppress_requires_noise_verdict: true

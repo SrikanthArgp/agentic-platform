@@ -303,14 +303,29 @@ isolation guarantee above (`memory_namespace` prefix, `app_id`-scoped
 `cases` rows, disjoint `tool_allowlist`s) is exactly what keeps them apart
 on the same shared `orchestrator`/`tool-gateway`/`memory-store` instances.
 
-**App #3: `security-alert-triage`** (scheduled `docs/plan.md` Day 20, not
-built yet). Triages SIEM/EDR alerts; `alert_key` is `rule_id:host`. One
-entry agent, `security-triage-agent`, allowlisting the app-owned
-`ioc-reputation-lookup` (IP/domain/hash → known-bad / known-benign /
-unknown) and the global `similar-past-case-lookup`. It's the high-volume,
-noisy app: recurring benign noise (e.g., an internal vulnerability scanner
-tripping the same rule) is `SUPPRESS`ed via `memory-store` recurrence, and
-anything with a known-bad indicator or high severity is `ESCALATE`d.
+**App #3: `security-alert-triage`** (`docs/plan.md` Day 20; the first app
+shipped by rolling update on Kubernetes, `rollout_app.sh`, ADR-0014).
+Triages SIEM/EDR detections; `alert_key` is `rule_id:host`. One entry
+agent, `security-triage-agent`, allowlisting the app-owned
+`ioc-reputation-lookup` (IP/domain/hash → `known-bad` / `known-benign` /
+`unknown`, from a fixture standing in for threat intel and the asset
+inventory) and the global `similar-past-case-lookup` (prefetched). It's
+the app where alert text is attacker-chosen (user names, command lines),
+so its decisions lean on deterministic checks:
+
+- `escalate_when`: `alert.severity in [high, critical]` and
+  `context.has_confirmed_incident_history in [true]` (ADR-0010, §13 T1/T3);
+- `supervisor.suppress_requires_noise_verdict: true` (ADR-0031, §13 T3):
+  recurring noise (e.g. the internal vulnerability scanner sweeping the
+  same rule) is `SUPPRESS`ed only on a key analysts have confirmed as
+  noise, never on the platform's own past decisions;
+- the prompt treats alert text that argues for its own dismissal as a
+  reason to escalate, and `unknown` reputation as no evidence of benign.
+
+Anything with a known-bad indicator is `ESCALATE`d, citing the
+indicator's verdict and source. Live on Day 20, an alert whose command
+line told the agent to SUPPRESS was escalated, with the severity
+guardrail named.
 
 **Agents and tools across the three apps**:
 

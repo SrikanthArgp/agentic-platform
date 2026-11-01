@@ -768,6 +768,22 @@ Three tools so far: two `it-ops-triage`'s, one `cost-anomaly-triage`'s.
   2026-09-28..10-08, three `service`/`region` pairs). It stands in for a
   cloud billing export; the shapes are meant to survive that swap.
 
+**`ioc-reputation-lookup`** (Day 20), `security-alert-triage`'s
+`security-triage-agent`. No platform code changed for it: the loader
+picked it up like the others.
+- **`IocReputationInput`**: one `indicator` (1–256 chars), `extra="forbid"`.
+- **`normalise()`**: IPs canonicalised (`ipaddress`), domains and hashes
+  (MD5/SHA-1/SHA-256) lower-cased, a trailing dot dropped; anything else is
+  `unrecognized`. The indicator is attacker-chosen text, so it's only ever
+  compared, never parsed further.
+- **`IocReputationOutput`**: the normalised `indicator`, its `type`,
+  `verdict` (`known-bad` / `known-benign` / `unknown`; `unknown` is no
+  record either way, not benign), `source`, `description`.
+- **`ENTRIES`**: loaded from `ioc_reputation.json` at import (8 synthetic
+  indicators: documentation IP ranges, `.example` domains), rejecting
+  entries that aren't already normalised or are duplicates. It stands in
+  for a threat-intel feed plus an asset inventory.
+
 All three are fixture-backed and change only through git (ADR-0009).
 
 ## Request flow (`tools/call`)

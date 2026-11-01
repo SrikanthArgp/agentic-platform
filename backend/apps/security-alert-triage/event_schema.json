@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "security-alert-triage/event_schema.json",
+  "title": "security-alert-triage event payload",
+  "description": "The app-specific part of a SIEM/EDR detection (RunAgentRequest.payload). The envelope (source, severity, message, timestamp) is validated by ingestion, not here: severity is an envelope field, so the escalate_when guardrail reads alert.severity (ADR-0010). Most of these values are chosen by whoever caused the detection (user names, command lines, domains), so the agent gets them as data, never as instructions. Extra fields are allowed and passed to the agent as data.",
+  "type": "object",
+  "required": ["rule_id", "host"],
+  "properties": {
+    "rule_id": {
+      "description": "The detection rule that fired, e.g. 'edr-4688-encoded-powershell'. With host, the alert_key, so no ':'.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+    },
+    "rule_name": {
+      "description": "The rule's human-readable name.",
+      "type": "string",
+      "maxLength": 256
+    },
+    "host": {
+      "description": "Host the detection fired on (hostname, no ':').",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$"
+    },
+    "src_ip": {
+      "description": "Source address of the activity, IPv4 or IPv6.",
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f:.]{2,45}$"
+    },
+    "dst_ip": {
+      "description": "Destination address of the activity, IPv4 or IPv6.",
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f:.]{2,45}$"
+    },
+    "user": {
+      "description": "Account involved, as the source reported it. Attacker-influenced.",
+      "type": "string",
+      "maxLength": 256
+    },
+    "process": {
+      "description": "Process image name, if the detection has one.",
+      "type": "string",
+      "maxLength": 512
+    },
+    "command_line": {
+      "description": "Command line of the process, if any. Attacker-chosen text: data only.",
+      "type": "string",
+      "maxLength": 4096
+    },
+    "indicators": {
+      "description": "Indicators of compromise the source extracted; each is what ioc-reputation-lookup is asked about.",
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "required": ["type", "value"],
+        "properties": {
+          "type": { "type": "string", "enum": ["ip", "domain", "file_hash"] },
+          "value": { "type": "string", "minLength": 1, "maxLength": 256 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": true
+}

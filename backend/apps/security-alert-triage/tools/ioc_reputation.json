@@ -1,0 +1,58 @@
+[
+  {
+    "type": "ip",
+    "value": "203.0.113.66",
+    "verdict": "known-bad",
+    "source": "threat-intel-feed",
+    "description": "Command-and-control server for a commodity remote-access trojan; active since 2026-09."
+  },
+  {
+    "type": "ip",
+    "value": "198.51.100.23",
+    "verdict": "known-bad",
+    "source": "threat-intel-feed",
+    "description": "Mass SSH/RDP brute-force source, reported by many organisations."
+  },
+  {
+    "type": "domain",
+    "value": "update-check.badcdn.example",
+    "verdict": "known-bad",
+    "source": "threat-intel-feed",
+    "description": "Malware staging domain: serves second-stage payloads to infected hosts."
+  },
+  {
+    "type": "file_hash",
+    "value": "9f2c4e81b7d03a5f6e1c8b94d27a0e3f5c6b8d1a2e4f7091b3c5d7e9f1a2b4c6",
+    "verdict": "known-bad",
+    "source": "threat-intel-feed",
+    "description": "Credential-stealer loader (SHA-256)."
+  },
+  {
+    "type": "ip",
+    "value": "10.20.0.15",
+    "verdict": "known-benign",
+    "source": "asset-inventory",
+    "description": "vulnscan-01: the internal vulnerability scanner, owner secops; scans the server VLANs weekly."
+  },
+  {
+    "type": "ip",
+    "value": "192.0.2.53",
+    "verdict": "known-benign",
+    "source": "asset-inventory",
+    "description": "Corporate DNS resolver."
+  },
+  {
+    "type": "domain",
+    "value": "updates.corp.example",
+    "verdict": "known-benign",
+    "source": "asset-inventory",
+    "description": "Internal patch-distribution server."
+  },
+  {
+    "type": "file_hash",
+    "value": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "verdict": "known-benign",
+    "source": "hash-allowlist",
+    "description": "SHA-256 of an empty file."
+  }
+]
