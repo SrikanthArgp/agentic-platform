@@ -1,7 +1,8 @@
 # outbox-relay — class diagram
 
-As built through Day 16 of `docs/plan.md` (ADR-0030, ADR-0024; Day 16
-added attempts, `DEAD` rows and the DLQ). A worker, not a
+As built through Day 20 of `docs/plan.md` (ADR-0030, ADR-0024; Day 16
+added attempts, `DEAD` rows and the DLQ; unchanged since, and on the kind
+cluster (Day 18) one replica pinned to the control-plane, ADR-0032). A worker, not a
 platform service: it drains `ingestion`'s `outbox` and `review-console`'s
 `verdict_outbox` to Kafka, one active instance at a time. Its only HTTP
 endpoints are `/healthz` and `/readyz`.

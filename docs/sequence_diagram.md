@@ -26,6 +26,12 @@ message, same consumer, up to ~0.5s added latency (126 ms average when
 measured on Day 15). Diagram 2 draws the verdict's path through
 `verdict_outbox` and the relay explicitly (ADR-0024).
 
+Each `orchestrator → tool-gateway` arrow is its own short-lived MCP
+connection (Day 19), so it may reach either `tool-gateway` replica; a
+dropped connection is retried once on a new one. `orchestrator` commits an
+`alert.received` offset only after that alert's `alert.decided` is
+published (ADR-0033).
+
 Two refusals aren't drawn, because nothing runs after them (ADR-0029):
 an event over its app's or source's per-minute rate limit gets `429` with
 `Retry-After` from `ingestion` and is never published; an entry agent over
@@ -96,6 +102,12 @@ sequenceDiagram
 
 Between steps 3 and 4, the budget check is a Redis read; the tokens the
 agent used are added after its loop.
+
+This path needs the supervisor to keep the agent's decision, and it never
+does for an `alert_key` seen for the first time: confidence is capped at
+0.5 then (ADR-0020), below every app's 0.6 threshold, so a new key always
+gets one human look (diagram 2). On Day 20 an all-benign security alert
+was escalated that way the first time and auto-resolved the second.
 
 ---
 

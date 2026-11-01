@@ -105,8 +105,9 @@ flowchart TB
 ### External client (alert source)
 Whatever raises alerts for an app — a monitoring system (it-ops), a cloud
 cost-anomaly detector (cost), a SIEM/EDR (security) — or, in this build,
-`backend/scripts/simulate_alerts.py` standing in for all three, plus
-curl during development. These systems are **outside** the platform: it
+`backend/scripts/burst.py` (it-ops and cost load, Day 16; on kind through
+`ingestion`'s NodePort, Day 19) and curl, until Day 21's
+`backend/scripts/simulate_alerts.py` stands in for all three. These systems are **outside** the platform: it
 neither hosts nor observes them. Each source picks its app by URL
 (`POST /apps/{app_id}/events`) — routing is never inferred. Talks only to
 `ingestion`, over REST. Never talks to Kafka, `orchestrator`, or any other
@@ -133,6 +134,9 @@ drop or refuse alerts; Postgres down → `503`. Enforces rate limits per `app_id
 per source within it (fixed one-minute Redis counters, limits from the
 manifest's `rate_limit`, `429` + `Retry-After`, ADR-0029), so one app's
 flood can't take another's allowance; Redis down → events are accepted.
+`/readyz` (Day 19) fails while starting, while draining, or when the
+outbox's Postgres doesn't answer; on SIGTERM in-flight requests finish
+before the process exits.
 
 ### `orchestrator`
 The agent runtime — the only service that runs LLM tool-calling loops. On
@@ -168,7 +172,14 @@ app's own manifest — not cross-app A2A. Owns token-budget enforcement per
 timeout on every MCP call, and dedupe of at-least-once deliveries (a
 `seen:{app_id}:{alert_id}` marker in Redis, set once the decision is
 published). Retries and circuit breakers around tools live in
-`tool-gateway`, not here.
+`tool-gateway`, not here; the only retry here is one MCP reconnect when a
+connection drops (each tool call opens its own short-lived connection, so a
+`tool-gateway` pod going away fails one call, never the run). A run is
+bounded by `RUN_TIMEOUT_S` (120s). Day 19 made pod swaps safe: `/readyz`
+needs the Kafka consumer joined and `registry`/`tool-gateway` reachable;
+an offset is committed only after its `alert.decided` is published; a
+consumer finishes and commits its current alert before giving up a
+partition (sticky assignor, ADR-0033) or exiting on SIGTERM.
 
 ### `tool-gateway`
 An MCP server — the only service that executes tools. Every tool is a
@@ -185,6 +196,10 @@ tools from `registry`, refuses a version other than the one it loaded
 one deadline covering its retries with backoff, and each tool a circuit
 breaker (ADR-0025), so a broken tool degrades predictably — the run
 escalates naming it — instead of hanging the whole platform.
+Loads three apps' tools today (`lookup_runbook`, `recent-changes-lookup`,
+`billing-lookup`, `ioc-reputation-lookup`) with no app-specific code of its
+own. `/readyz` (Day 19) is ready once the tool scan and the MCP endpoint
+are up, until SIGTERM, after which in-flight calls finish.
 
 ### `memory-store`
 The only service that reads/writes behavioral history. Serves `GetContext`
@@ -215,8 +230,9 @@ The manifest also carries the limits others enforce: each agent's
 `ingestion`, `orchestrator` and
 `tool-gateway` resolve "what am I allowed to do for this `app_id`" by
 asking `registry` (cached 30s), never by hardcoding it; `memory-store` reads
-only the app's `memory_namespace`. This is what makes adding app #2
-or #3 a registration plus an app folder, not a platform code change.
+only the app's `memory_namespace`. This is what made adding app #2
+(Day 13) and app #3 (Day 20) a registration plus an app folder, not a
+platform code change.
 
 ### `review-console`
 The human-in-the-loop surface. Consumes `alert.decided` and persists only
@@ -302,8 +318,9 @@ Traces, metrics, and logs respectively — each queried through Grafana, not
 directly.
 
 ### Grafana
-Dashboards: RED metrics per service, Kafka consumer lag, outbox backlog and
-DLQ count, decision distribution (auto-resolve/escalate/suppress) and
-latency per app, and — from Day 24 — LLM cost/token burn rate and tool-call
-volume per app and agent. For the platform's operators only; it never
+Runs in Compose today (anonymous admin, `:3000`) with nothing to show yet.
+Dashboards arrive with Day 23's OTel wiring: RED metrics per service, Kafka
+consumer lag, outbox backlog and DLQ count, decision distribution
+(auto-resolve/escalate/suppress) and latency per app; and on Day 24, LLM
+cost/token burn rate and tool-call volume per app and agent. For the platform's operators only; it never
 shows alert sources' or monitored systems' own telemetry.

@@ -1,7 +1,10 @@
 # orchestrator — class diagram
 
-As built through Day 17 of `docs/plan.md` (Day 17: the opt-in
-noise-verdict supervisor cap, ADR-0031; Day 12: a per-call MCP timeout
+As built through Day 20 of `docs/plan.md` (Day 19: readiness, a
+graceful drain, the sticky consumer that finishes its alert before a
+partition moves (ADR-0033), `RUN_TIMEOUT_S`, and a per-call MCP client
+with one retry on a dropped connection; Day 20: app #3 with no code change
+here; Day 17: the opt-in noise-verdict supervisor cap, ADR-0031; Day 12: a per-call MCP timeout
 and the new infra tool errors; Day 13: `prefetch_tools` and `alert_key` in
 the run context; Day 14: daily token budgets; Day 16: duplicate
 `alert.received` deliveries skipped). `orchestrator` runs the agents.
@@ -475,6 +478,13 @@ classDiagram
         class RegistryClient {
             <<ap-shared registry_client>>
             +get_app(app_id) dict
+        }
+        class Lifecycle {
+            <<ap-shared lifecycle>>
+            +install_sigterm_hook() None
+            +mark_started() None
+            +begin_drain() None
+            +not_ready_reasons(checks) list~str~
         }
     }
 

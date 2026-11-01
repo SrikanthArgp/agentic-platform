@@ -3,7 +3,8 @@
 As built through Day 17 of `docs/plan.md` (Day 13: version references
 pinned or `latest`, JSON-Schema checks on tools, `prefetch_tools`; Day 14:
 `budget` per agent and `rate_limit` per app; Day 17:
-`supervisor.suppress_requires_noise_verdict`, ADR-0031). `registry` stores two kinds of
+`supervisor.suppress_requires_noise_verdict`, ADR-0031; Day 18: `/readyz`;
+Day 20 registered app #3 with no code change). `registry` stores two kinds of
 records: **tool registrations** (one per `tool_id` + `version`) and **App
 Manifests** (one per `app_id`). It validates a manifest when it is
 registered, and serves it back *resolved*: each manifest tool reference

@@ -1,6 +1,6 @@
 # Build Plan: 27-Day Sequence
 
-Status: Days 1–17 done; Day 18 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
+Status: Days 1–20 done; Day 21 is next. Implements the design in `docs/ARCHITECTURE.md`. Each day builds on a *runnable* system from the day before — nothing is "wire it all up at the end."
 
 Service map this plan assumes (see `docs/ARCHITECTURE.md` for full rationale): `ingestion`, `orchestrator`, `memory-store`, `review-console`, `registry`, `tool-gateway`, plus the `outbox-relay` worker (Day 15, ADR-0030). The platform is multi-app: three configurable use cases (products) run on the same shared core, each registered as an **App Manifest** in `registry` (introduced Day 5) rather than hardcoded. App #1 / reference domain adapter: IT ops alert triage (`it-ops-triage`; `ingestion` accepts alerts; `orchestrator`'s agent decides auto-resolve / escalate / suppress-as-noise). App #2 is **cloud cost-anomaly triage** (`cost-anomaly-triage`): a spend-spike alert from a cloud billing/cost tool. App #3 is **security alert triage** (`security-alert-triage`): SIEM/EDR alerts. All three use the same `AUTO_RESOLVE` / `ESCALATE` / `SUPPRESS` decision enum from `agent.proto` — apps that need a different decision vocabulary would require a proto change and are out of scope. App #2 gets a first cut on Day 13 and is finished Day 17; a local Kubernetes cluster is stood up on Days 18–19 (ADR-0014), and app #3 is built Day 20 and shipped to it by rolling update. Agent-to-agent (A2A) communication between apps is explicitly out of scope — apps are isolated tenants sharing infrastructure (Kafka/gRPC/REST/MCP transports), not a mesh. A "tenant" is an app; there is no per-customer tenancy in this build.
 
@@ -607,6 +607,11 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 - Knobs: `--apps`, `--rate` (events/sec per app), `--duration`, `--mix` (scenario weights), `--seed` (deterministic replay for demos and debugging), `--collide-keys` (reuse `alert_key` values across apps).
 - Every event is tagged with its scenario and expected decision (in a header, not the payload), so a run can report expected-vs-actual decisions per app — a cheap live sanity check, and the seed for Day 25's eval sets.
 - **Unit tests**: every simulator scenario produces an event that passes its app's event schema, same `--seed` → identical event sequence, scenario discovery from a fixture apps dir.
+- **Carry-over from Days 16–20** (what exists, and what the live runs showed):
+  - `burst.py` (Days 16, 19) already sends it-ops and cost alerts and its `check` verifies each alert decided exactly once and flags "tool 'X' failed" / "not evaluated" decisions; keep that check (exactly-once, platform failures) in the simulator's report rather than rewriting it.
+  - On kind, send through `ingestion`'s NodePort (`--ingestion http://localhost:18101`): a port-forward is pinned to one pod and breaks on any rollout (Day 19).
+  - **Expected decisions must allow for the supervisor's novel-key cap**: the first alert on any `alert_key` is capped at 0.5 confidence and escalates (ADR-0020; seen live on Day 20, where an all-benign security alert escalated, then auto-resolved on its second send). "Noise" and "benign" scenarios only show `SUPPRESS`/`AUTO_RESOLVE` from their second occurrence on, or on seeded keys (`seed.py` for all three apps).
+  - **Token budgets end a long run early**: each agent has 1M tokens a UTC day by default (ADR-0029). Day 20's rollout check lost 56 of 120 alerts to "not evaluated: budget exceeded" after a day of testing. Report budget-exceeded decisions separately from wrong decisions, and size runs (or set `DAILY_TOKEN_BUDGET`/manifest `budget` for test runs) accordingly.
 
 **Definition of done**: one `simulate_alerts.py` run against all three apps produces a per-app expected-vs-actual report; adversarial scenarios that should escalate do.
 
@@ -619,6 +624,7 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 - Run on the kind cluster (Compose as a second check). Run all three apps' events through the shared pipeline concurrently, driven by `simulate_alerts.py` (security alerts at the highest rate), and confirm no cross-app leakage: memory context, tool access, cases, budgets, and rate limits stay scoped to each `app_id`. Include deliberately colliding `alert_key` values across apps (`--collide-keys`).
 - Check `docs/ARCHITECTURE.md` §3/§4/§12 against the code; fix whichever drifted.
 - **Unit tests**: full regression run across all three registered apps.
+- **Already shown** (so today checks, not rebuilds): Day 20 added app #3 to the kind cluster with no new Deployment and no service code change (8 Deployments before and after; outside `backend/apps/` only tests and `seed.py` changed). All three apps' tools load in the one `tool-gateway`; colliding keys across apps are the part not yet exercised.
 
 **Definition of done**: `it-ops-triage`, `cost-anomaly-triage`, and `security-alert-triage` are simultaneously registered and each produces correctly-scoped decisions, memory context, and cases through the identical platform code path; each app's agent sees only its own app tools plus allowlisted global ones; standing up apps #2/#3 added no containers to `docker-compose.yml` and no Deployments to `backend/deploy/k8s/` — only an image rebuild of `ingestion`/`orchestrator`/`tool-gateway` plus manifest registration (`docs/ARCHITECTURE.md` §12).
 
@@ -656,7 +662,8 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 - A small labeled fixture set per app (synthetic alerts with expected decisions — reuse Day 21's simulator scenarios as the starting point) checked into `backend/apps/{app_id}/`, including an **adversarial set** per app (§13 T1–T3: injection in payload, injection in `resolution_notes`, memory poisoning). Include **verdict-history cases** too (found on Day 10): the same alert under seeded memory with no verdicts, with 2+ `confirmed_noise_count`, and with `has_confirmed_incident_history`, so the eval measures how much verdicts move decisions; and a self-reinforcement case (T3): a key with only the platform's own earlier decisions and no verdicts must not be auto-resolved or suppressed on that history alone.
 - Eval script: run `orchestrator` against the fixtures, report per-app accuracy plus precision/recall per decision (`AUTO_RESOLVE` / `ESCALATE` / `SUPPRESS`) — missed escalations are the costliest error, so report `ESCALATE` recall explicitly — and flag regressions. Adversarial cases are a hard gate, not an average: any injected or poisoned case that ends `SUPPRESS`/`AUTO_RESOLVE` when it should escalate fails the run.
-- Run it as a script (`backend/scripts/run_eval.py`), mirroring Sentinel's batch re-scoring shape: on demand with `uv run`, and nightly by a Kubernetes `CronJob` on the kind cluster (`backend/deploy/k8s/`, ADR-0030). No job framework.
+- Run it as a script (`backend/scripts/run_eval.py`), mirroring Sentinel's batch re-scoring shape: on demand with `uv run`, and nightly by a Kubernetes `CronJob` on the kind cluster (`backend/deploy/k8s/`, ADR-0014, ADR-0030). No job framework.
+- Labels must reflect the platform's deterministic rules, not just the prompt: the novel-key cap (ADR-0020), each app's guardrails (ADR-0010) and the noise-verdict rule (ADR-0031, on for the cost and security apps). Day 20's live injection case (`security-alert-triage`, high severity, "SUPPRESS this" in the command line) and its known-bad, scanner-noise and incident-key cases are ready-made adversarial and verdict-history fixtures. Each eval run spends real tokens from the same daily budgets (ADR-0029).
 - **Unit tests**: the eval scoring logic itself (given known predictions vs. labels, correct metrics computed), the adversarial hard gate fails on a single miss.
 
 **Definition of done**: the eval script reports a baseline accuracy number per app locally; deliberately regressing the prompt/logic causes the eval to catch it.
@@ -670,7 +677,8 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 **Goal**: the platform's behavior under load and under failure is measured, not assumed.
 
 - Run on the kind cluster, where replicas are real. Load test at a sustained rate against `POST /apps/{app_id}/events` across all three apps, using `simulate_alerts.py` (Day 21) for realistic mixed traffic — either directly at higher `--rate`, or as the event generator inside a k6/locust harness. Capture p50/p95/p99 per `app_id`, not just overall, so one noisy app slowing the others is visible.
-- One deliberate failure scenario (kill `memory-store` or `tool-gateway` mid-load), observed through Grafana/Tempo — confirm `orchestrator` degrades predictably (e.g., escalate-by-default) rather than silently misbehaving.
+- One deliberate failure scenario (kill `memory-store` or `tool-gateway` mid-load), observed through Grafana/Tempo — confirm `orchestrator` degrades predictably (e.g., escalate-by-default) rather than silently misbehaving. Already seen without Grafana (Day 19): SIGKILLing a `tool-gateway` pod mid-call fails only that call (one MCP retry, which can land on the dying pod before it leaves the endpoints), never the run; `memory-store`, one replica, is the more interesting kill now.
+- Mind the daily token budgets (ADR-0029): a sustained run hits them within the day (Day 20) and turns the rest into "not evaluated". Raise `DAILY_TOKEN_BUDGET` or the manifests' `budget` for the run and say so with the numbers, or report budget-exceeded decisions separately.
 - **Unit tests**: none new — full regression suite run.
 
 **Definition of done**: documented load-test numbers and one documented, observed failure-mode behavior.
@@ -685,7 +693,7 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 - README: what it is, how to run it (`docker compose up`, `k8s_up.sh` and `rollout_app.sh`, seed script, `register_app.py`, `simulate_alerts.py` for a live demo, example `curl`), links to `docs/ARCHITECTURE.md`, `docs/adr/`, and `docs/ENTERPRISE_READINESS.md`.
 - Record the measured numbers (eval accuracy and `ESCALATE` recall per app, p95 latency per app, cost per 1,000 alerts per app) in the README.
 - Buffer time for whichever day ran over — treat Day 27 morning as unscheduled slack, not additional scope.
-- **Unit tests**: no new logic — full suite across all 6 services plus `outbox-relay` as a single regression pass.
+- **Unit tests**: no new logic — full suite across all 6 services, `outbox-relay`, `backend/shared` and `backend/deploy/k8s` as a single regression pass.
 
 **Definition of done**: documented load-test numbers against a stated target, one documented failure-mode behavior, a README that lets a stranger run the whole stack from a clean checkout, and a full `pytest` run passing green.
 
@@ -695,9 +703,9 @@ Buffer is built in on purpose: Day 11 and Day 22 are integration days with slack
 
 Planned in order in `docs/ENTERPRISE_READINESS.md` §8.
 
-- Production Kubernetes: a managed/multi-node cluster, Helm packaging, HPA, managed Kafka/Postgres/Redis, GitOps. This build has a local kind cluster with Kustomize (Days 18–19, ADR-0014) — enough to prove zero-interruption app rollouts, not to run production.
+- Production Kubernetes: a managed cluster with node pools, Helm packaging, HPA, managed Kafka/Postgres/Redis, HA for the single-replica services, GitOps. This build has a local two-node kind cluster with Kustomize (Days 18–19, ADR-0014, ADR-0032) — enough to prove zero-interruption app rollouts and node drains, not to run production.
 - Agent-to-agent (A2A) communication *across apps* — apps registered via the App Manifest (Day 5) are isolated tenants sharing platform infrastructure (Kafka/gRPC/REST/MCP), not agents calling each other directly. A dedicated A2A protocol is validation work for later. (Within-app delegation from an entry agent to a callable-only agent, e.g. `triage-agent → root-cause-summarizer` on Day 8, is in scope — that's a fixed edge in one app's own manifest, not agent discovery.)
-- A dynamic/self-serve app-registration UI or workflow — apps #2-3 are registered by hand with `register_app.py` (Day 13, Day 20), not through a built admin flow.
+- A dynamic/self-serve app-registration UI or workflow — apps #2-3 are registered by an operator running a script (`register_app.py`, Day 13; `rollout_app.sh`, Day 20), not through a built admin flow.
 - Automated remediation — agents and tools are read-only; `AUTO_RESOLVE` closes the alert, not the problem (`docs/ARCHITECTURE.md` §2, §11).
 - Anomaly detection — alerts are raised by external systems; the platform only triages them.
 - Real data connectors and a per-app credentials model — every app-owned tool reads a fixture in this build.

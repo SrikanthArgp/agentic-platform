@@ -307,7 +307,7 @@ That's the main reason to decide it early if customer tenancy is likely.
 
 | Area | Target |
 |---|---|
-| **Runtime** | Production Kubernetes, building on the build's local kind setup (ADR-0014: Kustomize, rolling app rollouts, graceful drain): managed multi-node cluster, one Deployment per service, HPA on `orchestrator` bounded by partition count (ADR-0002), managed Kafka/Postgres/Redis |
+| **Runtime** | Production Kubernetes, building on the build's local kind setup (ADR-0014: Kustomize, rolling app rollouts, graceful drain; two nodes with PDBs and per-node spread, ADR-0032): managed multi-node cluster, one Deployment per service, HPA on `orchestrator` bounded by partition count (ADR-0002), managed Kafka/Postgres/Redis |
 | **SLOs** | Per app: time from `202` to `alert.decided` (e.g. p95 < 30s), `ESCALATE` recall from evals, zero lost alerts (outbox backlog alarm) |
 | **Data durability** | Managed Postgres with backups/PITR; Kafka replication factor ≥ 3; Redis treated as rebuildable cache (already true for memory, §6) |
 | **Releases** | Prompt/model/guardrail changes ship via manifest PR + eval gate; service releases via canary on one app's traffic (dedicated deployment, §12) |

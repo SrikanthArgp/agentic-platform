@@ -1,7 +1,8 @@
 # review-console — class diagram
 
-As built through Day 15 of `docs/plan.md` (Day 15 moved verdicts onto
-`verdict_outbox`, ADR-0024): an `alert.decided` consumer that turns
+As built through Day 20 of `docs/plan.md` (Day 15 moved verdicts onto
+`verdict_outbox`, ADR-0024; Day 18 added `/readyz`, the same as
+`/healthz`; cases for all three apps since Day 20, no code change): an `alert.decided` consumer that turns
 escalations into cases, the analyst REST API, and the `verdict_outbox`
 writer that the `outbox-relay` worker publishes as `verdict.recorded`. Since Day 13 `GET /cases` has a second
 reader: `tool-gateway`'s global `similar-past-case-lookup` asks it for

@@ -1,9 +1,10 @@
 # memory-store — class diagram
 
-As built through Day 17 of `docs/plan.md` (Day 17: a third all-time fact,
+As built through Day 20 of `docs/plan.md` (Day 17: a third all-time fact,
 `confirmed_noise`, served as `has_confirmed_noise_history`, ADR-0031; since
-Day 13 it holds `cost-anomaly-triage`'s history too, under its own
-namespace). `memory-store` answers one
+Day 13 it holds `cost-anomaly-triage`'s history too, and since Day 20
+`security-alert-triage`'s, each under its own namespace; Day 18 added
+`/readyz`; no code change since). `memory-store` answers one
 question for `orchestrator`: *what has this platform seen and decided for
 this `alert_key` lately, and what did analysts say about it?* It serves
 gRPC `GetContext` (1h/24h/7d decision and verdict counts, `is_novel_alert`,

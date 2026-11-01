@@ -87,7 +87,7 @@ manifest, with no platform code change and no new services (§3, §12).
 
 **Cheapest 4th app to build**: data pipeline failures or CI flaky tests.
 Both have easy-to-fixture tools and show a new domain with no platform
-change. Add it the same way app #3 ships: `rollout_app.sh {app_id}`
+change. Add it the same way app #3 shipped: `rollout_app.sh {app_id}`
 (Day 19, ADR-0014).
 
 ---
@@ -119,7 +119,7 @@ produces per `app_id`:
 | Does it get better with feedback? | Precision/recall before vs. after verdicts on replayed traffic | Simulator replay (Day 21) + eval harness |
 | What does it cost? | Cost per 1,000 alerts | LLM observability (Day 24) |
 | Is it fast enough? | p95 time from `202` to `alert.decided` | Load test (Day 26) |
-| Can we add a use case safely? | Interruptions to existing apps during a new app's rollout | Rollout check (Days 19–20) |
+| Can we add a use case safely? | Interruptions to existing apps during a new app's rollout | Rollout check (Days 19–20): zero non-`202`s and zero tool failures for apps #1–#2 while app #3 rolled out |
 
 **Known gap**: `review-console` only keeps `ESCALATE` decisions as cases
 (`BLOCK_DIAGRAM.md`), so analysts never review an `AUTO_RESOLVE`d or

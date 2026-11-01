@@ -1,8 +1,10 @@
 # ingestion — class diagram
 
-As built through Day 15 of `docs/plan.md` (Day 15 replaced the Kafka
-publisher with the Postgres outbox, ADR-0030; Day 14 added rate limits per
-app and per source). `ingestion` is the platform's
+As built through Day 20 of `docs/plan.md` (Day 19: `/readyz` checks the
+outbox's Postgres and a SIGTERM drain, `ap-shared` `lifecycle`; Day 15
+replaced the Kafka publisher with the Postgres outbox, ADR-0030; Day 14
+added rate limits per app and per source; Days 17 and 20 added apps with
+no code change here). `ingestion` is the platform's
 REST front door: it accepts an alert at `POST /apps/{app_id}/events`,
 checks the app's rate limits, validates it against that app's rules (read
 from `registry`), turns it into a `RunAgentRequest`, and writes it to the
@@ -246,10 +248,11 @@ classDiagram
     envelope ..> RunAgentRequest : builds
     envelope ..> AlertKeyError : raises
 
-    %% kafka
-    KafkaPublisher ..|> Publisher : implements
-    KafkaPublisher *-- AIOKafkaProducer : idempotent, acks=all
-    KafkaPublisher ..> PublishError : raises
+    %% outbox (ADR-0030): no Kafka client in ingestion
+    PostgresOutbox ..|> Outbox : implements
+    PostgresOutbox *-- asyncpg : pool, 5s write / 1s ping
+    PostgresOutbox ..> OutboxError : raises
+    PostgresOutbox ..> OutboxEntry : inserts
 ```
 
 ## Classes and modules
@@ -290,8 +293,8 @@ naming why (`starting`, `draining`, `outbox: Postgres unreachable (…)`).
 **`alerts_router` (module)** has the two HTTP endpoints.
 
 - **`post_event`**, `POST /apps/{app_id}/events`: the intake. The URL
-  chooses the app; nothing infers it. Everything is validated before Kafka
-  is touched, in this order:
+  chooses the app; nothing infers it. Everything is validated before the
+  outbox is written, in this order:
   1. The envelope, by pydantic through `AlertIn`. Failure is a `422`.
   2. The serialized payload size against `max_payload_bytes`. Failure is a `413`.
   3. The app's spec, from `AppStore`. An unregistered app is a `404`;
@@ -305,8 +308,10 @@ naming why (`starting`, `draining`, `outbox: Postgres unreachable (…)`).
      every error.
   6. `alert_key`, built by `build_alert_key`. A missing field is a `422`.
 
-  It then mints `alert_id`, builds the protobuf and publishes. A
-  `PublishError` becomes a `503` with `Retry-After: 5`.
+  It then mints `alert_id`, builds the protobuf and writes one `outbox`
+  row (`Outbox.write`); `202` means that row is committed. An
+  `OutboxError` (Postgres down) becomes a `503` with `Retry-After: 5`, and
+  nothing was written, so a retry is safe.
 
 Day 4's `POST /alerts` and its debug `GET /alerts/{id}` are gone (both
 `404`). `ingestion` reads nothing back: a decision is seen on

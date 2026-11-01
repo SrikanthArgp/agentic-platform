@@ -1,9 +1,11 @@
 # tool-gateway — class diagram
 
-As built through Day 14 of `docs/plan.md` (Day 12: timeout, retry and
+As built through Day 20 of `docs/plan.md` (Day 12: timeout, retry and
 circuit breaker, the registered-schema check, `TOOL_FAULTS`; Day 13: the
 version check, the global `similar-past-case-lookup`, app #2's
-`billing-lookup`; unchanged on Day 14). `tool-gateway` is the platform's
+`billing-lookup`; Day 19: `/readyz` and a SIGTERM drain, `ap-shared`
+`lifecycle`; Day 20: app #3's `ioc-reputation-lookup`, picked up by the
+loader with no code change here). `tool-gateway` is the platform's
 MCP server. At startup it imports every app's tool modules from
 `backend/apps/*/tools/` into a `ToolRegistry`, and adds the platform's own
 global tools from `app/tools/`. It then serves MCP `tools/list` and
@@ -372,6 +374,29 @@ classDiagram
             +key, value: str
             +cost_usd: float
         }
+        class ioc_reputation_lookup {
+            <<module: security-alert-triage/tools/ioc_reputation_lookup.py>>
+            +ENTRIES: dict
+            +normalise(raw) tuple
+            +ioc_reputation_lookup(args) IocReputationOutput
+            -_load(path) dict
+        }
+        class IocReputationInput {
+            <<pydantic, extra=forbid>>
+            +indicator: str
+        }
+        class IocReputationOutput {
+            <<pydantic, extra=forbid>>
+            +indicator: str
+            +type: ip or domain or file_hash or unrecognized
+            +verdict: known-bad or known-benign or unknown
+            +source: str?
+            +description: str?
+        }
+        class Entry {
+            <<pydantic, extra=forbid>>
+            +type, value, verdict, source, description
+        }
     }
 
     %% composition root
@@ -456,6 +481,10 @@ classDiagram
     billing_lookup o-- LineItem : ITEMS
     BillingLookupOutput *-- ResourceCost
     BillingLookupOutput *-- TagCost
+    ioc_reputation_lookup ..|> AppToolModule : exports TOOLS
+    ioc_reputation_lookup ..> IocReputationInput
+    ioc_reputation_lookup ..> IocReputationOutput
+    ioc_reputation_lookup o-- Entry : ENTRIES
     ToolSpec ..> LookupRunbookInput : input_model
     ToolSpec ..> LookupRunbookOutput : output_model
 ```
