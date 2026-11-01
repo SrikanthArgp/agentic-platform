@@ -37,8 +37,8 @@ spec:
             requests: { cpu: 50m, memory: 96Mi }
             limits: { cpu: "500m", memory: 256Mi }
           # Liveness is /healthz (the process is up); readiness is /readyz
-          # (Day 19 makes it check this pod's dependencies). The startup probe
-          # holds both off while uv starts the app.
+          # (Postgres reachable; `standby` counts as ready, Day 18). The
+          # startup probe holds both off while uv starts the app.
           startupProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 2

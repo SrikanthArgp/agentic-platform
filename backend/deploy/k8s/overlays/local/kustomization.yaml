@@ -5,6 +5,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../../base
+  - ingestion-nodeport.yaml
 images:
   - { name: agentic-platform/ingestion, newTag: unbuilt }
   - { name: agentic-platform/orchestrator, newTag: unbuilt }
@@ -13,3 +14,15 @@ images:
   - { name: agentic-platform/registry, newTag: unbuilt }
   - { name: agentic-platform/review-console, newTag: unbuilt }
   - { name: agentic-platform/outbox-relay, newTag: unbuilt }
+# Two nodes (kind-config.yaml, ADR-0032). Infra StatefulSets keep their data
+# on a node-local volume, and a single-replica service can't move without
+# an outage, so both stay on the control-plane: the worker carries only
+# replicated pods, and draining it interrupts nothing.
+patches:
+  - target: { kind: StatefulSet }
+    patch: &on-control-plane |
+      - op: add
+        path: /spec/template/spec/nodeSelector
+        value: { node-role.kubernetes.io/control-plane: "" }
+  - target: { kind: Deployment, name: "^(registry|memory-store|review-console|outbox-relay|otel-collector)$" }
+    patch: *on-control-plane

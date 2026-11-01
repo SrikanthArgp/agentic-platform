@@ -86,8 +86,9 @@ classDiagram
             +SERVICE_NAME = "orchestrator"
             +build_runner(settings, registry, memory, budget) AgentRunner
             -lifespan(app) AsyncIterator
+            +readiness_checks(settings, pipeline, http) dict
             +healthz() HealthResponse
-            +readyz() HealthResponse
+            +readyz() HealthResponse | NotReadyResponse
         }
         class Settings {
             <<frozen dataclass>>
@@ -109,6 +110,7 @@ classDiagram
             +redis_url: str
             +daily_token_budget: int
             +seen_ttl_s: int
+            +run_timeout_s: float
             +from_env()$ Settings
         }
     }
@@ -118,8 +120,17 @@ classDiagram
             -_runner: AgentRunner
             -_seen: SeenAlerts?
             -_received_topic, _decided_topic, _group_id
+            -_idle: Event
+            -_rebalancing: bool
+            +joined: bool
+            +ready: bool
             +start() None
-            +stop() None
+            +stop(timeout_s) None
+        }
+        class _Rebalance {
+            <<ConsumerRebalanceListener>>
+            +on_partitions_revoked(revoked) waits for _idle
+            +on_partitions_assigned(assigned) None
         }
         class kafka_alerts {
             <<module: app.kafka.alerts>>
@@ -149,6 +160,7 @@ classDiagram
             -_min_confidence: float
             -_callable_timeout_s: float
             -_budget: TokenBudget?
+            -_run_timeout_s: float
             -_graph: CompiledStateGraph
             -_callable_graph: CompiledStateGraph
             +run(request) RunAgentResponse
@@ -156,6 +168,9 @@ classDiagram
         class loop {
             <<module: app.agent.loop>>
             +not_evaluated_response(request, why) RunAgentResponse
+        }
+        class RunTimeoutError {
+            <<exception: RuntimeError>>
         }
         class graph {
             <<module: app.agent.graph>>
@@ -310,10 +325,12 @@ classDiagram
             +call_tool(name, arguments, context) ToolResult
         }
         class MCPToolGateway {
+            -_target: Callable
             -_call_timeout_s: float
             +connect() AsyncIterator~MCPToolSession~
         }
         class MCPToolSession {
+            +with_client(what, use) T
             +list_tools() list~GatewayTool~
             +call_tool(name, arguments, context) ToolResult
         }
@@ -470,10 +487,12 @@ classDiagram
     main ..> MemoryStoreClient : one channel per process
     main ..> RegistryClient
     main ..> TokenBudget : over one Redis client
-    main *-- AlertPipeline : lifespan
+    main *-- AlertPipeline : lifespan; stop(RUN_TIMEOUT_S + 15s)
+    main ..> Lifecycle : /readyz, SIGTERM hook (ap-shared)
 
     %% transports
     AlertPipeline ..> kafka_alerts : handle_alert
+    AlertPipeline *-- _Rebalance : consumer listener
     AlertPipeline ..> SeenAlerts : mark() after publishing
     kafka_alerts ..> SeenAlerts : seen() before the run
     kafka_alerts ..> AgentRunner : run
@@ -614,12 +633,25 @@ from:
 - `llm.build_chat_model(LLM_PROVIDER, LLM_MODEL)`;
 - the `MemoryStoreClient`;
 - the `TokenBudget`;
-- `MAX_TOOL_ROUNDS`, `MIN_CONFIDENCE`, `CALLABLE_TIMEOUT_S`.
+- `MAX_TOOL_ROUNDS`, `MIN_CONFIDENCE`, `CALLABLE_TIMEOUT_S`, `RUN_TIMEOUT_S`.
 
 `lifespan()` builds everything at startup, not at import, because the
 OpenAI client needs `OPENAI_API_KEY` and tests import `main` without one.
 It makes one Redis client for budgets with 0.5s socket timeouts, so a
 budget check is never what makes a run slow.
+
+**Readiness and shutdown** (Day 19). `/readyz` is `200` once the lifespan
+has started, until SIGTERM, while `readiness_checks()` pass: the Kafka
+consumer has joined its group (`AlertPipeline.ready`; skipped with
+`KAFKA_ENABLED=false`), and `registry` and `tool-gateway` answer
+`/healthz` (1s each). Otherwise `503` naming each failure. `/healthz`
+checks nothing, so an outage takes pods out of rotation without restarting
+them. On SIGTERM the `Lifecycle` hook (ap-shared) fails `/readyz` and hands
+over to uvicorn, which closes HTTP; the lifespan shutdown then runs
+`AlertPipeline.stop()` and the gRPC server's graceful stop together, each
+allowed `RUN_TIMEOUT_S` + 15s, before closing the clients. That's under
+the Deployment's `terminationGracePeriodSeconds` (150s) and Compose's
+`stop_grace_period`.
 
 **`Settings`**: frozen dataclass read from the environment:
 - `TOOL_GATEWAY_URL`, `REGISTRY_URL`, `MANIFEST_TTL_S` (default 30);
@@ -629,6 +661,9 @@ budget check is never what makes a run slow.
   `CALLABLE_TIMEOUT_S` (default 30);
 - `TOOL_CALL_TIMEOUT_S` (default 10, longer than `tool-gateway`'s own 5s,
   so it only fires when `tool-gateway` itself hangs);
+- `RUN_TIMEOUT_S` (default 120): the most a whole run may take; past it
+  `AgentRunner.run()` raises `RunTimeoutError` ("not evaluated"). It bounds
+  how long a stopping pod or a rebalance waits for the current alert;
 - `REDIS_URL`, `DAILY_TOKEN_BUDGET` (default 1,000,000, for agents whose
   manifest sets no `budget.daily_tokens`);
 - `LLM_PROVIDER`, `LLM_MODEL`;
@@ -639,10 +674,20 @@ budget check is never what makes a run slow.
 These are unchanged by LangGraph: both call `AgentRunner.run()`.
 - `handle_alert()` turns any failed run (`ResolutionError`, `LLMError`,
   `ManifestUnavailableError`, `GatewayUnavailableError`,
-  `BudgetExceededError`, anything else) into
+  `BudgetExceededError`, `RunTimeoutError`, anything else) into
   `not_evaluated_response()`, so every decodable alert gets exactly one
   `alert.decided`.
-- `AlertPipeline` commits only after publishing.
+- `AlertPipeline` takes one message at a time (`getmany(max_records=1)`,
+  0.5s polls so it notices `stop()`) and commits that message's
+  `offset + 1` only after its `alert.decided` is published; a failed
+  publish commits nothing, and the consumer reconnects (any `KafkaError`).
+  It uses the sticky assignor (aiokafka has no cooperative rebalancing,
+  ADR-0033). Its listener, **`_Rebalance`**, makes a revoke wait until the
+  alert in progress is committed, and the pipeline takes no new message
+  until the new assignment arrives, so a partition never moves mid-alert.
+  `stop(timeout_s)` finishes the current alert, commits, and stops the
+  consumer (`LeaveGroup`); past `timeout_s` it cancels, leaving that alert
+  uncommitted for another replica.
 - **Duplicates** (Day 16): delivery is at-least-once, so `handle_alert()`
   returns `None` for an alert whose `seen:{app_id}:{alert_id}` marker
   exists (`SeenAlerts.seen`), without running anything. `AlertPipeline`
@@ -738,13 +783,23 @@ nodes.
 
 ### Ports — `app/tools/gateway.py`, `app/memory/client.py`
 
-- **`ToolGateway` / `ToolSession`**: `connect()` opens an `mcp.Client`;
-  if that fails (tool-gateway down: MCP initialize fails before any call)
-  it raises `GatewayUnavailableError`, and the run is "not evaluated".
-  `MCPToolSession.call_tool` sends the arguments, with `RunContext`
-  (`app_id`, `agent_id`, `alert_id`, `alert_key`) as `_meta`. A transport
-  failure on a call, or no answer within `TOOL_CALL_TIMEOUT_S`, becomes
-  `gateway_unreachable`.
+- **`ToolGateway` / `ToolSession`**: every MCP request opens its own
+  short-lived `mcp.Client` (`MCPToolSession.with_client`), so each call is
+  a new connection through the Service to a ready replica. The MCP SDK
+  fails a client's task group on a dropped connection, which cancels the
+  task that opened it; with one client per run that cancelled the whole
+  run (Day 19). `connect()` first opens and closes one client (the MCP
+  handshake); if that fails it raises `GatewayUnavailableError`, and the
+  run is "not evaluated". `MCPToolSession.call_tool` sends the arguments,
+  with `RunContext` (`app_id`, `agent_id`, `alert_id`, `alert_key`) as
+  `_meta`. A dropped connection (`connection_dropped()`: an `httpx2`
+  transport error that isn't a timeout, found inside the exception group)
+  is retried once on a new client; safe because tools are read-only
+  (ADR-0004). A second drop, any other failure, or no answer within
+  `TOOL_CALL_TIMEOUT_S` becomes `gateway_unreachable`; a tool's own error
+  result is never retried. Cost: each call also does the MCP handshake and,
+  for a tool not yet listed on that client, a `tools/list` (the SDK checks
+  results against output schemas), so about three requests per call.
 - **`MemoryStoreClient`**: one `grpc.aio` channel per process, with a
   deadline on each call. Any RPC error becomes `ContextUnavailableError`.
 
@@ -840,7 +895,4 @@ on the allowlist and callable with `{}`) and `budget`
 
   Fakes stand in for the gateway, registry and memory, and no test calls a
   real LLM.
-- **Next changes**: Day 19 makes `/readyz` (today the same as
-  `/healthz`) check the consumer joined and its dependencies, adds a graceful
-  drain on SIGTERM and one MCP reconnect-and-retry on a dropped
-  connection; Day 24 prices the recorded tokens.
+- **Next changes**: Day 24 prices the recorded tokens.

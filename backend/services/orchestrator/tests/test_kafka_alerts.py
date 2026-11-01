@@ -1,5 +1,6 @@
 """`alert.received` message handling (the pure part under the Kafka loop)."""
 
+import asyncio
 from contextlib import asynccontextmanager
 
 import pytest
@@ -90,3 +91,26 @@ async def test_tool_gateway_down_publishes_escalate(apps_dir):
 @pytest.mark.parametrize("raw", [b"\xff\xff\xff", agent_pb2.RunAgentRequest(app_id="a").SerializeToString()])
 async def test_undecodable_or_unidentifiable_message_is_skipped(apps_dir, raw):
     assert await handle_alert(raw, make_runner(apps_dir, FakeChatModel(responses=[]))) is None
+
+
+class SlowMemory(FakeMemory):
+    async def get_context(self, app_id, alert_key):
+        await asyncio.sleep(5)
+
+
+async def test_a_run_past_its_deadline_publishes_escalate(apps_dir):
+    # RUN_TIMEOUT_S bounds the whole run (Day 19): a pod being replaced
+    # waits at most that long for its current alert.
+    runner = make_runner(apps_dir, FakeChatModel(responses=[final()]), memory=SlowMemory())
+    runner._run_timeout_s = 0.1
+    _, response = await handle_alert(make_request().SerializeToString(), runner)
+
+    assert response.decision == agent_pb2.ESCALATE
+    assert "not evaluated: run timed out after 0.1s" in response.reasons[0]
+
+
+async def test_a_timeout_inside_the_run_is_not_mistaken_for_the_deadline(apps_dir):
+    runner = make_runner(apps_dir, FakeChatModel(responses=[TimeoutError("read timed out")]))
+    _, response = await handle_alert(make_request().SerializeToString(), runner)
+
+    assert "LLM unavailable" in response.reasons[0]

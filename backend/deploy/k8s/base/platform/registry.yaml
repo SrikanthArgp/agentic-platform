@@ -32,9 +32,10 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: "500m", memory: 512Mi }
-          # Liveness is /healthz (the process is up); readiness is /readyz
-          # (Day 19 makes it check this pod's dependencies). The startup probe
-          # holds both off while uv starts the app.
+          # Liveness is /healthz (the process is up); readiness is /readyz,
+          # the same check here: one replica, not rolled per app (Day 19's
+          # dependency-aware readiness is for ingestion/orchestrator/
+          # tool-gateway). The startup probe holds both off while uv starts the app.
           startupProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 2

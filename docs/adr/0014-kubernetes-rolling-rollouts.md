@@ -1,6 +1,8 @@
 # ADR-0014: Local Kubernetes from app #3 on; new apps ship by rolling update
 
-- **Status**: Accepted
+- **Status**: Accepted. Two bullets were later changed by newer ADRs:
+  the local cluster is two nodes (ADR-0032), and `orchestrator` uses sticky
+  eager rebalancing, not cooperative (ADR-0033).
 - **Date**: 2026-10-02
 - **See**: `ARCHITECTURE.md` §11, §12; `plan.md` Days 18–20; ADR-0003, ADR-0006
 

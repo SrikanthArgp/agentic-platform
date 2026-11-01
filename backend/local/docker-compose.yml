@@ -184,6 +184,9 @@ services:
   ingestion:
     <<: *service-defaults
     build: { context: .., dockerfile: services/ingestion/Dockerfile }
+    # `docker stop` drains like a Kubernetes pod stop (Day 19): SIGTERM, then
+    # in-flight requests finish. Same grace as the Deployment.
+    stop_grace_period: 30s
     ports: ["8001:8000"]
     volumes:
       # Local iteration only; the image copy is authoritative (§12).
@@ -197,6 +200,9 @@ services:
   orchestrator:
     <<: *service-defaults
     build: { context: .., dockerfile: services/orchestrator/Dockerfile }
+    # Finishes the current alert (RUN_TIMEOUT_S, 120s) and commits it before
+    # exiting (Day 19); Docker's default 10s would kill it mid-run.
+    stop_grace_period: 150s
     # gRPC Agent service on 50051 (published as 50052 for host testing).
     ports: ["8002:8000", "50052:50051"]
     environment:
@@ -222,6 +228,7 @@ services:
   tool-gateway:
     <<: *service-defaults
     build: { context: .., dockerfile: services/tool-gateway/Dockerfile }
+    stop_grace_period: 30s  # in-flight MCP calls finish (Day 19)
     ports: ["8003:8000"]
     # Empty unless set in the shell, to break a tool on purpose
     # (app/core/faults.py), e.g. TOOL_FAULTS=lookup_runbook=error.

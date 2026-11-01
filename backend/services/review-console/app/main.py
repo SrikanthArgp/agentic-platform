@@ -59,8 +59,10 @@ def create_app(settings: Settings | None = None, store: CaseStore | None = None)
     async def healthz() -> HealthResponse:
         return HealthResponse(status="ok", service=SERVICE_NAME)
 
-    # Readiness probe (Kubernetes, docs/plan.md Day 18). For now it is the
-    # same as /healthz; Day 19 makes it check what this service needs.
+    # Readiness probe (Kubernetes, docs/plan.md Day 18): the same as /healthz.
+    # Day 19's dependency-aware /readyz and drain are for the services rolled
+    # on every app rollout (ingestion, orchestrator, tool-gateway); this one
+    # runs one replica and isn't.
     @app.get("/readyz", response_model=HealthResponse)
     async def readyz() -> HealthResponse:
         return HealthResponse(status="ok", service=SERVICE_NAME)

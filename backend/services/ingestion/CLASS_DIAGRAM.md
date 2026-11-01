@@ -23,12 +23,16 @@ classDiagram
             +create_app(settings, outbox, apps, rate_limiter) FastAPI
             -lifespan(app) AsyncIterator
             +healthz() HealthResponse
-            +readyz() HealthResponse
+            +readyz() HealthResponse | NotReadyResponse
         }
         class HealthResponse {
             <<pydantic>>
             +status: str
             +service: str
+        }
+        class NotReadyResponse {
+            <<pydantic, 503>>
+            +reasons: list~str~
         }
     }
 
@@ -131,6 +135,7 @@ classDiagram
         class Outbox {
             <<Protocol>>
             +write(entry: OutboxEntry) None
+            +ping() str?
         }
         class PostgresOutbox {
             -_dsn: str
@@ -174,6 +179,15 @@ classDiagram
             <<ap-shared>>
             +setup_observability(service_name) Tracer
         }
+        class Lifecycle {
+            <<ap-shared lifecycle>>
+            +started: bool
+            +draining: bool
+            +install_sigterm_hook() None
+            +mark_started() None
+            +begin_drain() None
+            +not_ready_reasons(checks) list~str~
+        }
         class RegistryClient {
             <<ap-shared registry_client>>
             +get_app(app_id) dict
@@ -194,6 +208,8 @@ classDiagram
     main *-- PostgresOutbox : app.state.outbox, unless injected
     main *-- RateLimiter : app.state.rate_limiter, if REDIS_URL or injected
     main ..> observability : setup at import
+    main *-- Lifecycle : app.state.lifecycle; /readyz, SIGTERM hook
+    main ..> Outbox : /readyz calls ping()
     main ..> alerts_router : include_router
     main ..> HealthResponse
 
@@ -248,19 +264,26 @@ without globals:
 |---|---|---|
 | `settings` | `Settings` | |
 | `apps` | `AppStore` | over the `RegistryClient` (or a fake a test passes as `apps`) |
-| `publisher` | `Publisher` | a `KafkaPublisher`, or the fake a test passes in |
+| `outbox` | `Outbox` | the `PostgresOutbox`, or the fake a test passes in |
+| `lifecycle` | `Lifecycle` (ap-shared) | started/draining, for `/readyz` |
 | `rate_limiter` | `RateLimiter` or `None` | over Redis when `REDIS_URL` is set (0.2s socket timeouts), or the one a test passes in; `None` (a startup warning) means no rate limiting |
 
-`lifespan()` starts `KafkaPublisher` (connecting in the background) on
-startup and stops it on shutdown, then closes the
-`RegistryClient` and Redis client if `create_app()` made them. When a test injects a
-`publisher`, or `KAFKA_ENABLED=false`, no producer is created, so
-the app runs with no broker. `setup_observability()` is called at import
+`lifespan()` starts the `PostgresOutbox` pool (warning, not failing, if
+Postgres is down), wraps uvicorn's SIGTERM handler
+(`Lifecycle.install_sigterm_hook()`) and marks the app started. On
+SIGTERM `/readyz` fails at once; uvicorn closes its listener and lets
+in-flight requests (each at most one outbox write) finish; then the
+lifespan shutdown closes the pool, the `RegistryClient` and Redis client
+if `create_app()` made them (Day 19). `setup_observability()` is called at import
 time so logging is JSON from the first line.
 
 **`HealthResponse`** is the `/healthz` body (`status`, `service`). Compose
-health checks and the Kubernetes liveness probe use it. `/readyz` (Day 18,
-the Kubernetes readiness probe) returns the same body for now.
+health checks and the Kubernetes liveness probe use it; it never checks a
+dependency, so an outage takes pods out of rotation without restarting
+them. `/readyz` (the Kubernetes readiness probe, Day 19) answers the same
+body when the app has started, isn't draining and `outbox.ping()` (a
+`SELECT 1`, 1s) succeeds; otherwise `503` with a **`NotReadyResponse`**
+naming why (`starting`, `draining`, `outbox: Postgres unreachable (…)`).
 
 ### API — `app/api/alerts.py`
 
@@ -392,7 +415,8 @@ Tests inject a fake; production uses `PostgresOutbox`.
 **`PostgresOutbox`**: an asyncpg pool. `start()` creates it but only warns
 if Postgres is down, so the service comes up anyway; `write()` retries the
 pool and inserts one `outbox` row (5s timeout), raising `OutboxError` on
-any connection or database failure.
+any connection or database failure. `ping()` (for `/readyz`) runs
+`SELECT 1` with a 1s timeout and returns why it failed, or `None`.
 
 **`OutboxEntry`** is the row: topic `alert.received`, `kafka_key`, the
 serialized `RunAgentRequest`, and `headers` from **`trace_headers()`**, the
@@ -431,5 +455,5 @@ Kafka is up. `ingestion` has no Kafka client at all (ADR-0030).
   under `backend/apps/{app_id}/` (the schema itself).
 - **Fail before writing**: all validation happens before the outbox
   write, so a bad alert never reaches the agent.
-- **Next changes**: **Day 19**: `/readyz` checks Postgres is reachable
-  (today it always answers 200), and a graceful drain on SIGTERM.
+- **Graceful stop** (Day 19): readiness fails on SIGTERM and in-flight
+  requests finish (`tests/test_shutdown.py`, against a real uvicorn).

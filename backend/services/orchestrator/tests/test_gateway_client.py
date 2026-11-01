@@ -2,13 +2,19 @@
 
 import json
 import time
+from contextlib import asynccontextmanager
 
 import anyio
+import httpx2
 import mcp_types as types
 import pytest
+from mcp.client.streamable_http import streamable_http_client
 from mcp.server import Server
+from mcp.server.streamable_http_manager import StreamableHTTPASGIApp, StreamableHTTPSessionManager
+from starlette.applications import Starlette
+from starlette.routing import Route
 
-from app.tools.gateway import GATEWAY_UNREACHABLE, GatewayUnavailableError, MCPToolGateway
+from app.tools.gateway import GATEWAY_UNREACHABLE, GatewayUnavailableError, MCPToolGateway, connection_dropped
 from run_context import RunContext, from_meta
 
 pytestmark = pytest.mark.anyio
@@ -78,18 +84,6 @@ async def test_error_result_keeps_the_gateway_error_code():
     assert result.error_code == "tool_failed"
 
 
-async def test_transport_failure_becomes_gateway_unreachable():
-    class BrokenClient:
-        async def call_tool(self, *args, **kwargs):
-            raise ConnectionError("connection refused")
-
-    from app.tools.gateway import MCPToolSession
-
-    result = await MCPToolSession(BrokenClient()).call_tool("lookup_runbook", {}, context=CONTEXT)
-    assert result.is_error
-    assert result.error_code == GATEWAY_UNREACHABLE
-
-
 async def test_a_hung_gateway_call_times_out_as_gateway_unreachable():
     started = time.monotonic()
     async with MCPToolGateway(fake_tool_gateway([]), call_timeout_s=0.1).connect() as session:
@@ -116,3 +110,84 @@ async def test_errors_inside_the_session_are_not_mistaken_for_an_outage():
 
     assert not isinstance(e.value, GatewayUnavailableError)
     assert isinstance(e.value, ValueError) or e.group_contains(ValueError, match="caller bug")
+
+
+# --- Dropped connections (Day 19): over real Streamable HTTP, through an
+# HTTP transport that drops chosen tools/call requests before they're sent.
+
+
+class DroppingTransport(httpx2.AsyncBaseTransport):
+    def __init__(self, inner: httpx2.AsyncBaseTransport, drop_calls: int):
+        self.inner = inner
+        self.drop_calls = drop_calls
+        self.dropped = 0
+
+    async def handle_async_request(self, request):
+        if b'"tools/call"' in (request.content or b"") and self.dropped < self.drop_calls:
+            self.dropped += 1
+            raise httpx2.RemoteProtocolError("Server disconnected without sending a response.")
+        return await self.inner.handle_async_request(request)
+
+
+@asynccontextmanager
+async def over_http(received: list, drop_calls: int):
+    manager = StreamableHTTPSessionManager(app=fake_tool_gateway(received), json_response=True, stateless=True)
+    app = Starlette(routes=[Route("/mcp", StreamableHTTPASGIApp(manager), methods=["GET", "POST", "DELETE"])])
+    transport = DroppingTransport(httpx2.ASGITransport(app=app), drop_calls)
+    async with manager.run(), httpx2.AsyncClient(transport=transport) as http:
+        yield MCPToolGateway(
+            None, target=lambda: streamable_http_client("http://localhost/mcp", http_client=http)
+        ), transport
+
+
+async def test_a_dropped_connection_is_retried_once_on_a_new_one():
+    received: list = []
+    async with over_http(received, drop_calls=1) as (gateway, transport):
+        async with gateway.connect() as session:
+            result = await session.call_tool("lookup_runbook", {"alert_type": "disk_full"}, context=CONTEXT)
+
+    assert not result.is_error
+    assert result.content == {"found": True, "alert_type": "disk_full"}
+    assert transport.dropped == 1
+    assert len(received) == 1  # the dropped attempt never reached the server
+
+
+async def test_a_second_dropped_connection_is_an_ordinary_tool_failure():
+    received: list = []
+    async with over_http(received, drop_calls=5) as (gateway, transport):
+        async with gateway.connect() as session:
+            result = await session.call_tool("lookup_runbook", {"alert_type": "disk_full"}, context=CONTEXT)
+            # The run's own task wasn't cancelled: the session still works.
+            transport.drop_calls = 0
+            after = await session.call_tool("lookup_runbook", {"alert_type": "x"}, context=CONTEXT)
+
+    assert result.error_code == GATEWAY_UNREACHABLE
+    assert transport.dropped == 2  # one try, exactly one retry
+    assert not after.is_error
+
+
+async def test_a_tool_error_is_never_retried():
+    received: list = []
+    async with over_http(received, drop_calls=0) as (gateway, _):
+        async with gateway.connect() as session:
+            result = await session.call_tool("boom", {}, context=CONTEXT)
+
+    assert result.error_code == "tool_failed"
+    assert [name for name, _, _ in received] == ["boom"]
+
+
+async def test_a_timeout_is_never_retried():
+    received: list = []
+    async with MCPToolGateway(fake_tool_gateway(received), call_timeout_s=0.1).connect() as session:
+        result = await session.call_tool("hang", {}, context=CONTEXT)
+
+    assert result.error_code == GATEWAY_UNREACHABLE
+    assert [name for name, _, _ in received] == ["hang"]
+
+
+def test_only_transport_failures_count_as_a_dropped_connection():
+    dropped = httpx2.RemoteProtocolError("Server disconnected")
+    assert connection_dropped(ExceptionGroup("tg", [ExceptionGroup("inner", [dropped])]))
+    assert connection_dropped(httpx2.ConnectError("connection refused"))
+    assert not connection_dropped(httpx2.ReadTimeout("timed out"))
+    assert not connection_dropped(ValueError("bad result"))

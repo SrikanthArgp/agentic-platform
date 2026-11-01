@@ -14,7 +14,10 @@ carries every alert and every verdict to Kafka: `ingestion` and
 **Deployment**: each block is one container (Compose,
 `backend/local/`) or one Deployment + Service (the local kind cluster,
 `backend/deploy/k8s/`, brought up by `backend/scripts/k8s_up.sh`), shared
-by every app. On kind, Kafka, Postgres and Redis are single-replica
+by every app. On kind (two nodes, ADR-0032), `ingestion`, `orchestrator`
+and `tool-gateway` run 2 replicas, one per node, so a rolling update or a
+node drain always leaves one serving (Day 19); every other block is one
+replica on the control-plane. Kafka, Postgres and Redis are single-replica
 StatefulSets and the OTel Collector is a no-op sink until Day 23.
 Adding an app adds no blocks (`ARCHITECTURE.md` §12, ADR-0014).
 

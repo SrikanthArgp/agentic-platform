@@ -231,7 +231,8 @@ classDiagram
 publishes it as 50053) and, unless `KAFKA_ENABLED=false`, the
 `EventConsumer`. On shutdown it stops all of them in reverse. HTTP serves
 only `/healthz` and `/readyz` (the Kubernetes probes; `/readyz` is the
-same body until Day 19).
+same body: one replica, not rolled per app, so it doesn't get Day 19's
+dependency-aware readiness).
 
 **`Settings`**: frozen dataclass from the environment, with defaults that
 point at the Compose stack from the host.

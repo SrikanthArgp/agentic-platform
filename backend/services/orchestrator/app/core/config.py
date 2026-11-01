@@ -43,6 +43,10 @@ class Settings:
     daily_token_budget: int = 1_000_000
     # How long `seen:{app_id}:{alert_id}` says "already decided" (Day 16).
     seen_ttl_s: int = 24 * 3600
+    # Longest a whole run may take before it's "not evaluated" (Day 19).
+    # A pod being replaced waits this long for its current alert, so the
+    # Deployment's terminationGracePeriodSeconds is set above it.
+    run_timeout_s: float = 120.0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -66,4 +70,5 @@ class Settings:
             redis_url=env.get("REDIS_URL", cls.redis_url),
             daily_token_budget=int(env.get("DAILY_TOKEN_BUDGET", cls.daily_token_budget)),
             seen_ttl_s=int(env.get("SEEN_TTL_S", cls.seen_ttl_s)),
+            run_timeout_s=float(env.get("RUN_TIMEOUT_S", cls.run_timeout_s)),
         )

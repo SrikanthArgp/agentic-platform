@@ -20,10 +20,24 @@ def test_healthz_returns_200_with_expected_shape():
     assert response.json() == {"status": "ok", "service": "tool-gateway"}
 
 
-def test_readyz_returns_200_with_expected_shape():
+def test_readyz_is_503_until_the_tool_scan_and_startup_finish():
+    # Without the lifespan, startup hasn't finished: not ready.
     response = client.get("/readyz")
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok", "service": "tool-gateway"}
+    assert response.status_code == 503
+    assert response.json()["reasons"] == ["starting"]
+
+
+def test_readyz_is_200_once_started_and_503_once_draining():
+    app_ = create_app(apps=FakeApps({}), cases=FakeCases([]))
+    with TestClient(app_) as started:
+        ready = started.get("/readyz")
+        app_.state.lifecycle.begin_drain()
+        draining = started.get("/readyz")
+
+    assert ready.status_code == 200
+    assert ready.json() == {"status": "ok", "service": "tool-gateway"}
+    assert draining.status_code == 503
+    assert draining.json()["reasons"] == ["draining"]
 
 
 def test_health_response_rejects_missing_fields():

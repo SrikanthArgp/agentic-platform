@@ -1,4 +1,4 @@
-"""Invariants of the local kind manifests (docs/plan.md Day 18, ADR-0014).
+"""Invariants of the local kind manifests (docs/plan.md Days 18-19, ADR-0014).
 
 Renders them the way k8s_up.sh does (`render.sh TAG`, with an empty env file
 so no real key is read) and checks what every rollout depends on:
@@ -30,6 +30,8 @@ PLATFORM = {
     "review-console",
     "outbox-relay",
 }
+# Rolled on every app rollout (ADR-0014): replicated, drained, disruption-budgeted.
+ROLLED = {"ingestion", "orchestrator", "tool-gateway"}
 APP_IDS = {p.name for p in (BACKEND / "apps").iterdir() if (p / "manifest.yaml").exists()}
 
 @pytest.fixture(scope="module")
@@ -84,6 +86,74 @@ def test_one_deployment_per_platform_service_never_per_app(docs):
 def test_each_platform_deployment_has_a_service(docs):
     services = {d["metadata"]["name"] for d in of_kind(docs, "Service")}
     assert PLATFORM <= services
+
+
+def deployment(docs, name) -> dict:
+    (d,) = [d for d in of_kind(docs, "Deployment") if d["metadata"]["name"] == name]
+    return d
+
+
+@pytest.mark.parametrize("name", sorted(ROLLED))
+def test_rolled_services_update_without_dropping_below_two(docs, name):
+    d = deployment(docs, name)
+    assert d["spec"]["replicas"] == 2
+    assert d["spec"]["strategy"] == {"type": "RollingUpdate", "rollingUpdate": {"maxUnavailable": 0, "maxSurge": 1}}
+
+
+@pytest.mark.parametrize("name", sorted(ROLLED))
+def test_rolled_services_have_a_pdb_keeping_one(docs, name):
+    (pdb,) = [p for p in of_kind(docs, "PodDisruptionBudget") if p["metadata"]["name"] == name]
+    assert pdb["spec"]["minAvailable"] == 1
+    assert pdb["spec"]["selector"]["matchLabels"] == deployment(docs, name)["spec"]["selector"]["matchLabels"]
+
+
+@pytest.mark.parametrize("name", sorted(ROLLED))
+def test_rolled_services_leave_endpoints_before_sigterm_and_spread_over_nodes(docs, name):
+    spec = deployment(docs, name)["spec"]["template"]["spec"]
+    (c,) = spec["containers"]
+    assert c["lifecycle"]["preStop"] == {"sleep": {"seconds": 5}}
+    (spread,) = spec["topologySpreadConstraints"]
+    assert spread["topologyKey"] == "kubernetes.io/hostname"
+    assert spread["labelSelector"]["matchLabels"] == {"app.kubernetes.io/name": name}
+    # Spread each ReplicaSet on its own, or a rollout piles new pods on one node.
+    assert spread["matchLabelKeys"] == ["pod-template-hash"]
+
+
+def test_orchestrator_grace_outlasts_the_longest_run(docs):
+    (cfg,) = [d for d in of_kind(docs, "ConfigMap") if d["metadata"]["name"] == "platform-config"]
+    run_timeout_s = float(cfg["data"]["RUN_TIMEOUT_S"])
+    spec = deployment(docs, "orchestrator")["spec"]["template"]["spec"]
+    pre_stop_s = spec["containers"][0]["lifecycle"]["preStop"]["sleep"]["seconds"]
+    assert spec["terminationGracePeriodSeconds"] > pre_stop_s + run_timeout_s
+
+
+def test_only_replicated_pods_may_run_on_the_worker(docs):
+    # The worker can be drained without an outage (ADR-0032): infra and
+    # single-replica services are pinned to the control-plane.
+    for w in workloads(docs):
+        name = w["metadata"]["name"]
+        selector = w["spec"]["template"]["spec"].get("nodeSelector")
+        if name in ROLLED:
+            assert selector is None, name
+        else:
+            assert selector == {"node-role.kubernetes.io/control-plane": ""}, name
+
+
+def test_kind_cluster_has_a_schedulable_control_plane_and_a_worker():
+    config = yaml.safe_load((K8S / "kind-config.yaml").read_text())
+    roles = [n["role"] for n in config["nodes"]]
+    assert roles == ["control-plane", "worker"]
+    (patch,) = config["nodes"][0]["kubeadmConfigPatches"]
+    assert yaml.safe_load(patch)["nodeRegistration"]["taints"] == []
+    (mapping,) = config["nodes"][0]["extraPortMappings"]
+    assert mapping["containerPort"] == 30001
+
+
+def test_ingestion_nodeport_matches_the_kind_port_mapping(docs):
+    (svc,) = [d for d in of_kind(docs, "Service") if d["metadata"]["name"] == "ingestion-nodeport"]
+    assert svc["spec"]["type"] == "NodePort"
+    assert svc["spec"]["ports"][0]["nodePort"] == 30001
+    assert svc["spec"]["selector"] == {"app.kubernetes.io/name": "ingestion"}
 
 
 def test_infra_is_single_replica_statefulsets_with_volumes(docs):

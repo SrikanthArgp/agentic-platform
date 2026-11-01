@@ -30,7 +30,7 @@ truth for "what order do we build things in."
 
 ## Current status (as of this writing)
 
-Days 1–18 of `docs/plan.md` are done (infra, contracts, skeletons;
+Days 1–19 of `docs/plan.md` are done (infra, contracts, skeletons;
 `tool-gateway`'s MCP server and first tool; `orchestrator`'s agent core;
 `ingestion` and the end-to-end hot path; `registry` + App Manifest;
 `memory-store`; context, supervisor and guardrails in `orchestrator`;
@@ -39,13 +39,23 @@ integration pass; `tool-gateway` resilience; tool versions, the global
 `similar-past-case-lookup` and app #2's first cut; token budgets and rate
 limits; the outbox + the `outbox-relay` worker, for alerts and verdicts;
 DLQ, dedupe and the Kafka-outage test; app #2 finished and the
-platform-core review; Kubernetes part 1, the local kind cluster); Day 19
-(Kubernetes, part 2: zero-interruption rolling updates) is next. As-built notes for each day are in `docs/plan.md`.
+platform-core review; Kubernetes part 1, the local kind cluster;
+Kubernetes part 2, zero-interruption rolling updates); Day 20 (app #3,
+`security-alert-triage`, shipped by rolling update) is next. As-built notes for each day are in `docs/plan.md`.
 
 - All 6 services and the `outbox-relay` worker have a FastAPI app
-  (`app/main.py`, `/healthz`, `/readyz`; the services' `/readyz` is the
-  same as `/healthz` until Day 19), a `pyproject.toml`, a committed `uv.lock`,
-  a `Dockerfile`, and passing tests.
+  (`app/main.py`, `/healthz`, `/readyz`), a `pyproject.toml`, a committed
+  `uv.lock`, a `Dockerfile`, and passing tests. `/healthz` never checks a
+  dependency. `/readyz` (Day 19, `ap-shared`'s `lifecycle`) is `503` while
+  starting or draining in the three services rolled per app: `ingestion`
+  also needs the outbox's Postgres, `orchestrator` its Kafka consumer
+  joined and `registry`/`tool-gateway` answering, `tool-gateway` its tool
+  scan done; elsewhere it's the same as `/healthz` (the relay's says
+  `active`/`standby`). On SIGTERM those three fail `/readyz` and uvicorn
+  finishes in-flight requests and MCP calls; `orchestrator` then finishes
+  its current alert, commits and leaves the consumer group. Compose's
+  `stop_grace_period` (150s `orchestrator`, 30s the other two) lets
+  `docker stop` drain too.
 - Nothing but `orchestrator` publishes to Kafka directly (Day 15,
   ADR-0030, ADR-0024). `ingestion` writes each accepted alert to Postgres
   `outbox`, and `review-console` writes each verdict to `verdict_outbox` in
@@ -154,8 +164,15 @@ platform-core review; Kubernetes part 1, the local kind cluster); Day 19
   ADR-0010). Both only ever move toward `ESCALATE`; memory down →
   the run continues without context and the supervisor escalates. A run
   that can't happen (unknown app, `registry` down with no cached copy,
-  `tool-gateway` or the LLM unreachable) publishes `ESCALATE` "not
-  evaluated" instead.
+  `tool-gateway` or the LLM unreachable, or the run past `RUN_TIMEOUT_S`,
+  120s) publishes `ESCALATE` "not evaluated" instead. Each MCP request
+  opens its own short-lived client (a dropped connection would otherwise
+  cancel the whole run) and a dropped connection is retried once on a new
+  one, never a tool error or a timeout (Day 19). The consumer takes one
+  message at a time, commits it only after its `alert.decided` is
+  published, uses the sticky assignor (aiokafka has no cooperative mode),
+  and finishes and commits its current alert before giving up a
+  partition (ADR-0033).
   `RunAgentResponse.confidence` carries the final value. Then every
   callable agent whose `invoke_on` has the final decision runs in parallel,
   in-process (ADR-0012), and its reasons are appended prefixed with its
@@ -181,7 +198,12 @@ platform-core review; Kubernetes part 1, the local kind cluster); Day 19
   for both before the integration tests).
 - The same images also run on a local kind cluster (Day 18,
   `backend/deploy/k8s/`, Kustomize `base/` + `overlays/local/`, namespace
-  `agentic-platform`). `backend/scripts/k8s_up.sh` creates the cluster
+  `agentic-platform`; two nodes, ADR-0032: `ingestion`/`orchestrator`/
+  `tool-gateway` run 2 replicas spread one per node, with
+  `maxUnavailable: 0`, `maxSurge: 1`, a PDB `minAvailable: 1`, a 5s
+  `preStop` sleep and `terminationGracePeriodSeconds` 150/30; infra and the
+  single-replica services are pinned to the control-plane, so draining
+  the worker interrupts nothing). `backend/scripts/k8s_up.sh` creates the cluster
   (`agentic-platform`) if missing, builds, tags with the git SHA (never
   `latest`; `-dirty-<time>` with uncommitted changes), `kind load`s the 7
   platform images (the node pulls infra itself) and applies
@@ -196,7 +218,17 @@ platform-core review; Kubernetes part 1, the local kind cluster); Day 19
   + 10000 (`18001`–`18007`, Postgres `15432`, Redis `16379`) and Kafka
   `39092`, so both run side by side; pass those URLs to `register_app.py`/
   `seed.py` (`--registry-url`, `--tool-gateway-url`, `--postgres-dsn`,
-  `--redis-url`). Reset with `kind delete cluster --name agentic-platform`.
+  `--redis-url`). A port-forward is pinned to one pod, so each restarts
+  itself after a rollout; load that must survive one goes to `ingestion`'s
+  NodePort, `localhost:18101` (`burst.py --ingestion http://localhost:18101`).
+  `backend/scripts/rollout_app.sh [app_id]` builds, `kind load`s and
+  `kubectl set image`s the three rolled services, waits for all three
+  rollouts (`ROLLOUT_TIMEOUT`, 300s), and only then registers the app (no
+  `app_id`: code only); a stalled rollout exits 1 with nothing registered
+  (`kubectl rollout undo deployment/NAME`). After it, those three run a
+  newer tag than the rest, so apply manifest changes with `k8s_up.sh`, not
+  `render.sh NEWTAG` (the other four would point at an image the node
+  doesn't have). Reset with `kind delete cluster --name agentic-platform`.
 - Services log JSON to stdout and drop spans; nothing exports to the
   collector until Day 23. Don't set `OTEL_EXPORTER_OTLP_ENDPOINT` on a
   service before then — FastAPI >=0.142 auto-attaches OTLP exporters when
@@ -305,6 +337,7 @@ Kubernetes check (local kind cluster):
 ```bash
 backend/scripts/k8s_up.sh             # all pods Ready
 backend/scripts/k8s_port_forward.sh   # foreground; host ports 18001-18007, 15432, 16379, 39092
+backend/scripts/rollout_app.sh [app_id]   # roll ingestion/orchestrator/tool-gateway, then register
 kind delete cluster --name agentic-platform
 ```
 
@@ -335,7 +368,8 @@ kind delete cluster --name agentic-platform
   schema, app-owned tools) is meant to live under `backend/apps/{app_id}/`,
   never inside a platform service.
 - **`ap-shared`** (`backend/shared`) is the one cross-service dependency:
-  generated proto stubs (`proto_gen/`) and the `observability` module
+  generated proto stubs (`proto_gen/`), `registry_client`, `run_context`,
+  `lifecycle` (readiness + SIGTERM drain state, Day 19) and the `observability` module
   (`setup_observability()` — stdout JSON logging + a no-op-exported
   `TracerProvider` for now; Week 5 (Day 23) of `docs/plan.md` points it at a real
   OTel Collector without changing that API).
@@ -367,8 +401,8 @@ kind delete cluster --name agentic-platform
   `ingestion`/`orchestrator`/`tool-gateway` images `COPY` `backend/apps/`.
   Compose for apps #1–#2 and the dev loop; a local kind cluster
   (`backend/deploy/k8s/`, Kustomize, Day 18) where app #3 onward ships by
-  rolling update (Day 19's `rollout_app.sh`: roll the three services,
-  wait, then `register_app.py`).
+  rolling update (`rollout_app.sh`: roll the three services, wait, then
+  `register_app.py`; Day 19).
   The `outbox-relay` worker (`backend/workers/outbox-relay/`, one active
   instance via a Postgres advisory lock, ADR-0030) relays both outbox
   tables; there is no Celery. The Day 25 batch eval is a script,

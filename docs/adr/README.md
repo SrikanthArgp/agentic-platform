@@ -37,7 +37,7 @@ Rules:
 | [0010](0010-escalation-guardrails.md) | Deterministic `escalate_when` guardrails (`alert.*`, `payload.*`, `context.*`) against prompt injection | Accepted |
 | [0011](0011-resolution-notes-on-cases.md) | Fixes recorded on cases (`resolution_notes`), not in memory | Accepted |
 | [0012](0012-callable-dispatch-in-process.md) | Run callable agents in-process instead of a gRPC self-call | Accepted |
-| [0014](0014-kubernetes-rolling-rollouts.md) | Local Kubernetes from app #3 on; new apps ship by rolling update (not tool hot-reload) | Accepted |
+| [0014](0014-kubernetes-rolling-rollouts.md) | Local Kubernetes from app #3 on; new apps ship by rolling update (not tool hot-reload) | Accepted (multi-node: 0032; rebalancing: 0033) |
 | [0016](0016-memory-fed-by-alert-decided.md) | `memory-store` counts decisions by consuming `alert.decided`; `RunAgentResponse` carries `alert_key` | Accepted |
 | [0017](0017-memory-as-event-log.md) | Memory stored as an event log; rolling windows counted exactly | Accepted |
 | [0018](0018-memory-namespace-from-registry.md) | `memory-store` resolves `memory_namespace` from `registry` | Accepted |
@@ -53,3 +53,5 @@ Rules:
 | [0029](0029-token-budgets-and-rate-limits.md) | Daily token budgets per agent; per-minute rate limits per app and source | Accepted |
 | [0030](0030-outbox-with-dedicated-relay.md) | Transactional outbox drained by a dedicated `outbox-relay` worker (replaces the Celery relay) | Accepted |
 | [0031](0031-suppress-requires-noise-verdict.md) | Opt-in supervisor rule: a SUPPRESS needs a confirmed-noise verdict on the key, ever | Accepted |
+| [0032](0032-two-node-kind-cluster.md) | Two-node local kind cluster: replicated services spread, infra and singletons on the control-plane | Accepted |
+| [0033](0033-eager-sticky-rebalance-with-drain.md) | Sticky (eager) Kafka rebalancing; the current alert is committed before a partition moves | Accepted |

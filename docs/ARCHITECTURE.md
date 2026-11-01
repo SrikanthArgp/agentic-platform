@@ -773,6 +773,15 @@ cross-service or cross-app link.
     `review-console` relies on the `cases` unique constraint and
     `memory-store` on its event log's unique key (ADR-0017).
 
+- **Pod swaps** (Day 19, ADR-0014, ADR-0033): a rolling update or a node
+  drain replaces `ingestion`, `orchestrator` and `tool-gateway` pods with
+  no failed request, no failed tool call and no alert decided twice:
+  readiness that means ready, a drain on SIGTERM (in-flight requests and
+  MCP calls, then `orchestrator`'s current alert and its commit), a
+  partition never moved mid-alert, and one MCP retry on a dropped
+  connection. Details in §12; a run past `RUN_TIMEOUT_S` (120s) is "not
+  evaluated" (ESCALATE), which is what bounds a pod's exit.
+
 All of these are app-agnostic platform mechanics — no per-app configuration
 beyond the `app_id` that budgets, rate limits, and traces are already
 keyed by.
@@ -876,11 +885,18 @@ Two deployment targets built from the **same images** (ADR-0014):
   and the `llm-api-key` Secret (`backend/local/.env`, `orchestrator` only;
   never committed). Other config is the `platform-config` ConfigMap.
   Every container has requests/limits, liveness on `/healthz` and
-  readiness on `/readyz` (Day 19 makes `/readyz` check dependencies).
+  readiness on `/readyz`; for the three rolled services `/readyz` means
+  ready (below), elsewhere it's the same as `/healthz`. Two nodes
+  (ADR-0032): a control-plane, schedulable, and a worker. `ingestion`,
+  `orchestrator` and `tool-gateway` spread one pod per node; infra and the
+  single-replica services are pinned to the control-plane by the local
+  overlay, so draining the worker interrupts nothing.
   Host access is `backend/scripts/k8s_port_forward.sh`: Compose's ports
   + 10000 (`18001`–`18007`, Postgres `15432`, Redis `16379`), Kafka
-  `39092`. App #3 and every app after it are shipped here by rolling
-  update.
+  `39092`; each forward restarts itself when its pod is replaced. A
+  port-forward is pinned to one pod, so traffic that must survive a
+  rollout goes to `ingestion`'s NodePort, `localhost:18101`. App #3 and
+  every app after it are shipped here by rolling update.
 
 **Where each part of an app lands at runtime**
 
@@ -978,17 +994,48 @@ the rebuild.
 
 **Rolling rollout on Kubernetes** (ADR-0014, `plan.md` Day 19): in Compose
 that restart briefly interrupts *every* app, because the three services
-are shared. On Kubernetes, `backend/scripts/rollout_app.sh {app_id}` rolls
-`ingestion`, `orchestrator`, `tool-gateway` to a new image tag one pod at a
-time (≥ 2 replicas, `maxUnavailable: 0`), waits for all three rollouts to
-complete, and only then runs `register_app.py`. Pods are still restarted,
-but other apps see no interruption. That depends on `/readyz` meaning ready,
-graceful SIGTERM drain (in-flight requests, MCP calls, and the current
-Kafka message finish first), committing offsets only after publish,
-cooperative Kafka rebalancing, and an MCP client that retries once on a
-dropped connection (safe: tools are read-only, §2). Old and new pods
-coexist during a rollout; the new app can't receive events until
-registration, which happens after every pod runs the new image.
+are shared. On Kubernetes, `backend/scripts/rollout_app.sh {app_id}` builds
+and tags the three images, `kind load`s them, `kubectl set image`s
+`ingestion`, `orchestrator`, `tool-gateway`, waits for all three rollouts
+(`ROLLOUT_TIMEOUT`, 300s), and only then runs `register_app.py` (through
+its own port-forwards to the new pods); with no `app_id` it rolls code
+only. A rollout that doesn't finish (a new pod never ready) stops the
+script with nothing registered; the old pods are still serving, and
+`kubectl rollout undo` restores the Deployment. Pods are still restarted,
+but other apps see no interruption. What that depends on:
+
+- **Capacity**: 2 replicas each, `maxUnavailable: 0`, `maxSurge: 1`, a
+  PodDisruptionBudget (`minAvailable: 1`) for drains, and a spread of one
+  pod per node, counted per ReplicaSet (`matchLabelKeys:
+  [pod-template-hash]`), so a rollout doesn't pile its new pods on one node.
+- **`/readyz` means ready** (`backend/shared/lifecycle`): `ingestion`, the
+  outbox's Postgres answers; `tool-gateway`, startup (the tool scan) has
+  finished; `orchestrator`, its Kafka consumer has joined the group and
+  `registry` and `tool-gateway` answer. All three: `503` while starting or
+  draining. `/healthz` never checks a dependency, so an outage takes pods
+  out of rotation without restarting them.
+- **Graceful stop**: a 5s `preStop` sleep while the pod leaves the
+  Service's endpoints; then SIGTERM fails `/readyz` and uvicorn closes its
+  listener and lets in-flight requests and MCP calls finish; then
+  `orchestrator` finishes the alert it's on, publishes, commits, and
+  leaves the consumer group. A run is bounded by `RUN_TIMEOUT_S` (120s,
+  else "not evaluated"), and `orchestrator`'s `terminationGracePeriodSeconds`
+  (150s) is above it; the other two get 30s. Compose's `stop_grace_period`
+  matches, so `docker stop` drains the same way.
+- **Kafka**: an offset is committed only after its `alert.decided` is
+  published. aiokafka has no cooperative rebalancing, so `orchestrator`
+  uses the sticky assignor and, before giving up its partitions, finishes
+  and commits the alert in progress (ADR-0033): a partition never moves
+  mid-alert. Every rebalance still pauses all partitions for a few seconds;
+  alerts wait in Kafka meanwhile.
+- **MCP client**: each tool call opens its own connection through the
+  Service, and a dropped connection is retried once on a new one (another
+  pod; safe: tools are read-only, §2). A second drop is an ordinary tool
+  failure (§10).
+
+Old and new pods coexist during a rollout; the new app can't receive
+events until registration, which happens after every pod runs the new
+image.
 
 **Cost of adding an app**: a manifest-only change (edit `prompt_ref`,
 disable a tool) needs no deploy. A new app, or new app code, needs a
@@ -1005,8 +1052,9 @@ App Manifest or the code layout:
   consumer group, sharing load across all apps — up to the partition count,
   with per-key ordering preserved by the `{app_id}:{alert_key}` partition
   key (§8). On the kind cluster, `ingestion`, `orchestrator` and
-  `tool-gateway` run 2 replicas (`plan.md` Day 19) so rolling updates have
-  a pod to fail over to (ADR-0014); autoscaling (HPA) is phase two.
+  `tool-gateway` run 2 replicas, one per node (`plan.md` Day 19, ADR-0032),
+  so rolling updates and node drains have a pod to fail over to
+  (ADR-0014); autoscaling (HPA) is phase two.
 - **Dedicated per-app deployment**: the *same* `orchestrator` image run as
   a separate deployment that only takes one app's events (per-app topic,
   partition key, or `app_id` filter), for a noisy app or a stricter SLA.

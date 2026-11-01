@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from mcp.server.streamable_http_manager import StreamableHTTPASGIApp, StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel
@@ -16,6 +17,7 @@ from app.core.resilience import ResiliencePolicy, ToolRunner
 from app.mcp.server import AppSource, build_mcp_server
 from app.tools import similar_past_cases
 from app.tools.similar_past_cases import CaseSource, ReviewConsoleCases
+from lifecycle import Lifecycle
 from observability import setup_observability
 from registry_client import RegistryClient
 
@@ -38,6 +40,10 @@ setup_observability(SERVICE_NAME)
 class HealthResponse(BaseModel):
     status: str
     service: str
+
+
+class NotReadyResponse(HealthResponse):
+    reasons: list[str]
 
 
 def create_app(
@@ -81,10 +87,22 @@ def create_app(
         ),
     )
 
+    life = Lifecycle(SERVICE_NAME)
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         async with session_manager.run():
-            yield
+            # The tool scan above ran before uvicorn could accept a
+            # connection; this is the point where every tool is loaded and
+            # the MCP endpoint is up. On SIGTERM /readyz fails at once and
+            # uvicorn lets in-flight MCP calls (each bounded by
+            # TOOL_TIMEOUT_S) finish before this block exits (Day 19).
+            life.install_sigterm_hook()
+            life.mark_started()
+            try:
+                yield
+            finally:
+                life.begin_drain()
         if registry_client:
             await registry_client.aclose()
         if cases_client:
@@ -92,6 +110,7 @@ def create_app(
 
     app = FastAPI(title=SERVICE_NAME, lifespan=lifespan)
     app.state.registry = registry
+    app.state.lifecycle = life
     # A Route, not a Mount: a Mount would 307-redirect /mcp to /mcp/.
     app.router.routes.append(
         Route(MCP_PATH, StreamableHTTPASGIApp(session_manager), methods=["GET", "POST", "DELETE"])
@@ -101,10 +120,18 @@ def create_app(
     async def healthz() -> HealthResponse:
         return HealthResponse(status="ok", service=SERVICE_NAME)
 
-    # Readiness probe (Kubernetes, docs/plan.md Day 18). For now it is the
-    # same as /healthz; Day 19 makes it check what this service needs.
-    @app.get("/readyz", response_model=HealthResponse)
-    async def readyz() -> HealthResponse:
+    # Readiness (docs/plan.md Day 19): the startup tool scan has finished
+    # and the MCP session manager is running, and the pod isn't draining.
+    # No dependency checks: registry and review-console being down are
+    # per-call errors (`registry_unavailable`, `tool_failed`), and taking
+    # every gateway pod out of rotation for them would only turn those
+    # into connection failures.
+    @app.get("/readyz", response_model=HealthResponse, responses={503: {"model": NotReadyResponse}})
+    async def readyz():
+        reasons = await life.not_ready_reasons()
+        if reasons:
+            body = NotReadyResponse(status="unavailable", service=SERVICE_NAME, reasons=reasons)
+            return JSONResponse(body.model_dump(), status_code=503)
         return HealthResponse(status="ok", service=SERVICE_NAME)
 
     return app

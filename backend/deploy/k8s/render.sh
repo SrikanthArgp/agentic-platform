@@ -11,6 +11,12 @@
 #   - generates the llm-api-key Secret from ENV_FILE (default
 #     backend/local/.env, gitignored; empty if missing, so orchestrator runs
 #     but publishes ESCALATE "not evaluated").
+# TAG goes on all seven platform images, so it must be one `kind load`ed for
+# all seven, as k8s_up.sh does. After rollout_app.sh the three rolled
+# services run a newer tag than the rest; rendering with that tag would
+# point the other four at an image the node doesn't have (they'd sit in
+# ImagePullBackOff while their old pods keep serving; seen on Day 19). Use
+# k8s_up.sh to apply manifest changes.
 # Generated names get a content hash, so a changed key or init.sql rolls the
 # pods that use it. The Secret exists only in the rendered output, and in a
 # temp copy of ENV_FILE that is removed on exit.

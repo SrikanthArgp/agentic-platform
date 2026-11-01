@@ -1,3 +1,4 @@
+import asyncio
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -71,11 +72,17 @@ def registry() -> FakeRegistry:
 class FakeOutbox:
     rows: list[OutboxEntry] = field(default_factory=list)
     fail: bool = False
+    write_delay_s: float = 0.0
 
     async def write(self, entry: OutboxEntry) -> None:
         if self.fail:
             raise OutboxError("Postgres down")
+        if self.write_delay_s:
+            await asyncio.sleep(self.write_delay_s)
         self.rows.append(entry)
+
+    async def ping(self) -> str | None:
+        return "Postgres unreachable (ConnectionRefusedError)" if self.fail else None
 
 
 @pytest.fixture

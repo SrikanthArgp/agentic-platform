@@ -75,5 +75,6 @@ cat <<MSG
 
 All pods Ready (tag $TAG). Next:
   backend/scripts/k8s_port_forward.sh        # host ports 18001-18007, 15432, 16379, 39092
+  # ingestion is also on http://localhost:18101 (NodePort; survives rollouts)
   uv run backend/scripts/register_app.py it-ops-triage --registry-url http://localhost:18005 --tool-gateway-url http://localhost:18003/mcp
 MSG

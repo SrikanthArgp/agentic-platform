@@ -36,12 +36,16 @@ classDiagram
             +create_app(apps_dir, allowed_hosts, apps, cases) FastAPI
             -lifespan(app) AsyncIterator
             +healthz() HealthResponse
-            +readyz() HealthResponse
+            +readyz() HealthResponse | NotReadyResponse
         }
         class HealthResponse {
             <<pydantic>>
             +status: str
             +service: str
+        }
+        class NotReadyResponse {
+            <<pydantic, 503>>
+            +reasons: list~str~
         }
     }
 
@@ -251,6 +255,13 @@ classDiagram
             +get_app(app_id) dict
             +aclose() None
         }
+        class Lifecycle {
+            <<ap-shared lifecycle>>
+            +install_sigterm_hook() None
+            +mark_started() None
+            +begin_drain() None
+            +not_ready_reasons(checks) list~str~
+        }
         class AppNotFoundError {
             <<ap-shared registry_client>>
         }
@@ -374,6 +385,7 @@ classDiagram
     main *-- StreamableHTTPASGIApp : Route POST /mcp
     main ..> TransportSecuritySettings : DNS-rebinding guard
     main ..> HealthResponse
+    main *-- Lifecycle : app.state.lifecycle; /readyz, SIGTERM hook
     main *-- RegistryClient : unless apps injected, closed in lifespan
     main *-- ReviewConsoleCases : unless cases injected, closed in lifespan
     StreamableHTTPSessionManager o-- Server
@@ -477,10 +489,22 @@ allowed_hosts, apps, cases)` does the setup:
 9. Mounts the session manager at `/mcp` as a plain `Route`, not a
    `Mount`. A `Mount` would 307-redirect `/mcp` to `/mcp/`.
 
-`lifespan()` runs the session manager's task group and, on shutdown, closes
-the `RegistryClient` and `ReviewConsoleCases` if `create_app()` made them.
+`lifespan()` runs the session manager's task group; once it's running it
+wraps uvicorn's SIGTERM handler (`Lifecycle.install_sigterm_hook()`) and
+marks the app started. On shutdown it closes the `RegistryClient` and
+`ReviewConsoleCases` if `create_app()` made them.
 **`HealthResponse`** is the `/healthz` body. The registry is also kept on
-`app.state.registry` for tests.
+`app.state.registry` for tests, and the `Lifecycle` on `app.state.lifecycle`.
+
+**`/readyz`** (Day 19) is `200` once startup has finished (the tool scan
+in `create_app()` runs before uvicorn accepts a connection, and the
+session manager is up) and until SIGTERM; otherwise `503` with a
+**`NotReadyResponse`** (`starting` or `draining`). It checks no
+dependency: `registry` or `review-console` down is a per-call error
+(`registry_unavailable`, `tool_failed`), and pulling every gateway pod out
+of rotation for it would only turn those into connection failures. On
+SIGTERM uvicorn closes its listener and lets in-flight MCP calls (each
+bounded by `TOOL_TIMEOUT_S`) finish before the lifespan shuts down.
 
 ### Core — `app/core/registry.py`
 
@@ -788,6 +812,7 @@ All three are fixture-backed and change only through git (ADR-0009).
 - **A broken tool degrades, never hangs**: the deadline caps each call,
   the breaker stops calling a tool that keeps failing, and `orchestrator`
   escalates on `tool_timeout`/`tool_unavailable` like any infra failure.
-- **Next changes**: Day 19 makes `/readyz` (today the same as
-  `/healthz`) wait for the startup tool scan and a graceful drain of in-flight MCP calls on SIGTERM;
-  Day 23 exports traces and joins them across the MCP hop.
+- **Stops gracefully** (Day 19): readiness fails on SIGTERM and an
+  in-flight MCP call still returns its result (`tests/test_shutdown.py`,
+  against a real uvicorn).
+- **Next changes**: Day 23 exports traces and joins them across the MCP hop.

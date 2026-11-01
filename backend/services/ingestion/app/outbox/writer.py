@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 ALERT_RECEIVED = "alert.received"
 # Fail fast: intake must not hang on a stuck database.
 WRITE_TIMEOUT_S = 5.0
+# Readiness probe budget (the probe itself times out at 3s).
+PING_TIMEOUT_S = 1.0
 
 
 class OutboxError(RuntimeError):
@@ -40,6 +42,10 @@ class OutboxEntry:
 
 class Outbox(Protocol):
     async def write(self, entry: OutboxEntry) -> None: ...
+
+    async def ping(self) -> str | None:
+        """None when a write could succeed now; otherwise why not (`/readyz`)."""
+        ...
 
 
 def trace_headers() -> dict[str, str]:
@@ -71,6 +77,14 @@ class PostgresOutbox:
     async def stop(self) -> None:
         if self._pool is not None:
             await self._pool.close()
+
+    async def ping(self) -> str | None:
+        try:
+            pool = await self._get_pool()
+            await pool.fetchval("SELECT 1", timeout=PING_TIMEOUT_S)
+        except (OSError, asyncpg.PostgresError, asyncpg.InterfaceError, TimeoutError) as e:
+            return f"Postgres unreachable ({type(e).__name__})"
+        return None
 
     async def write(self, entry: OutboxEntry) -> None:
         try:

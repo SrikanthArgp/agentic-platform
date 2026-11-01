@@ -15,7 +15,12 @@ kind: Deployment
 metadata:
   name: orchestrator
 spec:
-  replicas: 1
+  # Day 19 (ADR-0014): a rolling update never drops below 2 serving pods.
+  # The new pod must pass /readyz before an old one is stopped.
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
   selector:
     matchLabels: { app.kubernetes.io/name: orchestrator }
   template:
@@ -23,6 +28,19 @@ spec:
       labels: { app.kubernetes.io/name: orchestrator, app.kubernetes.io/component: service }
     spec:
       enableServiceLinks: false
+      # preStop (5s) + draining: the current alert may run up to RUN_TIMEOUT_S (120s), then publish and commit.
+      terminationGracePeriodSeconds: 150
+      # One replica per node where possible, so a node going away leaves one
+      # serving. matchLabelKeys: count only this ReplicaSet's pods; otherwise
+      # a rollout places new pods away from the old ones it's replacing, and
+      # ends with every new pod on one node (seen on Day 19).
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app.kubernetes.io/name: orchestrator }
+          matchLabelKeys: [pod-template-hash]
       containers:
         - name: orchestrator
           image: agentic-platform/orchestrator
@@ -37,9 +55,15 @@ spec:
           resources:
             requests: { cpu: 100m, memory: 256Mi }
             limits: { cpu: "1", memory: 1Gi }
+          # Stopping: the pod leaves the Service's endpoints while this
+          # sleeps, so no new connection reaches it after SIGTERM; then the
+          # app fails /readyz and drains (backend/shared/lifecycle).
+          lifecycle:
+            preStop:
+              sleep: { seconds: 5 }
           # Liveness is /healthz (the process is up); readiness is /readyz
-          # (Day 19 makes it check this pod's dependencies). The startup probe
-          # holds both off while uv starts the app.
+          # (startup finished, not draining, and what this pod needs is
+          # reachable). The startup probe holds both off while uv starts the app.
           startupProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 2
@@ -54,3 +78,13 @@ spec:
             periodSeconds: 5
             timeoutSeconds: 3
             failureThreshold: 2
+---
+# Voluntary disruptions (kubectl drain, node upgrades) keep one pod serving.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: orchestrator
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: orchestrator }

@@ -17,6 +17,9 @@ data:
   REVIEW_CONSOLE_URL: http://review-console:8000
   LLM_PROVIDER: openai
   LLM_MODEL: gpt-5.4-mini
+  # orchestrator's per-alert deadline; its terminationGracePeriodSeconds
+  # (platform/orchestrator.yaml) must stay above it (Day 19).
+  RUN_TIMEOUT_S: "120"
   RELAY_POLL_INTERVAL_S: "0.5"
   OUTBOX_RETENTION_H: "24"
   # No OTEL_EXPORTER_OTLP_ENDPOINT until Day 23 (see docker-compose.yml).

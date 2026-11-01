@@ -288,8 +288,9 @@ counters too, so one app's flood or spend never uses up another's.
 
 ## 5. Adding an app on Kubernetes — rolling update, then registration
 
-*Planned — `docs/plan.md` Days 19–20, ADR-0014 (the kind cluster it runs on is built, Day 18).* App #3 and every app
-after it ship this way. Code goes first, one pod at a time, while other
+*The mechanism is built and measured (`docs/plan.md` Day 19, ADR-0014,
+ADR-0033); app #3 is the first app shipped with it (Day 20).* App #3 and
+every app after it ship this way. Code goes first, one pod at a time, while other
 apps keep being served. The manifest is registered only when every pod of
 all three services runs the new image, so the new app can't receive an
 event that an old pod can't handle (§12 rollout order, ADR-0006).
@@ -303,25 +304,27 @@ sequenceDiagram
     participant Registry as registry
     participant Client as alert source (app #3)
 
-    Operator->>K8s: kubectl set image (new git-SHA tag) ×3 Deployments
+    Operator->>K8s: build, kind load, kubectl set image (new git-SHA tag) ×3 Deployments
     loop per pod, maxUnavailable 0 / maxSurge 1
         K8s->>New: start pod
-        New-->>K8s: /readyz 200 (tool scan done / consumer joined / outbox reachable)
+        New-->>K8s: /readyz 200 (startup done / consumer joined + registry, tool-gateway up / outbox reachable)
+        K8s->>Old: preStop sleep 5s (leaves Service endpoints)
         K8s->>Old: SIGTERM
-        Note over Old: /readyz → 503, leave endpoints,<br/>finish in-flight requests, MCP calls,<br/>current Kafka message, commit offset
+        Note over Old: /readyz → 503; uvicorn finishes in-flight<br/>requests and MCP calls; orchestrator finishes<br/>its current alert, publishes, commits, LeaveGroup
         Old-->>K8s: exit
     end
+    Note over Old,New: each orchestrator join/leave is a Kafka rebalance:<br/>members finish and commit their current alert<br/>before their partitions move (sticky, ADR-0033)
     Note over Old,New: apps #1/#2 served throughout —<br/>no non-202s, no tool-call failures
     Operator->>K8s: kubectl rollout status ×3 (all complete)
-    Operator->>Registry: register_app.py {app_id} (REST)
+    Operator->>Registry: register_app.py {app_id} (REST, via its own port-forward to the new pods)
     Registry-->>Operator: 200 OK (validated)
     Client->>New: POST /apps/{app_id}/events (accepted after the 30s manifest TTL at most)
 ```
 
 | Step | Who | What | Transport |
 |---|---|---|---|
-| 1 | operator → Kubernetes | new image tag on `ingestion`, `orchestrator`, `tool-gateway` | `kubectl` |
-| 2 | Kubernetes ↔ pods | start new pod, wait for `/readyz`, drain and stop an old pod; repeat | HTTP probes, SIGTERM |
+| 1 | operator → Kubernetes | build, `kind load`, new image tag on `ingestion`, `orchestrator`, `tool-gateway` | `docker`, `kind`, `kubectl` |
+| 2 | Kubernetes ↔ pods | start new pod, wait for `/readyz`, `preStop` then SIGTERM an old pod, which drains; repeat | HTTP probes, SIGTERM |
 | 3 | operator → Kubernetes | wait for all three rollouts to complete | `kubectl rollout status` |
 | 4 | operator → `registry` | register the new app's manifest | REST |
 | 5 | alert source → `ingestion` | first events for the new app | REST |
@@ -329,4 +332,7 @@ sequenceDiagram
 Before step 4, `ingestion` rejects the new `app_id` (no registered
 manifest), so nothing for the new app is in flight while old and new pods
 coexist. A pod that fails `/readyz` stalls the rollout with old pods still
-serving; `kubectl rollout undo` reverts it.
+serving; `rollout_app.sh` then exits without registering, and `kubectl
+rollout undo` reverts it. Measured on Day 19: 120 alerts across apps #1
+and #2 during a code-only rollout, all `202`, each decided exactly once,
+no tool-call failures.

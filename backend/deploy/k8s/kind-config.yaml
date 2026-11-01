@@ -1,8 +1,23 @@
-# Local kind cluster for docs/plan.md Day 18 (ADR-0014). One node: infra is
-# dev-grade (single-replica StatefulSets); multi-node is phase two. Reach
-# services from the host with backend/scripts/k8s_port_forward.sh.
+# Local kind cluster (docs/plan.md Days 18-19, ADR-0014, ADR-0032): two
+# nodes, so each replicated service (ingestion, orchestrator, tool-gateway)
+# runs one pod per node and `kubectl drain` of the worker can be tested.
+# Infra and the single-replica services stay on the control-plane
+# (overlays/local); infra is dev-grade (single-replica StatefulSets).
+# Reach services from the host with backend/scripts/k8s_port_forward.sh;
+# ingestion also on a NodePort (host 18101), which, unlike a port-forward,
+# keeps working while its pods are replaced.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: agentic-platform
 nodes:
   - role: control-plane
+    # kubeadm taints a control-plane node NoSchedule once there are workers;
+    # an empty list keeps it schedulable, so both nodes run workloads.
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          taints: []
+    extraPortMappings:
+      - { containerPort: 30001, hostPort: 18101, listenAddress: "127.0.0.1", protocol: TCP }
+  - role: worker

@@ -22,8 +22,11 @@ moves toward ESCALATE, never away from it (§13.4):
   before anything runs (ADR-0029); a callable over its budget doesn't
   contribute. Budgets that can't be checked (Redis down) don't stop the
   run; a reason says so;
-- anything that stops the run (LLM down, unknown app, budget exceeded)
-  raises; callers turn that into `not_evaluated_response()`.
+- the run takes longer than `run_timeout_s` (`RUN_TIMEOUT_S`, 120s) ->
+  `RunTimeoutError`. That bound is what lets a pod being replaced finish
+  its current alert inside `terminationGracePeriodSeconds` (Day 19);
+- anything that stops the run (LLM down, unknown app, budget exceeded,
+  timed out) raises; callers turn that into `not_evaluated_response()`.
 
 The agent is offered exactly the tools `registry` resolved for it
 (`AgentSpec.tools`: allowlisted, declared, enabled); a call for anything
@@ -34,6 +37,7 @@ or published on their own; their reasons and tool calls are folded into it
 (ADR-0023), and it echoes the request as `alert`.
 """
 
+import asyncio
 import logging
 
 from langchain_core.language_models import BaseChatModel
@@ -51,7 +55,13 @@ from run_context import RunContext
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
-__all__ = ["AgentRunner", "REASON_PREFIX", "not_evaluated_response"]
+__all__ = ["AgentRunner", "REASON_PREFIX", "RunTimeoutError", "not_evaluated_response"]
+
+DEFAULT_RUN_TIMEOUT_S = 120.0
+
+
+class RunTimeoutError(RuntimeError):
+    """The whole run (entry agent, supervisor, callables) ran past `run_timeout_s`."""
 
 
 class AgentRunner:
@@ -65,8 +75,10 @@ class AgentRunner:
         min_confidence: float = 0.6,
         callable_timeout_s: float = 30.0,
         budget: TokenBudget | None = None,
+        run_timeout_s: float = DEFAULT_RUN_TIMEOUT_S,
     ):
         self._budget = budget
+        self._run_timeout_s = run_timeout_s
         self._manifests = manifests
         self._gateway = gateway
         self._model = model
@@ -78,6 +90,16 @@ class AgentRunner:
         self._callable_graph = build_callable_graph()
 
     async def run(self, request: agent_pb2.RunAgentRequest) -> agent_pb2.RunAgentResponse:
+        deadline = asyncio.timeout(self._run_timeout_s)
+        try:
+            async with deadline:
+                return await self._run(request)
+        except TimeoutError:
+            if deadline.expired():
+                raise RunTimeoutError(f"run timed out after {self._run_timeout_s:g}s") from None
+            raise
+
+    async def _run(self, request: agent_pb2.RunAgentRequest) -> agent_pb2.RunAgentResponse:
         manifest = await self._manifests.get(request.app_id)
         agent = manifest.agent(request.agent_id)
         app_prompt = self._manifests.prompt(manifest, agent)
